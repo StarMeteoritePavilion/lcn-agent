@@ -1,0 +1,47 @@
+.gitignore
+  s_699766d3df1037::t_1baad28e26a1fc 144-162
+tsconfig.json
+  s_6bb914360a12be::t_b80114740627c7 1-12
+docs/01-initialize-project.md
+  s_699766d3df1037::t_b597b86d410ac2 1-82
+docs/02-install-typescript.md
+  s_699766d3df1037::t_58dc59792a8cd4 1-77
+docs/03-compile-and-run.md
+  s_699766d3df1037::t_8b1469f72e9643 1-107
+package-lock.json
+  s_699766d3df1037::t_d66a3e9eb3dd1a 1-409
+package.json
+  s_699766d3df1037::t_df6fb060884d8c 1-17
+src/index.ts
+  s_699766d3df1037::t_46cceaa65e164b 1-25
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "9593e9b8c312d35b807b8c9c177ce6a3e450e82e",
+  "prompts": {},
+  "sessions": {
+    "s_699766d3df1037": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7a7b3fe8-4d91-4b60-9522-b3dd7aa3e679",
+        "model": "gemini-3.8-flash"
+      },
+      "human_author": "Can <can@MacBook-Air-M5.local>",
+      "custom_attributes": {
+        "employee_email": "licanxin@gofo.com"
+      }
+    },
+    "s_6bb914360a12be": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a916-5bac-7f61-a424-9f649d393765",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Can <can@MacBook-Air-M5.local>",
+      "custom_attributes": {
+        "employee_email": "licanxin@gofo.com"
+      }
+    }
+  }
+}
