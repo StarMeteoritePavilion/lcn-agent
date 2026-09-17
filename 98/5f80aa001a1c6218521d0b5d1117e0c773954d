@@ -1,0 +1,24 @@
+docs/qa-notes.md
+  s_80cbfd075efc5b::t_122f078b2efdf1 49-74
+  s_80cbfd075efc5b::t_903bb82dbf9e18 75-110
+  s_80cbfd075efc5b::t_52c63a286baea7 1-48
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "985f80aa001a1c6218521d0b5d1117e0c773954d",
+  "prompts": {},
+  "sessions": {
+    "s_80cbfd075efc5b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0fa25b1b-e9f0-4745-aa8b-045d5b43660a",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Can <can@MacBook-Air-M5.local>",
+      "custom_attributes": {
+        "employee_email": "licanxin@gofo.com"
+      }
+    }
+  }
+}
