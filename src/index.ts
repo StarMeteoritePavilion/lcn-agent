@@ -23,35 +23,38 @@ function formatEvent(event: AgentEvent): string {
     return `[工具开始] ${event.toolName}`;
 }
 
-async function createTextEvent(): Promise<TextEvent> {
-    await setTimeout(500);
-    return {
+async function* createEventStream(): AsyncGenerator<AgentEvent> {
+    await setTimeout(300);
+    yield {
         "type": "text",
         "text": "正在分析你的问题"
+    };
+
+    await setTimeout(300);
+    yield {
+        "type": "tool_start",
+        "toolName": "read_file"
     }
 }
 
 async function main(): Promise<void> {
     try {
-        console.log("开始等待文本事件");
-        const textEvent = await createTextEvent();
-        console.assert(formatEvent(textEvent) === "[文本] 正在分析你的问题", "文本事件格式不正确");
-        console.log(formatEvent(textEvent));
+        console.log("开始消费事件流");
 
-        const toolStartEvent: ToolStartEvent = {
-            type: "tool_start",
-            toolName: "read_file"
+        let eventCount = 0;
+        for await (const event of createEventStream()) {
+            eventCount += 1;
+            console.log(formatEvent(event));
         }
 
-        console.assert(formatEvent(toolStartEvent) === "[工具开始] read_file", "工具开始事件格式不正确");
-        console.log(formatEvent(toolStartEvent));
-        console.log("处理完成");
+        console.assert(eventCount === 2, "事件梳理不正确");
+        console.log("事件流消费完成");
 
     } catch (error) {
         if (error instanceof Error) {
             console.error(`处理失败: ${error.message}`)
         } else {
-            console.error("处理失败", error)
+            console.error("处理失败", error);
         }
         process.exitCode = 1;
     }
