@@ -1,0 +1,55 @@
+docs/agent-coordination-guide.md
+  s_f24003c5cb17b4::t_24e059237e9577 94-95
+  s_d8584945f7e7f6::t_a7187ebdbd7e03 1-93,96-193
+docs/03-compile-and-run.md
+  s_f24003c5cb17b4::t_24e059237e9577 106-117
+src/index.ts
+  h_822e68aee7a457 3,13,26-39
+docs/agent-development-learning-plan.md
+  s_d8584945f7e7f6::t_6d876d21603b8e 6,8-18,20,22-39
+  s_d8584945f7e7f6::t_cb8479407e4b1b 21,129-130
+  s_d8584945f7e7f6::t_160c9cce95cacf 128,131-135,144-150,162-168,181-186,195-200,212-217,234-239,256-262,278-284,300-307
+  s_d8584945f7e7f6::t_41531bccac70eb 385
+  s_d8584945f7e7f6::t_ea088736a042d2 1-2,5,7,41-64,66-123,136-140,142-143,151-161,169-180,187-194,201-211,218-233,240-255,263-277,285-299,308-363,378-383,390-417
+  s_d8584945f7e7f6::t_f171e41d6e140f 141
+  s_d8584945f7e7f6::t_562f03b2b2cfb3 3-4
+  s_f24003c5cb17b4::t_24e059237e9577 19,40,126-127
+  s_d8584945f7e7f6::t_66d2299e586505 65,365
+  s_d8584945f7e7f6::t_7412eb7c49ceb7 124-125
+  s_d8584945f7e7f6::t_dd4ab90fea4c1f 364,366-377,384,386-389
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "1b1cee0e04554fb931cbdba1e9709da550bd8385",
+  "prompts": {},
+  "humans": {
+    "h_822e68aee7a457": {
+      "author": "Can <can@MacBook-Air-M5.local>"
+    }
+  },
+  "sessions": {
+    "s_d8584945f7e7f6": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a955-f45d-7531-94b1-c3599c74cb4b",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Can <can@MacBook-Air-M5.local>",
+      "custom_attributes": {
+        "employee_email": "licanxin@gofo.com"
+      }
+    },
+    "s_f24003c5cb17b4": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0aee4-d53a-7423-aa5e-ac984c609b0d",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Can <can@MacBook-Air-M5.local>",
+      "custom_attributes": {
+        "employee_email": "licanxin@gofo.com"
+      }
+    }
+  }
+}
