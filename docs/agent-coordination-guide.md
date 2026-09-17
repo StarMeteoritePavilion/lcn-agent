@@ -96,12 +96,12 @@
 - [x] 使用 `TextEvent`、`ToolStartEvent` 和 `AgentEvent` 表达两种事件。
 - [x] 根据 `event.type` 进行类型收窄并格式化事件。
   用户已反馈正常输出和 `TS2339` 实验结果，恢复实验代码后 `npx tsc --noEmit` 通过。
-- [ ] 使用 `Promise`、`async/await` 和异常处理。
+- [x] 使用 `Promise`、`async/await` 和异常处理。
 - [ ] 使用异步生成器和 `for await` 消费事件流。
 - [ ] 使用 `AbortController` 取消事件流。
 - [ ] 完成阶段 0 的可运行、可取消、异常可观察小程序。
 
-当前不主动推进下一步。只有用户明确要求继续时，才安排 `Promise`、`async/await` 和异常传播练习。
+下一学习单元为异步生成器和 `for await` 事件消费练习；只有用户明确要求继续时，才安排该练习。
 
 ## 7. 后续任务拆分方式
 

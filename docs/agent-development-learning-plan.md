@@ -19,7 +19,7 @@
 - [x] 配置 `tsconfig.json`，编译并运行最小 TypeScript 程序。
 - [x] 用 `TextEvent`、`ToolStartEvent` 和 `AgentEvent` 表达两种事件。
 - [x] 根据 `event.type` 收窄类型并分别格式化事件。
-- [ ] 使用 `Promise`、`async/await` 和异常处理。
+- [x] 使用 `Promise`、`async/await` 和异常处理。
 - [ ] 使用异步迭代和 `for await` 消费事件流。
 - [ ] 使用 `AbortController` 取消事件流。
 - [ ] 完成阶段 0 的可运行、可取消小程序。
@@ -128,7 +128,8 @@ flowchart TD
 - [x] 完成事件联合类型：文本事件和工具开始事件。
 - [x] 完成 `event.type` 类型收窄，并为不同事件生成不同文本。
   `src/index.ts` 已通过正常运行和错误实验：错误分支得到 `TS2339`，恢复后 `npx tsc --noEmit` 通过。
-- [ ] 完成 `Promise`、`async/await` 和异常传播练习。
+- [x] 完成 `Promise`、`async/await` 和异常传播练习。
+  2026-09-17：正常流程、异常流程和恢复流程均已运行验证，异常传播解释已核对。
 - [ ] 完成异步生成器和 `for await` 事件消费练习。
 - [ ] 完成 `AbortController` 取消练习。
 - [ ] 交付可运行、可取消、异常可观察的终端小程序。

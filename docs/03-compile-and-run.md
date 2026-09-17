@@ -114,4 +114,4 @@ node dist/index.js
 - 学习者说明：`npx tsc` 将 TS 编译为 JS，`node dist/index.js` 执行生成的 JS。
 - 指导者回读当前 `src/index.ts`，确认临时实验代码已移除，事件示例保留。
 
-事件联合类型和类型收窄已另行验收；下一学习单元为 `Promise`、`async/await` 和异常传播。
+事件联合类型、类型收窄以及 `Promise`、`async/await` 和异常传播已分别验收；下一学习单元为异步生成器和 `for await`。
