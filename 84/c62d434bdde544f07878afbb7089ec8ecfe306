@@ -1,0 +1,47 @@
+src/index.ts
+  h_822e68aee7a457 26-28,31-36,42,44-47,50-51,57
+  h_822e68aee7a457 43
+docs/agent-development-learning-plan.md
+  s_f24003c5cb17b4::t_669f815d033a76 23,133-134
+docs/agent-coordination-guide.md
+  s_f24003c5cb17b4::t_669f815d033a76 100,104
+docs/qa-notes.md
+  s_80cbfd075efc5b::t_f02bae926668f6 52,54,58,66,68,70,72-92,96,98,102,104,124,126,128,144,147-148,151,163-164,173
+  s_80cbfd075efc5b::t_5707ed439dce9d 130-139,141-143,145-146,153-162,165-172
+  s_80cbfd075efc5b::t_a1a58ea06083c2 107-113,116-120,122
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "84c62d434bdde544f07878afbb7089ec8ecfe306",
+  "prompts": {},
+  "humans": {
+    "h_822e68aee7a457": {
+      "author": "Can <can@MacBook-Air-M5.local>"
+    }
+  },
+  "sessions": {
+    "s_80cbfd075efc5b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0fa25b1b-e9f0-4745-aa8b-045d5b43660a",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Can <can@MacBook-Air-M5.local>",
+      "custom_attributes": {
+        "employee_email": "licanxin@gofo.com"
+      }
+    },
+    "s_f24003c5cb17b4": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0aee4-d53a-7423-aa5e-ac984c609b0d",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Can <can@MacBook-Air-M5.local>",
+      "custom_attributes": {
+        "employee_email": "licanxin@gofo.com"
+      }
+    }
+  }
+}
