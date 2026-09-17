@@ -30,10 +30,8 @@
 - `src/index.ts`
 - `package.json`
 - `tsconfig.json`
-- `docs/01-initialize-project.md`
-- `docs/02-install-typescript.md`
-- `docs/03-compile-and-run.md`
 - `docs/agent-development-learning-plan.md`
+- `docs/qa-notes.md`
 
 如果用户在消息中引用了其他 Agent 任务，必须先读取对应任务内容，再使用其中的信息。
 
@@ -89,19 +87,11 @@
 
 以下状态以当前工作区和已经收到的用户输出为准：
 
-- [x] npm 项目初始化，并确认 Node.js 和 npm 可用。
-- [x] 安装 TypeScript、`@types/node`，并设置 ESM 模块类型。
-- [x] 配置 `tsconfig.json`，编译并运行最小 TypeScript 程序。
-  2026-09-17 已核对正常运行、类型擦除、`TS2322` 实验和恢复检查，证据见 `docs/03-compile-and-run.md`。
-- [x] 使用 `TextEvent`、`ToolStartEvent` 和 `AgentEvent` 表达两种事件。
-- [x] 根据 `event.type` 进行类型收窄并格式化事件。
-  用户已反馈正常输出和 `TS2339` 实验结果，恢复实验代码后 `npx tsc --noEmit` 通过。
-- [x] 使用 `Promise`、`async/await` 和异常处理。
-- [x] 使用异步生成器和 `for await` 消费事件流。
-- [ ] 使用 `AbortController` 取消事件流。
-- [ ] 完成阶段 0 的可运行、可取消、异常可观察小程序。
+- [x] 阶段 0：掌握这条链路需要的 TypeScript。
+  2026-09-17 全部 9 个小步骤已完成验收，详见 `docs/agent-development-learning-plan.md`。
+- [ ] 阶段 1：完全不依赖真实模型的 Agent 循环。
 
-下一学习单元为 `AbortController` 取消事件流练习；只有用户明确要求继续时，才安排该练习。
+下一学习单元为阶段 1；只有用户明确要求继续时，才安排该阶段的练习。
 
 ## 7. 后续任务拆分方式
 
@@ -119,15 +109,15 @@
 | 通过条件 | 说明什么情况下可以标记 `[x]` |
 | 下一步 | 只说明紧邻的后续单元，不提前展开实现 |
 
-推荐的阶段 0 顺序如下：
+推荐的阶段 1 顺序如下：
 
-1. 类型收窄：当前已完成，状态以第 6 节为准。
-2. `Promise`、`async/await` 和异常传播。
-3. 异步生成器和 `for await`。
-4. `AbortController` 和取消传播。
-5. 阶段 0 的完整小程序验收。
+1. 读懂用户请求、模型响应和工具调用之间的关系。
+2. 实现模拟模型和回显工具。
+3. 实现消息历史和串行工具执行。
+4. 输出运行事件和最大轮次限制。
+5. 完成阶段 1 的六项验收。
 
-完成阶段 0 后，再进入模拟模型和工具调用循环。没有完成模拟循环前，不接入真实模型、TUI 或 MCP。
+完成阶段 1 后，再接入真实模型。没有完成模拟循环前，不接入真实模型、TUI 或 MCP。
 
 ## 8. 每一步的验收流程
 

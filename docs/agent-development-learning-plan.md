@@ -21,12 +21,12 @@
 - [x] 根据 `event.type` 收窄类型并分别格式化事件。
 - [x] 使用 `Promise`、`async/await` 和异常处理。
 - [x] 使用异步迭代和 `for await` 消费事件流。
-- [ ] 使用 `AbortController` 取消事件流。
-- [ ] 完成阶段 0 的可运行、可取消小程序。
+- [x] 使用 `AbortController` 取消事件流。
+- [x] 完成阶段 0 的可运行、可取消小程序。
 
 ### 阶段总览
 
-- [ ] 阶段 0：掌握这条链路需要的 TypeScript。
+- [x] 阶段 0：掌握这条链路需要的 TypeScript。
 - [ ] 阶段 1：完全不依赖真实模型的 Agent 循环。
 - [ ] 阶段 2：真实流式模型与可靠取消。
 - [ ] 阶段 3：把核心接入真正的 TUI。
@@ -124,7 +124,7 @@ flowchart TD
 - [x] 初始化 npm 项目并确认 Node.js、npm 可用。
 - [x] 安装 TypeScript 和 Node.js 类型声明，设置 ESM 模块类型。
 - [x] 配置 `tsconfig.json`，编译并运行最小 TypeScript 程序。
-  2026-09-17：正常编译运行、类型擦除、`TS2322` 实验及恢复检查已核对，详见 [第 3 步验收记录](03-compile-and-run.md)。
+  2026-09-17：正常编译运行、类型擦除、`TS2322` 实验及恢复检查已核对。
 - [x] 完成事件联合类型：文本事件和工具开始事件。
 - [x] 完成 `event.type` 类型收窄，并为不同事件生成不同文本。
   `src/index.ts` 已通过正常运行和错误实验：错误分支得到 `TS2339`，恢复后 `npx tsc --noEmit` 通过。
@@ -132,8 +132,11 @@ flowchart TD
   2026-09-17：正常流程、异常流程和恢复流程均已运行验证，异常传播解释已核对。
 - [x] 完成异步生成器和 `for await` 事件消费练习。
   2026-09-17：正常、异常、恢复三次运行均已核对；已确认 Promise 单次完成，异步生成器可按 `yield` 多次产生事件。
-- [ ] 完成 `AbortController` 取消练习。
-- [ ] 交付可运行、可取消、异常可观察的终端小程序。
+- [x] 完成 `AbortController` 取消练习。
+  2026-09-17：协作式取消、`signal.aborted` 检查点、`setTimeout` 传入 signal 立即中断、`error.name === "AbortError"` 跨版本兼容判断均已运行验证。
+- [x] 交付可运行、可取消、异常可观察的终端小程序。
+  2026-09-17：整合联合类型（三种事件）、switch 类型收窄、异步生成器、AbortController 取消、异常传播。
+  正常模式输出全部 7 个事件；取消模式 600ms 后中断，事件流被取消；异常模式第 3 个事件后抛出异常，调用方捕获并报告。三项验收全部通过。
 
 学习：联合类型与类型收窄、Promise、async/await、异步迭代、ESM、异常、AbortController。
 重点理解 `type` 字段区分不同消息，以及 `for await` 消费流式事件。

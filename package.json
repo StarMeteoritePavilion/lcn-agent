@@ -13,5 +13,16 @@
   "devDependencies": {
     "@types/node": "^22.20.3",
     "typescript": "^7.0.2"
-  }
+  },
+  "directories": {
+    "doc": "docs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/StarMeteoritePavilion/lcn-agent.git"
+  },
+  "bugs": {
+    "url": "https://github.com/StarMeteoritePavilion/lcn-agent/issues"
+  },
+  "homepage": "https://github.com/StarMeteoritePavilion/lcn-agent#readme"
 }
