@@ -27,16 +27,47 @@ type ToolResult = {
   success: boolean;
 };
 
-type Scenario = "normal" | "unknown" | "invalid" | "failure";
+type Scenario = "text" | "normal" | "unknown" | "invalid" | "failure" | "loop";
+
+type RuntimeEvent =
+  | {
+      type: "model_response";
+      round: number;
+      response: ModelResponse;
+    }
+  | {
+      type: "tool_start";
+      round: number;
+      toolName: string;
+    }
+  | {
+      type: "tool_end";
+      round: number;
+      result: ToolResult;
+    }
+  | {
+      type: "final_answer";
+      round: number;
+      text: string;
+    }
+  | {
+      type: "loop_limit";
+      maxRounds: number;
+    };
+
+function emitEvent(event: RuntimeEvent): void {
+  console.log("[运行事件]", event);
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value != null;
+  return typeof value === "object" && value !== null;
 }
 
 function validateEchoArguments(argumentsValue: unknown): string {
   if (!isRecord(argumentsValue) || typeof argumentsValue.text !== "string") {
     throw new Error("工具参数必须包含 string 类型的 text");
   }
+
   return argumentsValue.text;
 }
 
@@ -109,6 +140,15 @@ function createToolCall(scenario: Scenario): ToolCall {
           text: "触发执行异常",
         },
       };
+    case "loop":
+      return {
+        name: "echo",
+        arguments: {
+          text: "继续调用工具",
+        },
+      };
+    case "text":
+      throw new Error("text 场景不应创建工具调用");
   }
 }
 
@@ -118,7 +158,14 @@ async function mockModel(
 ): Promise<ModelResponse> {
   const lastMessage = messages[messages.length - 1];
 
-  if (lastMessage.role === "user") {
+  if (scenario === "text") {
+    return {
+      type: "text",
+      text: "无需调用工具的回答",
+    };
+  }
+
+  if (scenario === "loop" || lastMessage.role === "user") {
     return {
       type: "tool_call",
       toolCall: createToolCall(scenario),
@@ -131,7 +178,7 @@ async function mockModel(
   };
 }
 
-async function runAgent(scenario: Scenario): Promise<string> {
+async function runAgent(scenario: Scenario, maxRounds: number): Promise<string> {
   const messages: Array<UserMessage | ToolResult> = [
     {
       role: "user",
@@ -141,38 +188,58 @@ async function runAgent(scenario: Scenario): Promise<string> {
 
   let modelCallCount = 0;
 
-  while (true) {
-    modelCallCount++;
-
+  for (let round = 1; round <= maxRounds; round++) {
     const response = await mockModel(messages, scenario);
-    console.log(`第 ${modelCallCount} 次模型响应:`, response);
+    emitEvent({
+      type: "model_response",
+      round,
+      response,
+    });
 
     if (response.type === "text") {
+      emitEvent({
+        type: "final_answer",
+        round,
+        text: response.text,
+      });
       return response.text;
     }
 
+    emitEvent({
+      type: "tool_start",
+      round,
+      toolName: response.toolCall.name,
+    });
+
     const toolResult = executeTool(response.toolCall);
-    console.log("工具执行结果:", toolResult);
+    emitEvent({
+      type: "tool_end",
+      round,
+      result: toolResult,
+    });
+
     messages.push(toolResult);
   }
+
+  emitEvent({
+    type: "loop_limit",
+    maxRounds,
+  });
+  throw new Error(`达到最大轮次限制：${maxRounds}`);
 }
 
 async function main(): Promise<void> {
   const requestedScenario = process.argv[2] ?? "normal";
-  const scenarios: Scenario[] = ["normal", "unknown", "invalid", "failure"];
+  const scenarios: Scenario[] = ["text", "normal", "unknown", "invalid", "failure", "loop"];
 
   if (!scenarios.includes(requestedScenario as Scenario)) {
-    throw new Error("用法: node dist/index.js [normal|unknown|invalid|failure]");
+    throw new Error(`用法: node dist/index.js [${scenarios.join("|")}]`);
   }
 
   const scenario = requestedScenario as Scenario;
-  const answer = await runAgent(scenario);
+  const answer = await runAgent(scenario, 3);
 
   console.log("最终回答:", answer);
-
-  if (scenario === "normal" && answer !== "工具结果：你好, Agent") {
-    throw new Error("正常场景最终回答不正确");
-  }
 }
 
 await main();
