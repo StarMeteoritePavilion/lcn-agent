@@ -9,6 +9,8 @@
 ### TypeScript / JavaScript 语法
 - [03 AsyncGenerator 类型标注与底层操作](#2026-09-17-03-asyncgenerator-类型标注与底层操作)
 - [04 对象字面量属性名引号与尾逗号](#2026-09-17-04-对象字面量属性名引号与尾逗号)
+- [05 函数类型别名的语义与用法](#2026-09-18-05-函数类型别名的语义与用法)
+- [06 对象字面量属性简写与自定义 key](#2026-09-18-06-对象字面量属性简写与自定义-key)
 
 ---
 
@@ -218,3 +220,169 @@ ES5+ 合法语法。好处是增删元素时 git diff 更干净（只改一行�
 大多数开源项目通过 Prettier 强制尾逗号，属性名不加引号。
 
 **总结：** 不加引号 + 加尾逗号是当前开源社区的事实标准。合法标识符加引号仅在从 JSON 复制粘贴时常见，实际 TS/JS 代码中不推荐。
+
+---
+
+## 2026-09-18-05 函数类型别名的语义与用法
+
+**问题：** `type EcholTool = (text: string) => ToolResult;` 这种写法展开说明一下，实际语义是什么？
+
+**答案：**
+
+### 语法结构
+
+```ts
+type EcholTool = (text: string) => ToolResult;
+//   ^^^^^^^^    ^^^^^^^^^^^^^^    ^^^^^^^^^^
+//   类型名       参数列表            返回值类型
+```
+
+这是 TypeScript 的**函数类型别名（Function Type Alias）**。实际语义：定义了一个类型，描述"接收一个 `string` 参数、返回 `ToolResult` 的函数"的形状。它本身不创建任何函数，只是一个"合同模板"。
+
+### 类比 Java
+
+对应 Java 中的函数式接口：
+
+```java
+@FunctionalInterface
+interface EchoTool {
+    ToolResult apply(String text);
+}
+```
+
+### 用法
+
+任何签名匹配的函数都能赋给这个类型的变量：
+
+```ts
+const tool: EcholTool = echoTool;  // ✅ 签名匹配
+const result = tool("hello");      // 等价于 echoTool("hello")
+```
+
+不匹配的函数会报编译错误：
+
+```ts
+const bad1: EcholTool = (n: number) => ({ ... });  // ❌ 参数类型不对
+const bad2: EcholTool = (text: string) => text;    // ❌ 返回 string 不是 ToolResult
+```
+
+### 典型使用场景：工具注册表
+
+函数类型别名最常见的用途是作为参数或注册表的类型约束：
+
+```ts
+type ToolFn = (text: string) => ToolResult;
+
+const echo: ToolFn = (text) => ({
+  role: "tool", toolName: "echo", output: text,
+});
+const upper: ToolFn = (text) => ({
+  role: "tool", toolName: "upper", output: text.toUpperCase(),
+});
+
+// 注册表：工具名 → 执行函数
+const registry: Record<string, ToolFn> = { echo, upper };
+
+// Agent 循环中根据模型返回的工具名动态调用
+function executeTool(name: string, text: string): ToolResult {
+  const tool = registry[name];
+  if (!tool) return { role: "tool", toolName: name, output: "未知工具" };
+  return tool(text);
+}
+```
+
+### 另一种等价写法
+
+除了箭头函数语法，还可以用对象形式的 call signature：
+
+```ts
+type EcholTool = {
+  (text: string): ToolResult;
+};
+```
+
+效果完全一样，箭头写法是社区主流。对象形式一般在需要同时描述属性和可调用时才用：
+
+```ts
+type EcholTool = {
+  (text: string): ToolResult;
+  description: string;  // 函数上还挂了一个属性
+};
+```
+
+### 关键区别：结构化类型 vs 名义类型
+
+| 概念 | TypeScript | Java |
+|------|-----------|------|
+| 函数类型别名 | `type F = (x: string) => R` | `@FunctionalInterface interface F` |
+| 匹配方式 | 结构化类型（签名匹配即可） | 名义类型（必须 implements） |
+
+TypeScript 是结构化类型系统（duck typing），只要函数签名匹配就行，不需要显式声明 `implements`。
+
+**总结：** 函数类型别名定义函数的"形状"，对应 Java 的函数式接口。核心价值在于约束一组函数遵守同一签名，使 Agent 循环可以不关心具体工具、统一 `tool(text)` 调用。
+
+---
+
+## 2026-09-18-06 对象字面量属性简写与自定义 key
+
+**问题：** `Record<string, ToolFn>` 中用 `{ echo, upper, reverse }` 注册工具，key 就是变量名吗？有办法主动声明为别的吗？
+
+**答案：**
+
+### 属性简写（Shorthand Property）
+
+`{ echo, upper, reverse }` 是 ES6 的属性简写，等价于：
+
+```ts
+{ echo: echo, upper: upper, reverse: reverse }
+```
+
+变量名直接变成 key。
+
+### 显式指定 key
+
+要用别的名字，显式写 key：
+
+```ts
+const registry: Record<string, ToolFn> = {
+  "回声": echo,
+  "大写转换": upper,
+  "文本反转": reverse,
+};
+registry["回声"]("hello");  // 调用的是 echo 函数
+```
+
+也可以混用：
+
+```ts
+const registry: Record<string, ToolFn> = {
+  echo,                    // 简写，key 是 "echo"
+  "to-upper": upper,       // 自定义 key（含连字符，必须加引号）
+  rev: reverse,            // 自定义 key，合法标识符不用加引号
+};
+```
+
+### 动态 key（计算属性名）
+
+key 还可以是变量或表达式，用 `[]` 包裹：
+
+```ts
+const toolName = "echo_v2";
+const registry: Record<string, ToolFn> = {
+  [toolName]: echo,                    // key 是 "echo_v2"
+  [`${toolName}_backup`]: echo,        // key 是 "echo_v2_backup"
+};
+```
+
+对应 Java 就是 `map.put(toolName, echo)` —— 运行时决定 key。
+
+### 四种写法汇总
+
+| 写法 | key 值 | 说明 |
+|------|--------|------|
+| `{ echo }` | `"echo"` | 简写，变量名就是 key |
+| `{ myName: echo }` | `"myName"` | 显式指定 key |
+| `{ "my-name": echo }` | `"my-name"` | 非合法标识符需加引号 |
+| `{ [variable]: echo }` | 变量的值 | 动态计算 key |
+
+**总结：** 属性简写以变量名为 key；显式写 `key: value` 或用 `[expr]` 计算属性名可以自定义任意 key。
