@@ -1,0 +1,24 @@
+docs/agent-coordination-guide.md
+  s_f24003c5cb17b4::t_0102103bbde6f1 24,28,32,34-37,93,96
+docs/agent-development-learning-plan.md
+  s_f24003c5cb17b4::t_0102103bbde6f1 40,387,389,391-398
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "8f748460ce70e3055dee0b4745ec44e3c407ae77",
+  "prompts": {},
+  "sessions": {
+    "s_f24003c5cb17b4": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0aee4-d53a-7423-aa5e-ac984c609b0d",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "lcx29 <can@MacBook-Air-M5.local>",
+      "custom_attributes": {
+        "employee_email": "licanxin@gofo.com"
+      }
+    }
+  }
+}
