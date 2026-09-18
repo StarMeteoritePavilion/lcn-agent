@@ -1,152 +1,245 @@
-import { setTimeout } from "node:timers/promises";
+type UserMessage = {
+  role: "user";
+  content: string;
+};
 
-type TextEvent = {
-  // 对象字段, 类似于常量值
+type ToolCall = {
+  name: string;
+  arguments: unknown;
+};
+
+type ModelTextResponse = {
   type: "text";
   text: string;
 };
 
-type ToolStartEvent = {
-  type: "tool_start";
-  toolName: string;
+type ModelToolResponse = {
+  type: "tool_call";
+  toolCall: ToolCall;
 };
 
-type ToolEndEvent = {
-  type: "tool_end";
+type ModelResponse = ModelTextResponse | ModelToolResponse;
+
+type ToolResult = {
+  role: "tool";
   toolName: string;
+  output: string;
   success: boolean;
 };
 
-// 联合类型, 值可以符合这两种类型中的任意一种
-type AgentEvent = TextEvent | ToolStartEvent | ToolEndEvent;
+type Scenario = "text" | "normal" | "unknown" | "invalid" | "failure" | "loop";
 
-function formatEvent(event: AgentEvent): string {
-  switch (event.type) {
-    case "text":
-      return `[文本] ${event.text}`;
-    case "tool_start":
-      return `[工具开始] ${event.toolName}`;
-    case "tool_end":
-      return `[工具结束] ${event.toolName} ${event.success ? "成功" : "失败"}`;
-  }
-}
-
-// 事件列表，模拟一个较长的 Agent 执行过程
-const EVENTS: AgentEvent[] = [
-  { type: "text", text: "正在分析你的问题" },
-  { type: "tool_start", toolName: "read_file" },
-  { type: "tool_end", toolName: "read_file", success: true },
-  { type: "text", text: "已读取文件内容" },
-  { type: "tool_start", toolName: "write_file" },
-  { type: "tool_end", toolName: "write_file", success: true },
-  { type: "text", text: "任务完成" },
-];
-
-async function* createEventStream(
-  signal: AbortSignal,
-  shouldFail: boolean,
-): AsyncGenerator<AgentEvent> {
-  for (let i = 0; i < EVENTS.length; i++) {
-    if (signal.aborted) {
-      console.log("  (事件流检测到取消信号，停止产生新事件)");
-      return;
+type RuntimeEvent =
+  | {
+      type: "model_response";
+      round: number;
+      response: ModelResponse;
     }
-
-    // 模拟异常：在第 3 个事件后抛出错误
-    if (shouldFail && i === 3) {
-      throw new Error("模拟的工具执行异常：文件不存在");
+  | {
+      type: "tool_start";
+      round: number;
+      toolName: string;
     }
+  | {
+      type: "tool_end";
+      round: number;
+      result: ToolResult;
+    }
+  | {
+      type: "final_answer";
+      round: number;
+      text: string;
+    }
+  | {
+      type: "loop_limit";
+      maxRounds: number;
+    };
 
-    await setTimeout(300, undefined, { signal });
-    yield EVENTS[i];
-  }
+function emitEvent(event: RuntimeEvent): void {
+  console.log("[运行事件]", event);
 }
 
-async function runNormal(signal: AbortSignal): Promise<void> {
-  console.log("=== 正常模式：完整执行所有事件 ===\n");
-
-  let count = 0;
-  for await (const event of createEventStream(signal, false)) {
-    count += 1;
-    console.log(`  #${count} ${formatEvent(event)}`);
-  }
-
-  console.log(`\n完成，共 ${count} 个事件`);
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }
 
-async function runCancel(signal: AbortSignal): Promise<void> {
-  console.log("=== 取消模式：600ms 后取消 ===\n");
+function validateEchoArguments(argumentsValue: unknown): string {
+  if (!isRecord(argumentsValue) || typeof argumentsValue.text !== "string") {
+    throw new Error("工具参数必须包含 string 类型的 text");
+  }
 
-  const controller = new AbortController();
+  return argumentsValue.text;
+}
 
-  // 父信号取消时也取消子信号
-  signal.addEventListener("abort", () => controller.abort(), { once: true });
+function echoTool(argumentsValue: unknown): ToolResult {
+  const text = validateEchoArguments(argumentsValue);
 
-  // 600ms 后取消，预期在第 2 个事件之后、第 3 个事件之前
-  const cancelTimer = globalThis.setTimeout(() => {
-    console.log("  (用户发出取消信号)");
-    controller.abort();
-  }, 600);
+  if (text === "触发执行异常") {
+    throw new Error("echo 工具执行失败");
+  }
+
+  return {
+    role: "tool",
+    toolName: "echo",
+    output: text,
+    success: true,
+  };
+}
+
+function executeTool(toolCall: ToolCall): ToolResult {
+  if (toolCall.name !== "echo") {
+    return {
+      role: "tool",
+      toolName: toolCall.name,
+      output: "未知工具",
+      success: false,
+    };
+  }
 
   try {
-    let count = 0;
-    for await (const event of createEventStream(controller.signal, false)) {
-      count += 1;
-      console.log(`  #${count} ${formatEvent(event)}`);
-    }
-    console.log(`\n取消后正常结束，共 ${count} 个事件（少于 ${EVENTS.length}）`);
+    return echoTool(toolCall.arguments);
   } catch (error) {
-    if (error instanceof Error && error.name === "AbortError") {
-      console.log("\n事件流已被取消");
-    } else {
-      throw error;
-    }
-  } finally {
-    clearTimeout(cancelTimer);
+    const message = error instanceof Error ? error.message : "未知执行错误";
+
+    return {
+      role: "tool",
+      toolName: toolCall.name,
+      output: message,
+      success: false,
+    };
   }
 }
 
-async function runError(signal: AbortSignal): Promise<void> {
-  console.log("=== 异常模式：第 3 个事件后抛出异常 ===\n");
+function createToolCall(scenario: Scenario): ToolCall {
+  switch (scenario) {
+    case "normal":
+      return {
+        name: "echo",
+        arguments: {
+          text: "你好, Agent",
+        },
+      };
+    case "unknown":
+      return {
+        name: "missing_tool",
+        arguments: {
+          text: "你好, Agent",
+        },
+      };
+    case "invalid":
+      return {
+        name: "echo",
+        arguments: {
+          text: 123,
+        },
+      };
+    case "failure":
+      return {
+        name: "echo",
+        arguments: {
+          text: "触发执行异常",
+        },
+      };
+    case "loop":
+      return {
+        name: "echo",
+        arguments: {
+          text: "继续调用工具",
+        },
+      };
+    case "text":
+      throw new Error("text 场景不应创建工具调用");
+  }
+}
 
-  let count = 0;
-  for await (const event of createEventStream(signal, true)) {
-    count += 1;
-    console.log(`  #${count} ${formatEvent(event)}`);
+async function mockModel(
+  messages: Array<UserMessage | ToolResult>,
+  scenario: Scenario,
+): Promise<ModelResponse> {
+  const lastMessage = messages[messages.length - 1];
+
+  if (scenario === "text") {
+    return {
+      type: "text",
+      text: "无需调用工具的回答",
+    };
   }
 
-  console.log(`\n完成，共 ${count} 个事件`);
+  if (scenario === "loop" || lastMessage.role === "user") {
+    return {
+      type: "tool_call",
+      toolCall: createToolCall(scenario),
+    };
+  }
+
+  return {
+    type: "text",
+    text: `工具结果：${lastMessage.output}`,
+  };
+}
+
+async function runAgent(scenario: Scenario, maxRounds: number): Promise<string> {
+  const messages: Array<UserMessage | ToolResult> = [
+    {
+      role: "user",
+      content: "你好, Agent",
+    },
+  ];
+
+  let modelCallCount = 0;
+
+  for (let round = 1; round <= maxRounds; round++) {
+    const response = await mockModel(messages, scenario);
+    emitEvent({
+      type: "model_response",
+      round,
+      response,
+    });
+
+    if (response.type === "text") {
+      emitEvent({
+        type: "final_answer",
+        round,
+        text: response.text,
+      });
+      return response.text;
+    }
+
+    emitEvent({
+      type: "tool_start",
+      round,
+      toolName: response.toolCall.name,
+    });
+
+    const toolResult = executeTool(response.toolCall);
+    emitEvent({
+      type: "tool_end",
+      round,
+      result: toolResult,
+    });
+
+    messages.push(toolResult);
+  }
+
+  emitEvent({
+    type: "loop_limit",
+    maxRounds,
+  });
+  throw new Error(`达到最大轮次限制：${maxRounds}`);
 }
 
 async function main(): Promise<void> {
-  const mode = process.argv[2] ?? "normal";
+  const requestedScenario = process.argv[2] ?? "normal";
+  const scenarios: Scenario[] = ["text", "normal", "unknown", "invalid", "failure", "loop"];
 
-  // 顶层 AbortController，真实场景中用于接收进程信号
-  const controller = new AbortController();
-
-  try {
-    switch (mode) {
-      case "normal":
-        await runNormal(controller.signal);
-        break;
-      case "cancel":
-        await runCancel(controller.signal);
-        break;
-      case "error":
-        await runError(controller.signal);
-        break;
-      default:
-        console.log("用法: node dist/index.js [normal|cancel|error]");
-        break;
-    }
-  } catch (error) {
-    if (error instanceof Error) {
-      console.error(`\n处理失败: ${error.message}`);
-    } else {
-      console.error("\n处理失败", error);
-    }
-    process.exitCode = 1;
+  if (!scenarios.includes(requestedScenario as Scenario)) {
+    throw new Error(`用法: node dist/index.js [${scenarios.join("|")}]`);
   }
+
+  const scenario = requestedScenario as Scenario;
+  const answer = await runAgent(scenario, 3);
+
+  console.log("最终回答:", answer);
 }
 
 await main();
