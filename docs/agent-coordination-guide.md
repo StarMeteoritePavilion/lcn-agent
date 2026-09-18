@@ -21,15 +21,20 @@
 
 1. 本文档：确认协作规则和当前进度。
 2. `docs/agent-development-learning-plan.md`：确认完整路线、阶段和勾选状态。
-3. 与当前步骤对应的 `docs/*.md`：确认该步骤的目标、命令和验收条件。
+3. 当前步骤涉及的现存文档：确认目标、命令和验收条件。
 4. 当前源码、配置和依赖文件：确认实际实现，不根据文档猜测。
 5. `/Users/can/Projects/AI/pi` 中计划引用的源码和测试：只在需要核验 Pi 行为时读取。
 
-当前项目的基础文件包括：
+当前项目文件包括：
 
 - `src/index.ts`
 - `package.json`
+- `package-lock.json`
 - `tsconfig.json`
+- `README.md`
+- `.editorconfig`
+- `.prettierrc`
+- `docs/agent-coordination-guide.md`
 - `docs/agent-development-learning-plan.md`
 - `docs/qa-notes.md`
 
@@ -85,10 +90,10 @@
 
 ## 6. 当前进度基线
 
-以下状态以当前工作区和已经收到的用户输出为准：
+当前状态以工作区中的源码、配置、文档和已核对的运行结果为准：
 
 - [x] 阶段 0：掌握这条链路需要的 TypeScript。
-  2026-09-17 全部 9 个小步骤已完成验收，详见 `docs/agent-development-learning-plan.md`。
+  9 个小步骤均已完成验收，具体勾选和证据见 `docs/agent-development-learning-plan.md`。
 - [ ] 阶段 1：完全不依赖真实模型的 Agent 循环。
 
 下一学习单元为阶段 1；只有用户明确要求继续时，才安排该阶段的练习。
