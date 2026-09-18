@@ -11,6 +11,9 @@
 - [04 对象字面量属性名引号与尾逗号](#2026-09-17-04-对象字面量属性名引号与尾逗号)
 - [05 函数类型别名的语义与用法](#2026-09-18-05-函数类型别名的语义与用法)
 - [06 对象字面量属性简写与自定义 key](#2026-09-18-06-对象字面量属性简写与自定义-key)
+- [07 类型谓词（Type Predicate）与用户自定义类型守卫](#2026-09-18-07-类型谓词type-predicate与用户自定义类型守卫)
+- [08 类型收窄的三种机制：is、asserts、函数重载](#2026-09-18-08-类型收窄的三种机制isasserts函数重载)
+- [09 TypeScript 枚举写法与字符串联合类型的选择](#2026-09-18-09-typescript-枚举写法与字符串联合类型的选择)
 
 ---
 
@@ -386,3 +389,213 @@ const registry: Record<string, ToolFn> = {
 | `{ [variable]: echo }` | 变量的值 | 动态计算 key |
 
 **总结：** 属性简写以变量名为 key；显式写 `key: value` 或用 `[expr]` 计算属性名可以自定义任意 key。
+
+---
+
+## 2026-09-18-07 类型谓词（Type Predicate）与用户自定义类型守卫
+
+**问题：** `function isRecord(value: unknown): value is Record<string, unknown>` 这个是什么语法？
+
+**答案：**
+
+这是 TypeScript 的**类型谓词（Type Predicate）**，也叫用户自定义类型守卫（User-Defined Type Guard）。
+
+### 语法结构
+
+```ts
+function isRecord(value: unknown): value is Record<string, unknown> {
+//                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+//                                 返回值位置写 "参数名 is 类型"
+  return typeof value === "object" && value != null;
+}
+```
+
+| 部分 | 含义 |
+|------|------|
+| `value` | 指向参数名，告诉编译器"我在断言哪个变量" |
+| `is` | TypeScript 专用关键字 |
+| `Record<string, unknown>` | 断言的目标类型 |
+
+运行时返回的还是 `boolean`，但 `is` 语法额外告诉编译器：如果返回 `true`，那 `value` 在后续代码中可以当作 `Record<string, unknown>` 来用。
+
+### 对比普通 boolean 返回值
+
+```ts
+// ❌ 普通 boolean，编译器不知道 true 意味着什么
+function isRecord(value: unknown): boolean { ... }
+if (isRecord(data)) {
+  console.log(data.name);  // ❌ data 仍然是 unknown
+}
+
+// ✅ 类型谓词，编译器在 true 分支自动收窄
+function isRecord(value: unknown): value is Record<string, unknown> { ... }
+if (isRecord(data)) {
+  console.log(data.name);  // ✅ data 被收窄为 Record<string, unknown>
+}
+```
+
+### 类比 Java
+
+最接近的是 `instanceof` 配合模式匹配（Java 16+）：
+
+```java
+if (data instanceof Map<?, ?> map) {
+    System.out.println(map.get("name"));
+}
+```
+
+区别是 Java 的 `instanceof` 是语言内置的，TypeScript 的 `instanceof` 只能判断 class 实例。对于结构化类型判断（比如"是不是非 null 对象"）必须自己写函数 + 类型谓词。
+
+### 为什么需要这个函数
+
+JavaScript 中 `typeof null === "object"` 是历史遗留 bug，所以判断"真正的对象"必须同时排除 `null`：
+
+```ts
+typeof value === "object" && value != null
+```
+
+封装成带类型谓词的函数后，所有调用处都能自动享受类型收窄。
+
+**总结：** 类型谓词 `value is Type` 写在返回值位置，运行时返回 boolean，编译时在 true 分支自动收窄参数类型。适用于 `instanceof` 搞不定的结构化类型判断。
+
+---
+
+## 2026-09-18-08 类型收窄的三种机制：is、asserts、函数重载
+
+**问题：** 类型谓词 `value is Type` 是否只能在返回值为 boolean 时使用？如果方法返回 object 是否也可以这样写？
+
+**答案：**
+
+`value is Type` 只能用在返回 `boolean` 的函数上。但 TypeScript 提供了其他机制来处理"返回对象时收窄类型"的需求。
+
+### 1. 返回对象 → 用函数重载（Overloads）
+
+```ts
+function parse(input: "number"): number;
+function parse(input: "string"): string;
+function parse(input: string): number | string {
+  if (input === "number") return 42;
+  return "hello";
+}
+
+const a = parse("number");  // 编译器知道 a 是 number
+const b = parse("string");  // 编译器知道 b 是 string
+```
+
+### 2. 断言不通过就抛异常 → 用 asserts
+
+如果函数不返回值，而是"校验失败就抛异常"，可以用 assertion function：
+
+```ts
+function assertIsRecord(value: unknown): asserts value is Record<string, unknown> {
+  if (typeof value !== "object" || value == null) {
+    throw new Error("不是对象");
+  }
+}
+
+const data: unknown = { name: "test" };
+assertIsRecord(data);
+console.log(data.name);  // ✅ data 已收窄为 Record<string, unknown>
+```
+
+对比 Java 就是常用的断言工具方法：
+
+```java
+Objects.requireNonNull(data);  // 过了这行，编译器知道 data 非 null
+```
+
+### 3. 三种机制对比
+
+| 机制 | 返回值 | 用法 | 场景 |
+|------|--------|------|------|
+| `value is Type` | `boolean` | `if (isX(v)) { ... }` | 条件分支里收窄 |
+| `asserts value is Type` | `void`（失败抛异常） | 调用后直接收窄 | 前置校验，不满足就中断 |
+| 函数重载 | 任意类型 | 根据参数类型推断返回类型 | 不同输入返回不同类型 |
+
+### 为什么 is 限定 boolean
+
+类型谓词在回答一个是/否问题——"这个值是不是某类型？"编译器需要明确的 `true`/`false` 来决定在哪个分支收窄类型。返回对象的函数无法表达这种二元判断，所以不支持。
+
+`asserts` 是另一种思路：不问是不是，而是断言它必须是——不是就抛异常，能走过去的代码就是安全的。
+
+**总结：** `is` 限定 boolean 返回值，`asserts` 适用于 void 前置校验，函数重载适用于不同输入返回不同类型。三者互补，覆盖不同的类型收窄场景。
+
+---
+
+## 2026-09-18-09 TypeScript 枚举写法与字符串联合类型的选择
+
+**问题：** TypeScript 有类似 Java 的枚举写法吗？`type Scenario = "text" | "normal" | "unknown" | "invalid" | "failure" | "loop"` 推荐怎么写比较好？
+
+**答案：**
+
+### TypeScript 原生 enum
+
+TypeScript 有 `enum` 关键字，但能力比 Java 枚举弱很多，只是常量映射，不能挂方法和自定义字段：
+
+```ts
+// 数字枚举（默认从 0 递增）
+enum Direction { Up, Down, Left, Right }
+
+// 字符串枚举
+enum Status { Active = "ACTIVE", Inactive = "INACTIVE" }
+```
+
+### 三种模拟 Java 枚举的方式
+
+**1. 字符串联合类型（最主流）** — 纯分支判断时用：
+
+```ts
+type Scenario = "text" | "normal" | "unknown" | "invalid" | "failure" | "loop";
+```
+
+**2. const 对象 + as const** — 需要挂字段时升级：
+
+```ts
+const Scenarios = {
+  text:    { description: "纯文本响应", maxTurns: 1 },
+  normal:  { description: "正常工具调用", maxTurns: 5 },
+  unknown: { description: "未知工具", maxTurns: 1 },
+} as const;
+
+type Scenario = keyof typeof Scenarios;
+// 等价于 "text" | "normal" | "unknown"
+```
+
+**3. class + static** — 需要方法时用，最像 Java 枚举：
+
+```ts
+class Planet {
+  static readonly Mercury = new Planet("Mercury", 3.303e23, 2.4397e6);
+  static readonly Earth   = new Planet("Earth",   5.976e24, 6.37814e6);
+  static readonly values  = [Planet.Mercury, Planet.Earth] as const;
+
+  private constructor(
+    readonly name: string,
+    readonly mass: number,
+    readonly radius: number,
+  ) {}
+
+  surfaceGravity(): number {
+    return (6.673e-11 * this.mass) / (this.radius * this.radius);
+  }
+}
+```
+
+### 选择标准
+
+| 场景 | 推荐 |
+|------|------|
+| 纯分支判断（switch/if） | 字符串联合类型 |
+| 需要挂描述、配置等字段 | `const + as const` |
+| 需要挂方法 | `class + static` |
+| 不推荐 | TS 原生 `enum` |
+
+### 为什么不推荐原生 enum
+
+TS 社区正在远离原生 `enum`，因为它是 TypeScript 少数会生成运行时代码的类型特性，与"类型擦除"原则矛盾。
+
+### Scenario 的结论
+
+当前 `type Scenario = "text" | "normal" | ...` 就是最地道的写法。只用于分支判断，不需要更重的方案。等将来需要挂字段时，升级为 `const + as const`，类型从 `keyof typeof` 自动推导，不用手动维护两份。
+
+**总结：** 字符串联合类型是 TS 中最常用的"枚举"替代方案，纯分支判断场景下比 enum、const 对象、class 都更简洁。按需升级即可。
