@@ -1,0 +1,25 @@
+docs/qa-notes.md
+  s_c2090bd0feaa2d::t_fcd5316b2f5d37 16
+  s_c2090bd0feaa2d::t_888cda367bf504 522-601
+  s_c2090bd0feaa2d::t_0f15457ce8125c 392-521
+  s_c2090bd0feaa2d::t_d4a217b0a84f1d 14-15
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "fdb1a002dc44449a70f9c9574abae4ce090eb51c",
+  "prompts": {},
+  "sessions": {
+    "s_c2090bd0feaa2d": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_f4cf57780ffen85sq0C2DEujQ1",
+        "model": "claude-opus-4-6-thinking"
+      },
+      "human_author": "lcx29 <can@MacBook-Air-M5.local>",
+      "custom_attributes": {
+        "employee_email": "licanxin@gofo.com"
+      }
+    }
+  }
+}
