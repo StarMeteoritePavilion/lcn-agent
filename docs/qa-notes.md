@@ -11,9 +11,8 @@
 - [04 对象字面量属性名引号与尾逗号](#2026-09-17-04-对象字面量属性名引号与尾逗号)
 - [05 函数类型别名的语义与用法](#2026-09-18-05-函数类型别名的语义与用法)
 - [06 对象字面量属性简写与自定义 key](#2026-09-18-06-对象字面量属性简写与自定义-key)
-- [07 类型谓词（Type Predicate）与用户自定义类型守卫](#2026-09-18-07-类型谓词type-predicate与用户自定义类型守卫)
-- [08 类型收窄的三种机制：is、asserts、函数重载](#2026-09-18-08-类型收窄的三种机制isasserts函数重载)
-- [09 TypeScript 枚举写法与字符串联合类型的选择](#2026-09-18-09-typescript-枚举写法与字符串联合类型的选择)
+- [07 类型谓词与类型收窄机制](#2026-09-18-07-类型谓词与类型收窄机制)
+- [08 TypeScript 枚举写法与字符串联合类型的选择](#2026-09-18-08-typescript-枚举写法与字符串联合类型的选择)
 
 ---
 
@@ -392,9 +391,9 @@ const registry: Record<string, ToolFn> = {
 
 ---
 
-## 2026-09-18-07 类型谓词（Type Predicate）与用户自定义类型守卫
+## 2026-09-18-07 类型谓词与类型收窄机制
 
-**问题：** `function isRecord(value: unknown): value is Record<string, unknown>` 这个是什么语法？
+**问题：** `function isRecord(value: unknown): value is Record<string, unknown>` 这个是什么语法？`value is Type` 是否只能在返回值为 boolean 时使用？返回 object 的方法能否这样写？
 
 **答案：**
 
@@ -456,33 +455,13 @@ typeof value === "object" && value != null
 
 封装成带类型谓词的函数后，所有调用处都能自动享受类型收窄。
 
-**总结：** 类型谓词 `value is Type` 写在返回值位置，运行时返回 boolean，编译时在 true 分支自动收窄参数类型。适用于 `instanceof` 搞不定的结构化类型判断。
+### is 只能用在 boolean 返回值上
 
----
+`value is Type` 限定返回 `boolean`，因为它在回答一个是/否问题——"这个值是不是某类型？"编译器需要明确的 `true`/`false` 来决定在哪个分支收窄。返回对象的函数无法表达这种二元判断。
 
-## 2026-09-18-08 类型收窄的三种机制：is、asserts、函数重载
+TypeScript 提供了另外两种机制来覆盖其他场景：
 
-**问题：** 类型谓词 `value is Type` 是否只能在返回值为 boolean 时使用？如果方法返回 object 是否也可以这样写？
-
-**答案：**
-
-`value is Type` 只能用在返回 `boolean` 的函数上。但 TypeScript 提供了其他机制来处理"返回对象时收窄类型"的需求。
-
-### 1. 返回对象 → 用函数重载（Overloads）
-
-```ts
-function parse(input: "number"): number;
-function parse(input: "string"): string;
-function parse(input: string): number | string {
-  if (input === "number") return 42;
-  return "hello";
-}
-
-const a = parse("number");  // 编译器知道 a 是 number
-const b = parse("string");  // 编译器知道 b 是 string
-```
-
-### 2. 断言不通过就抛异常 → 用 asserts
+### asserts：断言不通过就抛异常
 
 如果函数不返回值，而是"校验失败就抛异常"，可以用 assertion function：
 
@@ -504,7 +483,21 @@ console.log(data.name);  // ✅ data 已收窄为 Record<string, unknown>
 Objects.requireNonNull(data);  // 过了这行，编译器知道 data 非 null
 ```
 
-### 3. 三种机制对比
+### 函数重载：返回对象时根据输入推断类型
+
+```ts
+function parse(input: "number"): number;
+function parse(input: "string"): string;
+function parse(input: string): number | string {
+  if (input === "number") return 42;
+  return "hello";
+}
+
+const a = parse("number");  // 编译器知道 a 是 number
+const b = parse("string");  // 编译器知道 b 是 string
+```
+
+### 三种机制对比
 
 | 机制 | 返回值 | 用法 | 场景 |
 |------|--------|------|------|
@@ -512,17 +505,11 @@ Objects.requireNonNull(data);  // 过了这行，编译器知道 data 非 null
 | `asserts value is Type` | `void`（失败抛异常） | 调用后直接收窄 | 前置校验，不满足就中断 |
 | 函数重载 | 任意类型 | 根据参数类型推断返回类型 | 不同输入返回不同类型 |
 
-### 为什么 is 限定 boolean
-
-类型谓词在回答一个是/否问题——"这个值是不是某类型？"编译器需要明确的 `true`/`false` 来决定在哪个分支收窄类型。返回对象的函数无法表达这种二元判断，所以不支持。
-
-`asserts` 是另一种思路：不问是不是，而是断言它必须是——不是就抛异常，能走过去的代码就是安全的。
-
-**总结：** `is` 限定 boolean 返回值，`asserts` 适用于 void 前置校验，函数重载适用于不同输入返回不同类型。三者互补，覆盖不同的类型收窄场景。
+**总结：** 类型谓词 `value is Type` 限定 boolean 返回值，在 true 分支自动收窄；`asserts` 适用于 void 前置校验；函数重载适用于不同输入返回不同类型。三者互补，覆盖不同的类型收窄场景。
 
 ---
 
-## 2026-09-18-09 TypeScript 枚举写法与字符串联合类型的选择
+## 2026-09-18-08 TypeScript 枚举写法与字符串联合类型的选择
 
 **问题：** TypeScript 有类似 Java 的枚举写法吗？`type Scenario = "text" | "normal" | "unknown" | "invalid" | "failure" | "loop"` 推荐怎么写比较好？
 
