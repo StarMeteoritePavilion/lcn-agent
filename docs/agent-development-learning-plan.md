@@ -395,8 +395,11 @@ Pi 的 `commit/discard` 不能撤销扩展自行造成的文件和网络副作�
   2026-09-18：流式 chunk 使用 `delta.content` 增量拼接，`finish_reason` 区分 `stop`/`tool_calls`/`length`，取消通过 `AbortController` 的 `signal` 传入 SDK。
 - [x] 在不接入工具的前提下完成一条真实流式文本请求。
   2026-09-19：`src/index.ts` 流式请求正常输出，`finish_reason: stop`，退出码 0；模型名改为不存在值时得到 `BadRequestError`（400，`model_not_found`），恢复后类型检查通过。
+- [x] 完成一次包含工具调用的流式 Agent 循环。
+  2026-09-19：`src/index.ts` 使用 openai SDK 发起带 `tools` 定义的流式请求，按 `delta.index` 累积工具参数增量，`finish_reason: tool_calls` 时执行 echo 工具并回填结果，第 2 轮模型给出总结后 `finish_reason: stop` 结束。工具执行失败实验：失败信息回填后模型正常回应，程序不崩溃。`finish_reason: length` 时不执行工具。类型检查通过，退出码 0。
 
 阶段 2 的真实模型接入完成前，不进入 TUI 或 MCP 实现。
+下一步：用量展示、超时和主动取消。
 
 ## 9. 一手来源
 
