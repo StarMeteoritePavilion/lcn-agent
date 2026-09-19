@@ -14,6 +14,10 @@
 - [06 对象字面量属性简写与自定义 key](#2026-09-18-06-对象字面量属性简写与自定义-key)
 - [07 类型谓词与类型收窄机制](#2026-09-18-07-类型谓词与类型收窄机制)
 - [08 TypeScript 枚举写法与字符串联合类型的选择](#2026-09-18-08-typescript-枚举写法与字符串联合类型的选择)
+- [10 字面量类型 widening 与 as const](#2026-09-19-10-字面量类型-widening-与-as-const)
+
+### 工程与调试
+- [11 VS Code 断点调试配置](#2026-09-19-11-vs-code-断点调试配置)
 
 ---
 
@@ -638,3 +642,142 @@ mvn flyway:migrate # 自定义插件目标，必须带插件前缀
 ```
 
 **总结：** `npm start` = `npm run start` 的快捷别名。内置快捷命令只有 `start`、`test`、`stop`、`restart` 四个，其他自定义脚本一律 `npm run xxx`。
+
+---
+
+## 2026-09-19-10 字面量类型 widening 与 as const
+
+**问题：** 写 `type: "function"` 时 TypeScript 推断为 `string`，不满足 SDK 要求的字面量 `"function"`。加 `as const` 后类型收窄到字面量。这和阶段 0 的字面量类型收窄是不是同一机制？对象字面量属性默认 widening 是什么？widening 本身是什么？
+
+**答案：**
+
+这是 TypeScript 的**字面量类型拓宽（literal widening）**。运行时值没变，变的是编译器推断出的类型。
+
+### 字面量类型 vs `string`
+
+`"function"` 有两层身份：只能是这一个值的字面量类型，以及任意字符串的 `string`。窄类型能赋给宽类型，反过来不行：
+
+```ts
+const a: string = "function";     // ✅ "function" ⊂ string
+const b: "function" = "hello";    // ❌ string ⊄ "function"
+```
+
+OpenAI SDK 的工具类型是判别联合，和阶段 0 的 `AgentEvent` 同一套机制：
+
+```ts
+interface ChatCompletionFunctionTool {
+  type: "function";   // 字面量，不是 string
+  function: FunctionDefinition;
+}
+type ChatCompletionTool = ChatCompletionFunctionTool | ChatCompletionCustomTool;
+```
+
+```ts
+type TextEvent = { type: "text"; text: string };
+type AgentEvent = TextEvent | ToolStartEvent | ToolEndEvent;
+```
+
+`type` 是判别字段。写成 `string` 就无法判别，赋不进 SDK 类型。
+
+### 什么是 widening
+
+**Widening（拓宽）** 是 TypeScript 把更窄的类型自动当成更宽的类型来用，方向是具体 → 笼统：
+
+```
+"function"  →  string
+1           →  number
+true        →  boolean
+{ type: "function" }  →  { type: string }
+```
+
+它和阶段 0 的 **narrowing（收窄）** 正好相反：
+
+| | widening | narrowing |
+|--|----------|-----------|
+| 方向 | 具体 → 笼统 | 笼统 → 具体 |
+| 时机 | 推断可变值的类型时 | `if` / `switch` / 类型谓词之后 |
+| 谁触发 | 编译器默认行为 | 你写的控制流 |
+| 例子 | `{ type: "function" }` 变成 `{ type: string }` | `event.type === "text"` 后变成 `TextEvent` |
+
+规则可以记成：**能改 → 放宽；不能改或你指定了 → 保持字面量。**
+
+### 对象字面量属性为什么默认 widening
+
+单独的 `const` 字符串会保留字面量；一放进可变对象，属性以后可能被改写，TS 按 `let` 处理，故意拓宽成 `string`：
+
+```ts
+const kind = "function";              // "function"（不能再赋）
+let kind = "function";                // string（还能改）
+const obj = { type: "function" };     // type: string（属性还能改）
+```
+
+| 写法 | 推断类型 | 原因 |
+|------|---------|------|
+| `const x = "function"` | `"function"` | 不能再赋值 |
+| `let x = "function"` | `string` | 还能改成别的字符串 |
+| `{ type: "function" }` | `{ type: string }` | 属性可变，按 `let` 处理 |
+
+数组同理：`["function", "custom"]` 推断为 `string[]`，不是 `("function" | "custom")[]`。
+
+这是保守推断：优先保证后续赋值合法，而不是把当前值钉死。
+
+### 和阶段 0 的关系：同一机制，不同触发点
+
+阶段 0 没写 `as const` 也能过，因为左边有上下文类型 `AgentEvent[]`，编译器知道 `type` 只能是 `"text" | "tool_start" | "tool_end"`，所以不会拓宽。
+
+`ECHO_TOOL` 没有标注目标类型，只能从右往左推断，于是走 widening。
+
+```
+阶段 0：    目标类型已知  →  上下文收窄  →  "text" 保持字面量
+ECHO_TOOL： 没有目标类型  →  可变对象拓宽 →  "function" 变成 string  →  需要 as const
+```
+
+### `as const` 和另外三种写法
+
+`as const` 是常量断言：告诉编译器这个值不会再变，按最窄的字面量来。只修编译错误、不想 import SDK 类型时用属性级 `as const` 即可。
+
+```ts
+// ① 属性级 as const
+const ECHO_TOOL = { type: "function" as const, function: { ... } };
+
+// ② 整对象 as const（全部变成 readonly + 字面量）
+const ECHO_TOOL = { type: "function", function: { ... } } as const;
+
+// ③ 显式标注 SDK 类型（和阶段 0 一样走上下文收窄）
+const ECHO_TOOL: ChatCompletionFunctionTool = { type: "function", function: { ... } };
+
+// ④ satisfies：既校验结构，又保留推断
+const ECHO_TOOL = { type: "function", function: { ... } } satisfies ChatCompletionFunctionTool;
+```
+
+给 SDK 用，③ 或 ④ 更干净：目标类型已知，根本不会 widening。
+
+**总结：** widening 是 TS 在可变位置把字面量放宽成 `string`/`number`/`boolean`。对象属性默认按 `let` 推断，所以 `type: "function"` 会变成 `string`，对不上 SDK 判别联合要求的字面量。`as const`、类型标注、`satisfies` 都是在阻止这次拓宽；阶段 0 没踩这个坑，是因为上下文类型已经把字面量钉死了。
+
+---
+
+## 2026-09-19-11 VS Code 断点调试配置
+
+**问题：** 如何在 VS Code 对本项目打断点？完整步骤是什么？`docs/vscode-debugging-guide.md` 和仓库配置是否够用？一个人手能否靠文档上手？
+
+**答案：**
+
+本项目是 `tsc` 编译后再跑 `dist/*.js`。`tsconfig.json` 已开 `"sourceMap": true`，可以在 `src/*.ts` 打断点，调试器通过 `.js.map` 映射回源码。不要用 `npm start` 断点，那是普通运行。
+
+### 最小步骤
+
+1. 用 VS Code 打开仓库**根目录** `lcn-agent/`
+2. 在 `src/*.ts` 行号左侧点红点（不要打在 `dist/*.js`）
+3. 用 Launch 配置 `F5` 启动，选「调试 lcn-agent」
+
+`launch.json` 关键字段：`program` 指向 `dist/index.js`，`preLaunchTask` 为 `npm: build`，`envFile` 加载 `.env`，`sourceMaps` + `outFiles` 接上 source map。阶段 0 另加 `args: ["normal"]`。
+
+### 文档与仓库核对
+
+`docs/vscode-debugging-guide.md` 已补全：根目录打开、断在 `src/*.ts`、不要用 `npm start`、`skipFiles`、stage-00 的 `args`、任务找不到、source map 对不上。配置手册合格，复制 JSON 就能用。
+
+仓库侧：`sourceMap` 和 `"build": "tsc"` 已就绪。`.vscode/` 被 gitignore，文件搜索会漏掉；本机实际已有 `launch.json` 和 `settings.json`，与文档主体一致，只少可选的 `skipFiles`。不必再新建，`F5` 即可验证。
+
+一个人手照文档能配起来。体验上的缺口：没写「已有 `launch.json` 就对照、不用再建」；后半篇快捷键偏长；macOS 上 `F5`/`F9` 可能要按 `fn`。
+
+**总结：** 断点打在 `src/*.ts`，用 Launch 配置跑 `dist/*.js`，靠 source map 映射。本机 `launch.json` 已存在，文档够独立上手，下一步是 `F5` 验证而不是继续改配置。
