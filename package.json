@@ -4,6 +4,9 @@
   "description": "",
   "main": "index.js",
   "scripts": {
+    "build": "tsc",
+    "start": "tsc && node --env-file=.env dist/index.js",
+    "check": "tsc --noEmit",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
@@ -25,5 +28,8 @@
   "bugs": {
     "url": "https://github.com/StarMeteoritePavilion/lcn-agent/issues"
   },
-  "homepage": "https://github.com/StarMeteoritePavilion/lcn-agent#readme"
+  "homepage": "https://github.com/StarMeteoritePavilion/lcn-agent#readme",
+  "dependencies": {
+    "openai": "^7.18.0"
+  }
 }

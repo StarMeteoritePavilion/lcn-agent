@@ -5,6 +5,7 @@
 ### Node.js 工具链
 - [01 ESM 是什么](#2026-09-17-01-esm-是什么)
 - [02 npx 是什么 & 命令解析](#2026-09-17-02-npx-是什么--命令解析)
+- [09 npm start 与 npm run 的区别](#2026-09-19-09-npm-start-与-npm-run-的区别)
 
 ### TypeScript / JavaScript 语法
 - [03 AsyncGenerator 类型标注与底层操作](#2026-09-17-03-asyncgenerator-类型标注与底层操作)
@@ -586,3 +587,54 @@ TS 社区正在远离原生 `enum`，因为它是 TypeScript 少数会生成运�
 当前 `type Scenario = "text" | "normal" | ...` 就是最地道的写法。只用于分支判断，不需要更重的方案。等将来需要挂字段时，升级为 `const + as const`，类型从 `keyof typeof` 自动推导，不用手动维护两份。
 
 **总结：** 字符串联合类型是 TS 中最常用的"枚举"替代方案，纯分支判断场景下比 enum、const 对象、class 都更简洁。按需升级即可。
+
+---
+
+## 2026-09-19-09 npm start 与 npm run 的区别
+
+**问题：** `package.json` 里面为什么其他的指令都是 `npm run xxx`，`start` 不需要 `run`？
+
+**答案：**
+
+### npm 的两类脚本
+
+| 类型 | 例子 | 运行方式 | 说明 |
+|------|------|----------|------|
+| 内置快捷命令 | `start`, `test`, `stop`, `restart` | `npm start` | npm 直接识别，不需要 `run` |
+| 自定义脚本 | `build`, `dev`, `lint`, `format` 等 | `npm run build` | 必须加 `run` |
+
+```bash
+npm start        # ✅ 等价于 npm run start
+npm test         # ✅ 等价于 npm run test
+npm build        # ❌ 这不是内置命令，会报错
+npm run build    # ✅ 正确
+```
+
+### 本质区别
+
+`npm run` 是通用的脚本执行器，能执行 `scripts` 里的任意脚本。`npm start`、`npm test` 这几个是 npm 专门注册的顶层命令，内部就是 `npm run start` 的别名。
+
+两种写法完全等价：
+
+```bash
+npm start          # 快捷方式
+npm run start      # 通用方式
+```
+
+### 为什么只有这几个有快捷方式
+
+npm 沿用的 Node.js 项目约定——`start`（启动）、`test`（测试）、`stop`（停止）是几乎所有项目都有的标准生命周期，用得太频繁了，所以给了快捷方式省掉 `run`。
+
+自定义脚本名（`build`、`dev`、`lint`）每个项目不一样，npm 不可能提前注册，所以必须通过通用入口 `npm run` 来调用。
+
+### 类比 Java（Maven）
+
+类似 Maven 的内置阶段和自定义插件目标：
+
+```bash
+mvn compile        # 内置生命周期阶段，直接用
+mvn test           # 内置
+mvn flyway:migrate # 自定义插件目标，必须带插件前缀
+```
+
+**总结：** `npm start` = `npm run start` 的快捷别名。内置快捷命令只有 `start`、`test`、`stop`、`restart` 四个，其他自定义脚本一律 `npm run xxx`。
