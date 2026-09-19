@@ -48,8 +48,7 @@ function executeTool(name: string, args: Record<string, unknown>): string {
   throw new Error(`未知工具: ${name}`);
 }
 
-// --- 流式工具调用累加器 ---
-// 流式响应中工具参数是 JSON 字符串的增量片段，必须拼完才能 JSON.parse
+// --- 类型 ---
 
 type PendingToolCall = {
   id: string;
@@ -57,29 +56,57 @@ type PendingToolCall = {
   arguments: string;
 };
 
+type Usage = {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+};
+
 type SteamChatResult = {
   content: string;
   toolCalls: PendingToolCall[];
   finishReason: string;
+  usage: Usage | null;
 };
 
 // --- 流式请求 ---
+
+const REQUEST_TIMEOUT_MS = 30_000;
+
 async function streamChat(
   messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[],
+  signal: AbortSignal,
 ): Promise<SteamChatResult> {
-  const stream = await client.chat.completions.create({
-    model,
-    messages,
-    tools: [ECHO_TOOL],
-    stream: true,
-  });
+  const stream = await client.chat.completions.create(
+    {
+      model,
+      messages,
+      tools: [ECHO_TOOL],
+      stream: true,
+      // openai SDK 的 stream: true 默认不返回 usage。需要加 stream_options: { include_usage: true }
+      // 这个还需要产商支持的
+      stream_options: { include_usage: true },
+    },
+    { signal },
+  );
 
   let content = "";
   let finishReason = "";
+  let usage: Usage | null = null;
   const toolCalls: PendingToolCall[] = [];
 
   for await (const chunk of stream) {
     //console.log(`\n--- chunk ---\n${JSON.stringify(chunk, null, 2)}`);
+
+    // 用量：最后一个 chunk 的 choices 为空，usage 有值
+    if (chunk.usage) {
+      usage = {
+        promptTokens: chunk.usage.prompt_tokens,
+        completionTokens: chunk.usage.completion_tokens,
+        totalTokens: chunk.usage.total_tokens,
+      };
+    }
+
     const choice = chunk.choices[0];
     if (!choice) continue;
 
@@ -115,7 +142,19 @@ async function streamChat(
     }
   }
 
-  return { content, toolCalls, finishReason };
+  return { content, toolCalls, finishReason, usage };
+}
+
+// --- 用量显示 ---
+
+function printUsage(usage: Usage | null): void {
+  if (!usage) {
+    console.log("用量：未报告");
+    return;
+  }
+  console.log(
+    `用量：prompt ${usage.promptTokens} + completion ${usage.completionTokens} = ${usage.totalTokens} tokens`,
+  );
 }
 
 // --- Agent 循环 ---
@@ -128,6 +167,14 @@ async function main(): Promise<void> {
   console.log(`模型: ${model}`);
   console.log(`用户: ${userInput}\n`);
 
+  // Ctrl+C 取消源
+  const userAbort = new AbortController();
+  const onSigint = () => {
+    console.log("\n\n用户取消 (Ctrl+C)");
+    userAbort.abort();
+  };
+  process.on("SIGINT", onSigint);
+
   const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
     { role: "user", content: userInput },
   ];
@@ -135,9 +182,15 @@ async function main(): Promise<void> {
   for (let round = 1; round <= MAX_ROUNDS; round++) {
     console.log(`--- 第 ${round} 轮 ---`);
 
-    const steamChatResult = await streamChat(messages);
+    // 超时取消源：每轮独立
+    const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
+    // 合并两个取消源：任一触发即取消
+    const signal = AbortSignal.any([userAbort.signal, timeout]);
+
+    const steamChatResult = await streamChat(messages, signal);
 
     console.log(`\nfinish_reason: ${steamChatResult.finishReason}`);
+    printUsage(steamChatResult.usage);
 
     // 文本结束
     if (steamChatResult.finishReason === "stop") {
@@ -195,6 +248,11 @@ async function main(): Promise<void> {
 try {
   await main();
 } catch (error) {
-  console.error(`\n请求失败：${error instanceof Error ? error.message : String(error)}`);
-  process.exitCode = 1;
+  if (error instanceof OpenAI.APIUserAbortError) {
+    console.log("请求已取消");
+    process.exitCode = 0;
+  } else {
+    console.error(`\n请求失败：${error instanceof Error ? error.message : String(error)}`);
+    process.exitCode = 1;
+  }
 }

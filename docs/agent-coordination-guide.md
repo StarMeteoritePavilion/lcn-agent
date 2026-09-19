@@ -28,6 +28,9 @@
 当前项目文件包括：
 
 - `src/index.ts`
+- `src/stage-00.ts`
+- `src/stage-01.ts`
+- `src/stage-02.ts`
 - `package.json`
 - `package-lock.json`
 - `tsconfig.json`
@@ -37,6 +40,7 @@
 - `docs/agent-coordination-guide.md`
 - `docs/agent-development-learning-plan.md`
 - `docs/qa-notes.md`
+- `docs/vscode-debugging-guide.md`
 
 如果用户在消息中引用了其他 Agent 任务，必须先读取对应任务内容，再使用其中的信息。
 
@@ -95,8 +99,11 @@
 - [x] 阶段 0：掌握这条链路需要的 TypeScript。
   9 个小步骤均已完成验收，具体勾选和证据见 `docs/agent-development-learning-plan.md`。
 - [x] 阶段 1：完全不依赖真实模型的 Agent 循环。
+  六项验收均已完成。
+- [x] 阶段 2：真实流式模型与可靠取消。
+  六个子项和四项验收均已完成，具体证据见 `docs/agent-development-learning-plan.md` 第 8 节。
 
-阶段 1 的六项验收均已完成；下一学习单元是阶段 2 的真实流式模型接入准备。
+阶段 2 全部完成；下一学习单元是阶段 3 的 TUI 接入。
 
 ## 7. 后续任务拆分方式
 
