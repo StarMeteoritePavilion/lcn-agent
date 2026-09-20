@@ -215,6 +215,9 @@ function createUiRenderer(): EventHandler {
         printUsage(event.usage);
         break;
       case "agent_end":
+        flushMarkdown(state);
+        state.markdown.inCodeBlock = false;
+        if (process.stdout.isTTY) process.stdout.write(ANSI_RESET);
         state.tool = null;
         if (event.reason === "completed") state.status = "completed";
         else if (event.reason === "cancelled") state.status = "cancelled";
@@ -227,6 +230,7 @@ function createUiRenderer(): EventHandler {
         if (event.reason === "loop_limit") console.log(`\n达到最大轮次限制: ${event.round}`);
         break;
       case "error":
+        flushMarkdown(state);
         state.status = "error";
         console.error(`\n请求失败：${event.message}`);
         break;
@@ -462,44 +466,65 @@ async function main(): Promise<void> {
     output: process.stdout,
   });
 
-  console.log(`模型: ${model}`);
-  console.log(`输入内容后回车，输入 /exit 退出。\n`);
+  let activeAbort: AbortController | null = null;
+  let closed = false;
+
+  const onSigint = (): void => {
+    if (activeAbort) {
+      activeAbort.abort();
+    } else {
+      input.close();
+    }
+  };
+
+  const onClose = (): void => {
+    closed = true;
+    activeAbort?.abort();
+  };
+
+  const showPrompt = (): void => {
+    if (!closed && process.stdin.isTTY && process.stdout.isTTY) input.prompt();
+  };
+
+  input.on("SIGINT", onSigint);
+  input.on("close", onClose);
   input.setPrompt("> ");
-  input.prompt();
+
+  console.log(`模型: ${model}`);
+  console.log("输入内容后回车，输入 /exit 退出。");
+  console.log("生成中 Ctrl+C 取消，空闲时 Ctrl+C 退出。\n");
+  showPrompt();
 
   try {
     for await (const line of input) {
-      const userInput = line.trim();
+      if (closed) break;
 
-      if (userInput === "/exit") {
-        break;
-      }
+      const userInput = line.trim();
+      if (userInput === "/exit") break;
 
       if (!userInput) {
+        showPrompt();
         continue;
       }
 
       console.log(`\n用户: ${userInput}\n`);
 
       const userAbort = new AbortController();
-      const onSigint = (): void => {
-        userAbort.abort();
-      };
-
-      input.on("SIGINT", onSigint);
-
-      const emitEvent = createUiRenderer();
+      activeAbort = userAbort;
 
       try {
-        await runAgent(userInput, userAbort, emitEvent);
+        await runAgent(userInput, userAbort, createUiRenderer());
       } finally {
-        input.off("SIGINT", onSigint);
+        activeAbort = null;
       }
 
-      input.prompt();
+      showPrompt();
     }
   } finally {
     input.close();
+    input.off("SIGINT", onSigint);
+    input.off("close", onClose);
+    if (process.stdout.isTTY) process.stdout.write(ANSI_RESET);
     console.log("\n终端程序已退出");
   }
 }
