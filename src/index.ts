@@ -110,6 +110,78 @@ type RuntimeEvent =
 
 type EventHandler = (event: RuntimeEvent) => void;
 
+type UiStatus =
+  | "idle"
+  | "thinking"
+  | "tool"
+  | "completed"
+  | "cancelled"
+  | "truncated"
+  | "loop_limit"
+  | "error";
+
+type UiState = {
+  message: string;
+  round: number;
+  tool: string | null;
+  status: UiStatus;
+};
+
+function createUiRenderer(): EventHandler {
+  const state: UiState = {
+    message: "",
+    round: 0,
+    tool: null,
+    status: "idle",
+  };
+
+  return (event) => {
+    switch (event.type) {
+      case "text_delta":
+        state.message += event.text;
+        process.stdout.write(event.text);
+        break;
+      case "model_end":
+        console.log(`\nfinish_reason: ${event.finishReason}`);
+        break;
+      case "tool_start":
+        state.status = "tool";
+        state.tool = event.name;
+        console.log(`\n  工具: ${event.name}(${event.arguments})`);
+        break;
+      case "tool_end":
+        state.tool = null;
+        console.log(event.success ? `  结果: ${event.output}` : `  失败: ${event.output}`);
+        break;
+      case "turn_start":
+        state.round = event.round;
+        state.status = "thinking";
+        state.message = "";
+        console.log(`--- 第 ${event.round} 轮 ---`);
+        break;
+      case "usage":
+        printUsage(event.usage);
+        break;
+      case "agent_end":
+        state.tool = null;
+        if (event.reason === "completed") state.status = "completed";
+        else if (event.reason === "cancelled") state.status = "cancelled";
+        else if (event.reason === "truncated") state.status = "truncated";
+        else if (event.reason === "loop_limit") state.status = "loop_limit";
+        else state.status = "error";
+        if (event.reason === "completed") console.log(`\n完成，共 ${event.round} 轮`);
+        if (event.reason === "cancelled") console.log("\n请求已取消");
+        if (event.reason === "truncated") console.log("\n响应因长度截断，不执行工具");
+        if (event.reason === "loop_limit") console.log(`\n达到最大轮次限制: ${event.round}`);
+        break;
+      case "error":
+        state.status = "error";
+        console.error(`\n请求失败：${event.message}`);
+        break;
+    }
+  };
+}
+
 // --- 流式请求 ---
 
 const REQUEST_TIMEOUT_MS = 30_000;
@@ -340,6 +412,8 @@ async function main(): Promise<void> {
 
   console.log(`模型: ${model}`);
   console.log(`输入内容后回车，输入 /exit 退出。\n`);
+  input.setPrompt("> ");
+  input.prompt();
 
   try {
     for await (const line of input) {
@@ -357,61 +431,20 @@ async function main(): Promise<void> {
 
       const userAbort = new AbortController();
       const onSigint = (): void => {
-        console.log("\n\n用户取消 (Ctrl+C)");
         userAbort.abort();
       };
 
       input.on("SIGINT", onSigint);
 
-      const emitEvent: EventHandler = (event) => {
-        switch (event.type) {
-          case "text_delta":
-            process.stdout.write(event.text);
-            break;
-          case "model_end":
-            console.log(`\nfinish_reason: ${event.finishReason}`);
-            break;
-          case "tool_start":
-            console.log(`\n  工具: ${event.name}(${event.arguments})`);
-            break;
-          case "tool_end":
-            console.log(event.success ? `  结果: ${event.output}` : `  失败: ${event.output}`);
-            break;
-          case "turn_start":
-            console.log(`--- 第 ${event.round} 轮 ---`);
-            break;
-          case "usage":
-            printUsage(event.usage);
-            break;
-          case "agent_end":
-            switch (event.reason) {
-              case "completed":
-                console.log(`\n完成，共 ${event.round} 轮`);
-                break;
-              case "cancelled":
-                console.log("\n请求已取消");
-                break;
-              case "truncated":
-                console.log("\n响应因长度截断，不执行工具");
-                break;
-              case "loop_limit":
-                console.log(`\n达到最大轮次限制: ${event.round}`);
-                break;
-              case "error":
-                break;
-            }
-            break;
-          case "error":
-            console.error(`\n请求失败：${event.message}`);
-            break;
-        }
-      };
+      const emitEvent = createUiRenderer();
 
       try {
         await runAgent(userInput, userAbort, emitEvent);
       } finally {
         input.off("SIGINT", onSigint);
       }
+
+      input.prompt();
     }
   } finally {
     input.close();
