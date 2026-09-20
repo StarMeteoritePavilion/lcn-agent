@@ -70,6 +70,46 @@ type SteamChatResult = {
   usage: Usage | null;
 };
 
+type RuntimeEvent =
+  | {
+      type: "text_delta";
+      text: string;
+    }
+  | {
+      type: "model_end";
+      finishReason: string;
+    }
+  | {
+      type: "tool_start";
+      name: string;
+      arguments: string;
+    }
+  | {
+      type: "tool_end";
+      name: string;
+      output: string;
+      success: boolean;
+    }
+  | {
+      type: "turn_start";
+      round: number;
+    }
+  | {
+      type: "usage";
+      usage: Usage | null;
+    }
+  | {
+      type: "agent_end";
+      reason: "completed" | "cancelled" | "loop_limit" | "truncated" | "error";
+      round: number;
+    }
+  | {
+      type: "error";
+      message: string;
+    };
+
+type EventHandler = (event: RuntimeEvent) => void;
+
 // --- 流式请求 ---
 
 const REQUEST_TIMEOUT_MS = 30_000;
@@ -77,6 +117,7 @@ const REQUEST_TIMEOUT_MS = 30_000;
 async function streamChat(
   messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[],
   signal: AbortSignal,
+  onEvent: EventHandler,
 ): Promise<SteamChatResult> {
   const stream = await client.chat.completions.create(
     {
@@ -113,8 +154,11 @@ async function streamChat(
 
     // 文本增量：逐块输出到终端
     if (choice.delta.content) {
-      // 将结果输出到控制台
-      process.stdout.write(choice.delta.content);
+      // 通过回调接口将结果传输给调用方
+      onEvent({
+        type: "text_delta",
+        text: choice.delta.content,
+      });
       content += choice.delta.content;
     }
 
@@ -143,6 +187,13 @@ async function streamChat(
     }
   }
 
+  if (!signal.aborted) {
+    onEvent({
+      type: "model_end",
+      finishReason,
+    });
+  }
+
   return { content, toolCalls, finishReason, usage };
 }
 
@@ -161,6 +212,125 @@ function printUsage(usage: Usage | null): void {
 // --- Agent 循环 ---
 
 const MAX_ROUNDS = 5;
+
+async function runAgent(
+  userInput: string,
+  userAbort: AbortController,
+  onEvent: EventHandler,
+): Promise<void> {
+  const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
+    { role: "user", content: userInput },
+  ];
+
+  let round = 0;
+
+  try {
+    for (round = 1; round <= MAX_ROUNDS; round++) {
+      onEvent({
+        type: "turn_start",
+        round,
+      });
+
+      const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
+      const signal = AbortSignal.any([userAbort.signal, timeout]);
+
+      const steamChatResult = await streamChat(messages, signal, onEvent);
+
+      if (signal.aborted) {
+        onEvent({ type: "agent_end", reason: "cancelled", round });
+        return;
+      }
+
+      onEvent({
+        type: "usage",
+        usage: steamChatResult.usage,
+      });
+
+      if (steamChatResult.finishReason === "stop") {
+        onEvent({
+          type: "agent_end",
+          reason: "completed",
+          round,
+        });
+        return;
+      }
+
+      if (steamChatResult.finishReason === "length") {
+        onEvent({ type: "agent_end", reason: "truncated", round });
+        return;
+      }
+
+      if (steamChatResult.finishReason !== "tool_calls") {
+        continue;
+      }
+
+      messages.push({
+        role: "assistant",
+        content: steamChatResult.content,
+        tool_calls: steamChatResult.toolCalls.map((tc) => ({
+          id: tc.id,
+          type: "function" as const,
+          function: {
+            name: tc.name,
+            arguments: tc.arguments,
+          },
+        })),
+      });
+
+      for (const tc of steamChatResult.toolCalls) {
+        onEvent({
+          type: "tool_start",
+          name: tc.name,
+          arguments: tc.arguments,
+        });
+
+        let output: string;
+
+        try {
+          const parsed = JSON.parse(tc.arguments) as Record<string, unknown>;
+          output = executeTool(tc.name, parsed);
+
+          onEvent({
+            type: "tool_end",
+            name: tc.name,
+            output,
+            success: true,
+          });
+        } catch (error) {
+          output = `执行失败：${error instanceof Error ? error.message : String(error)}`;
+
+          onEvent({
+            type: "tool_end",
+            name: tc.name,
+            output,
+            success: false,
+          });
+        }
+
+        messages.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          content: output,
+        });
+
+        console.log("");
+      }
+    }
+
+    onEvent({ type: "agent_end", reason: "loop_limit", round: MAX_ROUNDS });
+  } catch (error) {
+    if (error instanceof OpenAI.APIUserAbortError) {
+      onEvent({ type: "agent_end", reason: "cancelled", round });
+      return;
+    }
+
+    onEvent({
+      type: "error",
+      message: error instanceof Error ? error.message : String(error),
+    });
+    onEvent({ type: "agent_end", reason: "error", round });
+  }
+}
 
 async function main(): Promise<void> {
   const input = createInterface({
@@ -193,89 +363,52 @@ async function main(): Promise<void> {
 
       input.on("SIGINT", onSigint);
 
-      try {
-        const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
-          { role: "user", content: userInput },
-        ];
-
-        let completed = false;
-
-        try {
-          for (let round = 1; round <= MAX_ROUNDS; round++) {
-            console.log(`--- 第 ${round} 轮 ---`);
-
-            const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
-            const signal = AbortSignal.any([userAbort.signal, timeout]);
-
-            const steamChatResult = await streamChat(messages, signal);
-
-            if (signal.aborted) {
-              console.log("\n请求已取消");
-              completed = true;
-              break;
+      const emitEvent: EventHandler = (event) => {
+        switch (event.type) {
+          case "text_delta":
+            process.stdout.write(event.text);
+            break;
+          case "model_end":
+            console.log(`\nfinish_reason: ${event.finishReason}`);
+            break;
+          case "tool_start":
+            console.log(`\n  工具: ${event.name}(${event.arguments})`);
+            break;
+          case "tool_end":
+            console.log(event.success ? `  结果: ${event.output}` : `  失败: ${event.output}`);
+            break;
+          case "turn_start":
+            console.log(`--- 第 ${event.round} 轮 ---`);
+            break;
+          case "usage":
+            printUsage(event.usage);
+            break;
+          case "agent_end":
+            switch (event.reason) {
+              case "completed":
+                console.log(`\n完成，共 ${event.round} 轮`);
+                break;
+              case "cancelled":
+                console.log("\n请求已取消");
+                break;
+              case "truncated":
+                console.log("\n响应因长度截断，不执行工具");
+                break;
+              case "loop_limit":
+                console.log(`\n达到最大轮次限制: ${event.round}`);
+                break;
+              case "error":
+                break;
             }
-
-            console.log(`\nfinish_reason: ${steamChatResult.finishReason}`);
-            printUsage(steamChatResult.usage);
-
-            if (steamChatResult.finishReason === "stop") {
-              console.log(`\n完成，共 ${round} 轮`);
-              completed = true;
-              break;
-            }
-
-            if (steamChatResult.finishReason === "length") {
-              console.log("\n响应因长度截断，不执行工具");
-              completed = true;
-              break;
-            }
-
-            if (steamChatResult.finishReason === "tool_calls") {
-              messages.push({
-                role: "assistant",
-                content: steamChatResult.content,
-                tool_calls: steamChatResult.toolCalls.map((tc) => ({
-                  id: tc.id,
-                  type: "function" as const,
-                  function: {
-                    name: tc.name,
-                    arguments: tc.arguments,
-                  },
-                })),
-              });
-
-              for (const tc of steamChatResult.toolCalls) {
-                console.log(`\n  工具: ${tc.name}(${tc.arguments})`);
-
-                let output: string;
-
-                try {
-                  const parsed = JSON.parse(tc.arguments) as Record<string, unknown>;
-                  output = executeTool(tc.name, parsed);
-                  console.log(`  结果: ${output}`);
-                } catch (error) {
-                  output = `执行失败：${error instanceof Error ? error.message : String(error)}`;
-                  console.log(`  失败: ${output}`);
-                }
-
-                messages.push({
-                  role: "tool",
-                  tool_call_id: tc.id,
-                  content: output,
-                });
-
-                console.log("");
-              }
-            }
-          }
-        } catch (error) {
-          if (error instanceof OpenAI.APIUserAbortError) {
-            console.log("请求已取消");
-            completed = true;
-          } else {
-            throw error;
-          }
+            break;
+          case "error":
+            console.error(`\n请求失败：${event.message}`);
+            break;
         }
+      };
+
+      try {
+        await runAgent(userInput, userAbort, emitEvent);
       } finally {
         input.off("SIGINT", onSigint);
       }
