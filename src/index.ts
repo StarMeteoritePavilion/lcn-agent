@@ -120,12 +120,60 @@ type UiStatus =
   | "loop_limit"
   | "error";
 
+type MarkdownState = {
+  pendingLine: string;
+  inCodeBlock: boolean;
+};
+
 type UiState = {
   message: string;
   round: number;
   tool: string | null;
   status: UiStatus;
+  markdown: MarkdownState;
 };
+
+const ANSI_RESET = "\u001b[0m";
+const ANSI_BOLD = "\u001b[1m";
+const ANSI_CYAN = "\u001b[36m";
+const ANSI_YELLOW = "\u001b[33m";
+
+function renderMarkdownLine(line: string, markdown: MarkdownState): string {
+  if (line.trimStart().startsWith("```")) {
+    markdown.inCodeBlock = !markdown.inCodeBlock;
+    return "";
+  }
+
+  if (markdown.inCodeBlock) return `${ANSI_YELLOW}${line}${ANSI_RESET}`;
+
+  const heading = line.match(/^(#{1,6})\s+(.+)$/);
+  if (heading) return `${ANSI_BOLD}${ANSI_CYAN}${heading[2]}${ANSI_RESET}`;
+
+  const listItem = line.match(/^(\s*)[-*]\s+(.+)$/);
+  const content = listItem ? `${listItem[1]}• ${listItem[2]}` : line;
+
+  return content
+    .replace(/\*\*(.+?)\*\*/g, `${ANSI_BOLD}$1${ANSI_RESET}`)
+    .replace(/`([^`]+)`/g, `${ANSI_YELLOW}$1${ANSI_RESET}`);
+}
+
+function renderMarkdownDelta(state: UiState, text: string): void {
+  state.markdown.pendingLine += text;
+
+  let newlineIndex = state.markdown.pendingLine.indexOf("\n");
+  while (newlineIndex >= 0) {
+    const line = state.markdown.pendingLine.slice(0, newlineIndex);
+    state.markdown.pendingLine = state.markdown.pendingLine.slice(newlineIndex + 1);
+    process.stdout.write(`${renderMarkdownLine(line, state.markdown)}\n`);
+    newlineIndex = state.markdown.pendingLine.indexOf("\n");
+  }
+}
+
+function flushMarkdown(state: UiState): void {
+  if (!state.markdown.pendingLine) return;
+  process.stdout.write(renderMarkdownLine(state.markdown.pendingLine, state.markdown));
+  state.markdown.pendingLine = "";
+}
 
 function createUiRenderer(): EventHandler {
   const state: UiState = {
@@ -133,15 +181,17 @@ function createUiRenderer(): EventHandler {
     round: 0,
     tool: null,
     status: "idle",
+    markdown: { pendingLine: "", inCodeBlock: false },
   };
 
   return (event) => {
     switch (event.type) {
       case "text_delta":
         state.message += event.text;
-        process.stdout.write(event.text);
+        renderMarkdownDelta(state, event.text);
         break;
       case "model_end":
+        flushMarkdown(state);
         console.log(`\nfinish_reason: ${event.finishReason}`);
         break;
       case "tool_start":
@@ -157,6 +207,8 @@ function createUiRenderer(): EventHandler {
         state.round = event.round;
         state.status = "thinking";
         state.message = "";
+        state.markdown.pendingLine = "";
+        state.markdown.inCodeBlock = false;
         console.log(`--- 第 ${event.round} 轮 ---`);
         break;
       case "usage":
