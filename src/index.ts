@@ -1,7 +1,7 @@
 import OpenAI from "openai";
 import { createInterface } from "node:readline/promises";
 
-// --- 环境变量 ---
+// 环境变量是模型客户端启动所需的硬约束，缺少任一项时立即失败。
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -18,8 +18,7 @@ const client = new OpenAI({
 
 const model = requireEnv("MODEL");
 
-// --- echo 工具定义 ---
-// 用 JSON Schema 描述工具参数，模型根据此定义决定何时调用、如何填参
+// 工具定义同时发送给模型和约束工具参数；工具是否执行由 Agent 核心决定。
 
 const ECHO_TOOL = {
   type: "function" as const,
@@ -36,7 +35,7 @@ const ECHO_TOOL = {
   },
 };
 
-// --- 工具执行 ---
+// 工具执行只发生在 Agent 循环中，UI 层不会调用此函数。
 
 function executeTool(name: string, args: Record<string, unknown>): string {
   if (name === "echo") {
@@ -49,7 +48,7 @@ function executeTool(name: string, args: Record<string, unknown>): string {
   throw new Error(`未知工具: ${name}`);
 }
 
-// --- 类型 ---
+// RuntimeEvent 是核心与展示层之间的唯一运行时通信边界。
 
 type PendingToolCall = {
   id: string;
@@ -139,6 +138,7 @@ const ANSI_CYAN = "\u001b[36m";
 const ANSI_YELLOW = "\u001b[33m";
 
 function renderMarkdownLine(line: string, markdown: MarkdownState): string {
+  // 流式分块可能把 Markdown 标记拆开，因此只在完整行上处理格式。
   if (line.trimStart().startsWith("```")) {
     markdown.inCodeBlock = !markdown.inCodeBlock;
     return "";
@@ -158,6 +158,7 @@ function renderMarkdownLine(line: string, markdown: MarkdownState): string {
 }
 
 function renderMarkdownDelta(state: UiState, text: string): void {
+  // 缓存最后一个不完整行，避免半个标题或代码标记被提前渲染。
   state.markdown.pendingLine += text;
 
   let newlineIndex = state.markdown.pendingLine.indexOf("\n");
@@ -170,12 +171,14 @@ function renderMarkdownDelta(state: UiState, text: string): void {
 }
 
 function flushMarkdown(state: UiState): void {
+  // 模型取消、报错或结束时都要冲刷缓存，避免丢失最后一段文字。
   if (!state.markdown.pendingLine) return;
   process.stdout.write(renderMarkdownLine(state.markdown.pendingLine, state.markdown));
   state.markdown.pendingLine = "";
 }
 
 function createUiRenderer(): EventHandler {
+  // 展示层只更新状态和输出事件内容，不参与消息、工具或轮次决策。
   const state: UiState = {
     message: "",
     round: 0,
@@ -238,7 +241,7 @@ function createUiRenderer(): EventHandler {
   };
 }
 
-// --- 流式请求 ---
+// 读取一次模型流：收集完整响应，同时把文本增量和模型结束事件立即上报。
 
 const REQUEST_TIMEOUT_MS = 30_000;
 
@@ -268,7 +271,7 @@ async function streamChat(
   for await (const chunk of stream) {
     //console.log(`\n--- chunk ---\n${JSON.stringify(chunk, null, 2)}`);
 
-    // 用量：最后一个 chunk 的 choices 为空，usage 有值
+    // 用量通常位于最后一个 choices 为空的 chunk，缺失时保持 null。
     if (chunk.usage) {
       usage = {
         promptTokens: chunk.usage.prompt_tokens,
@@ -280,7 +283,7 @@ async function streamChat(
     const choice = chunk.choices[0];
     if (!choice) continue;
 
-    // 文本增量：逐块输出到终端
+    // 文本只通过事件交给展示层，通信层不直接写终端。
     if (choice.delta.content) {
       // 通过回调接口将结果传输给调用方
       onEvent({
@@ -290,7 +293,7 @@ async function streamChat(
       content += choice.delta.content;
     }
 
-    // 工具调用增量：按 index 累积参数片段
+    // 工具参数也按调用索引累积，直到 finish_reason 表示 tool_calls 才执行。
     if (choice.delta.tool_calls) {
       for (const delta of choice.delta.tool_calls) {
         if (!toolCalls[delta.index]) {
@@ -306,7 +309,7 @@ async function streamChat(
       }
     }
 
-    // 结束原因
+    // stop 表示回答完成，length 表示截断，tool_calls 表示需要回填工具结果。
     // stop: 文本结束
     // length: 响应因长度截断
     // tool_calls: 工具调用结束
@@ -325,7 +328,7 @@ async function streamChat(
   return { content, toolCalls, finishReason, usage };
 }
 
-// --- 用量显示 ---
+// 用量显示保留提供商原始结果；没有报告时不伪造数值。
 
 function printUsage(usage: Usage | null): void {
   if (!usage) {
@@ -337,7 +340,7 @@ function printUsage(usage: Usage | null): void {
   );
 }
 
-// --- Agent 循环 ---
+// Agent 核心循环：请求模型、回填工具结果，再决定结束或进入下一轮。
 
 const MAX_ROUNDS = 5;
 
@@ -354,6 +357,7 @@ async function runAgent(
 
   try {
     for (round = 1; round <= MAX_ROUNDS; round++) {
+      // 每轮拥有自己的超时信号，同时接受用户 Ctrl+C 的取消信号。
       onEvent({
         type: "turn_start",
         round,
@@ -389,6 +393,7 @@ async function runAgent(
       }
 
       if (steamChatResult.finishReason !== "tool_calls") {
+        // 未知结束原因不执行工具，交给下一轮或最终轮次限制处理。
         continue;
       }
 
@@ -406,6 +411,7 @@ async function runAgent(
       });
 
       for (const tc of steamChatResult.toolCalls) {
+        // 先发出开始事件，再在核心层校验参数并执行工具。
         onEvent({
           type: "tool_start",
           name: tc.name,
@@ -459,6 +465,7 @@ async function runAgent(
 }
 
 async function main(): Promise<void> {
+  // 交互入口只负责读取输入、绑定取消信号和消费运行事件。
   const input = createInterface({
     input: process.stdin,
     output: process.stdout,
@@ -468,6 +475,7 @@ async function main(): Promise<void> {
   let closed = false;
 
   const onSigint = (): void => {
+    // 生成中取消当前请求；空闲时关闭 readline，让主循环自然退出。
     if (activeAbort) {
       activeAbort.abort();
     } else {
@@ -476,6 +484,7 @@ async function main(): Promise<void> {
   };
 
   const onClose = (): void => {
+    // stdin 被外部关闭时，确保正在进行的模型请求也收到取消信号。
     closed = true;
     activeAbort?.abort();
   };
@@ -528,6 +537,7 @@ async function main(): Promise<void> {
 }
 
 async function runNonInteractive(userInput: string): Promise<void> {
+  // 非交互入口用于脚本和调试，复用同一 Agent 循环与事件渲染器。
   console.log(`用户: ${userInput}\n`);
   await runAgent(userInput, new AbortController(), createUiRenderer());
   if (process.stdout.isTTY) process.stdout.write(ANSI_RESET);
@@ -536,6 +546,7 @@ async function runNonInteractive(userInput: string): Promise<void> {
 const nonInteractiveInput = process.argv.slice(2).join(" ").trim();
 
 try {
+  // 有命令行文本时单次运行，否则进入 readline 交互模式。
   if (nonInteractiveInput) await runNonInteractive(nonInteractiveInput);
   else await main();
 } catch (error) {
