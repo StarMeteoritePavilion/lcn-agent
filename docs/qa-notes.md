@@ -15,6 +15,10 @@
 - [07 类型谓词与类型收窄机制](#2026-09-18-07-类型谓词与类型收窄机制)
 - [08 TypeScript 枚举写法与字符串联合类型的选择](#2026-09-18-08-typescript-枚举写法与字符串联合类型的选择)
 - [10 字面量类型 widening 与 as const](#2026-09-19-10-字面量类型-widening-与-as-const)
+- [12 JavaScript falsy 值与空字符串判断](#2026-09-20-12-javascript-falsy-值与空字符串判断)
+
+### Node.js 运行时
+- [13 readline.on/off 信号监听与 SIGINT 处理](#2026-09-20-13-readlineon-off-信号监听与-sigint-处理)
 
 ### 工程与调试
 - [11 VS Code 断点调试配置](#2026-09-19-11-vs-code-断点调试配置)
@@ -781,3 +785,97 @@ const ECHO_TOOL = { type: "function", function: { ... } } satisfies ChatCompleti
 一个人手照文档能配起来。体验上的缺口：没写「已有 `launch.json` 就对照、不用再建」；后半篇快捷键偏长；macOS 上 `F5`/`F9` 可能要按 `fn`。
 
 **总结：** 断点打在 `src/*.ts`，用 Launch 配置跑 `dist/*.js`，靠 source map 映射。本机 `launch.json` 已存在，文档够独立上手，下一步是 `F5` 验证而不是继续改配置。
+
+---
+
+## 2026-09-20-12 JavaScript falsy 值与空字符串判断
+
+**问题：** `if (!userInput) { break; }` 在什么情况下会进入？
+
+**答案：**
+
+`userInput` 是 `line.trim()` 的结果，类型是 `string`。JavaScript 中空字符串 `""` 是 falsy 值，`!""` 为 `true`。
+
+所以 `!userInput` 为 `true` 就是用户直接按了回车，没有输入任何内容（或只输入了空格/Tab，被 `trim()` 去掉后变成空字符串）。
+
+### JavaScript falsy 值完整清单
+
+| 值 | `!value` | 说明 |
+|------|----------|------|
+| `""` | `true` | 空字符串 |
+| `0` / `-0` | `true` | 零 |
+| `NaN` | `true` | 非数字 |
+| `null` | `true` | 空引用 |
+| `undefined` | `true` | 未定义 |
+| `false` | `true` | 布尔假 |
+| **其他所有值** | `false` | 包括 `" "`、`"0"`、`[]`、`{}` |
+
+### 对比 Java
+
+Java 中空字符串不能直接当 boolean 用：
+
+```java
+String input = "";
+if (!input) { }          // ❌ 编译报错
+if (input.isEmpty()) { } // ✅ Java 的做法
+```
+
+TypeScript/JavaScript 的隐式 falsy 转换省了 `.isEmpty()`，但需要注意：空字符串 `""` 和 `null`/`undefined` 在 `!` 下行为相同，都是 `true`。
+
+**总结：** `!userInput` 在 `userInput` 为空字符串时为 `true`，即用户按了空回车。JavaScript 的 falsy 值有 6 个，空字符串是其中之一，这与 Java 必须显式调用 `.isEmpty()` 不同。
+
+---
+
+## 2026-09-20-13 readline.on/off 信号监听与 SIGINT 处理
+
+**问题：** `input.on("SIGINT", onSigint)` 和 `input.off("SIGINT", onSigint)` 有什么作用？
+
+**答案：**
+
+### 基本作用
+
+```ts
+input.on("SIGINT", onSigint);   // 注册：用户按 Ctrl+C 时执行 onSigint
+input.off("SIGINT", onSigint);  // 注销：移除这个处理函数
+```
+
+| 方法 | 作用 | Java 类比 |
+|------|------|-----------|
+| `input.on("SIGINT", fn)` | 注册 readline 监听器 | `Runtime.getRuntime().addShutdownHook(thread)` |
+| `input.off("SIGINT", fn)` | 移除 readline 监听器 | `Runtime.getRuntime().removeShutdownHook(thread)` |
+
+### SIGINT 是什么
+
+`SIGINT`（Signal Interrupt）是操作系统级别的中断信号，用户在终端按 Ctrl+C 时触发。使用 `readline` 时，终端输入接口会先发出 `SIGINT` 事件；注册了 `input.on("SIGINT", fn)` 后，程序可以执行处理函数（如触发 `AbortController` 取消请求）。
+
+### 为什么要 off
+
+如果只 `on` 不 `off`，每次循环都注册新监听器，会导致：
+
+1. **重复执行**：按一次 Ctrl+C，多个监听器同时触发
+2. **内存泄漏**：超过 10 个监听器时 Node.js 警告 `MaxListenersExceededWarning`
+3. **引用过期**：旧监听器引用已用完的 `AbortController`
+
+正确模式是成对使用：
+
+```ts
+input.on("SIGINT", onSigint);
+try {
+  await streamChat(messages, signal);
+} finally {
+  input.off("SIGINT", onSigint);
+}
+```
+
+### on/off 是 EventEmitter 的通用 API
+
+`readline.Interface` 也是 `EventEmitter`，`on`/`off` 不是 SIGINT 专用的：
+
+| 方法 | 作用 |
+|------|------|
+| `emitter.on(event, fn)` | 注册监听器 |
+| `emitter.off(event, fn)` | 移除监听器（`removeListener` 的别名） |
+| `emitter.once(event, fn)` | 注册只触发一次的监听器 |
+| `emitter.emit(event, ...args)` | 手动触发事件 |
+
+**总结：** `input.on("SIGINT", fn)` 注册 readline 的 Ctrl+C 处理器实现优雅取消；`input.off("SIGINT", fn)` 在操作结束后注销避免泄漏。成对使用是固定模式，底层是 Node.js EventEmitter API。
