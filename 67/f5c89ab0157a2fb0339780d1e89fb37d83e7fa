@@ -1,0 +1,31 @@
+src/index.ts
+  s_eea7b4acf3342d::t_4e644234aa5c17 123-127,133,136-177,184,191,194,210-211
+docs/agent-development-learning-plan.md
+  s_eea7b4acf3342d::t_afb60a0783f65b 195
+docs/agent-coordination-guide.md
+  s_eea7b4acf3342d::t_afb60a0783f65b 109
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "67f5c89ab0157a2fb0339780d1e89fb37d83e7fa",
+  "prompts": {},
+  "humans": {
+    "h_cc77f976c0845e": {
+      "author": "lcx29 <can@MacBook-Air-M5.local>"
+    }
+  },
+  "sessions": {
+    "s_eea7b4acf3342d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0b418-0a40-7e52-a9ca-5f42706cdaf4",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "lcx29 <can@MacBook-Air-M5.local>",
+      "custom_attributes": {
+        "employee_email": "licanxin@gofo.com"
+      }
+    }
+  }
+}
