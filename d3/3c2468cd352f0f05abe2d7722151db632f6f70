@@ -1,0 +1,27 @@
+src/index.ts
+  s_eea7b4acf3342d::t_40a6468567a898 41,144,155,279,303,377,407,431,453,532,535,542
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "d33c2468cd352f0f05abe2d7722151db632f6f70",
+  "prompts": {},
+  "humans": {
+    "h_cc77f976c0845e": {
+      "author": "lcx29 <can@MacBook-Air-M5.local>"
+    }
+  },
+  "sessions": {
+    "s_eea7b4acf3342d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0b418-0a40-7e52-a9ca-5f42706cdaf4",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "lcx29 <can@MacBook-Air-M5.local>",
+      "custom_attributes": {
+        "employee_email": "licanxin@gofo.com"
+      }
+    }
+  }
+}
