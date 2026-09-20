@@ -1,0 +1,27 @@
+docs/agent-development-learning-plan.md
+  s_eea7b4acf3342d::t_11c96e247350ea 198
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "b08f46425f6708e443ce907d14ee351d89c21d4c",
+  "prompts": {},
+  "humans": {
+    "h_cc77f976c0845e": {
+      "author": "lcx29 <can@MacBook-Air-M5.local>"
+    }
+  },
+  "sessions": {
+    "s_eea7b4acf3342d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0b418-0a40-7e52-a9ca-5f42706cdaf4",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "lcx29 <can@MacBook-Air-M5.local>",
+      "custom_attributes": {
+        "employee_email": "licanxin@gofo.com"
+      }
+    }
+  }
+}
