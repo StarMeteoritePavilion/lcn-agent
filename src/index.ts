@@ -529,8 +529,17 @@ async function main(): Promise<void> {
   }
 }
 
+async function runNonInteractive(userInput: string): Promise<void> {
+  console.log(`用户: ${userInput}\n`);
+  await runAgent(userInput, new AbortController(), createUiRenderer());
+  if (process.stdout.isTTY) process.stdout.write(ANSI_RESET);
+}
+
+const nonInteractiveInput = process.argv.slice(2).join(" ").trim();
+
 try {
-  await main();
+  if (nonInteractiveInput) await runNonInteractive(nonInteractiveInput);
+  else await main();
 } catch (error) {
   if (error instanceof OpenAI.APIUserAbortError) {
     console.log("请求已取消");
