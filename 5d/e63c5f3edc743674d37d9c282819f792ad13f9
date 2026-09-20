@@ -1,0 +1,35 @@
+src/index.ts
+  h_cc77f976c0845e 73-102,109-112,120,157-161,196,216-224,226-227,229-239,242-252,254,256-258,261-319,321-322,324-326,332-334,366-386,410
+  s_eea7b4acf3342d::t_0149ab01c41914 411
+  s_eea7b4acf3342d::t_d4e4cce9356683 103,105-108,190-195,327-331,400-401,403-406
+  s_eea7b4acf3342d::t_39f35e5c4215ee 104,225,228,240-241,253,255,259-260,320,323,387-399
+  s_eea7b4acf3342d::t_1856599eb891ae 408-409
+docs/agent-coordination-guide.md
+  s_eea7b4acf3342d::t_64d21e78d95dfb 106,108
+docs/agent-development-learning-plan.md
+  s_eea7b4acf3342d::t_64d21e78d95dfb 395,416-419
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "5de63c5f3edc743674d37d9c282819f792ad13f9",
+  "prompts": {},
+  "humans": {
+    "h_cc77f976c0845e": {
+      "author": "lcx29 <can@MacBook-Air-M5.local>"
+    }
+  },
+  "sessions": {
+    "s_eea7b4acf3342d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0b418-0a40-7e52-a9ca-5f42706cdaf4",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "lcx29 <can@MacBook-Air-M5.local>",
+      "custom_attributes": {
+        "employee_email": "licanxin@gofo.com"
+      }
+    }
+  }
+}
