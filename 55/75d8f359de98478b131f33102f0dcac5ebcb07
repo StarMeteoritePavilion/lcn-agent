@@ -1,0 +1,34 @@
+docs/agent-development-learning-plan.md
+  s_eea7b4acf3342d::t_50fd704beed7f6 201
+  s_eea7b4acf3342d::t_31af91668badc9 199-200
+src/index.ts
+  s_eea7b4acf3342d::t_c954dc61ddd747 218-220,233,469-490,492-496,500,502-503,506,513,516,518,521,525-527
+tests/terminal-cancel.py
+  s_eea7b4acf3342d::t_4c8a7946547ec8 1-87
+docs/agent-coordination-guide.md
+  s_eea7b4acf3342d::t_31af91668badc9 109
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "5575d8f359de98478b131f33102f0dcac5ebcb07",
+  "prompts": {},
+  "humans": {
+    "h_cc77f976c0845e": {
+      "author": "lcx29 <can@MacBook-Air-M5.local>"
+    }
+  },
+  "sessions": {
+    "s_eea7b4acf3342d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0b418-0a40-7e52-a9ca-5f42706cdaf4",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "lcx29 <can@MacBook-Air-M5.local>",
+      "custom_attributes": {
+        "employee_email": "licanxin@gofo.com"
+      }
+    }
+  }
+}
