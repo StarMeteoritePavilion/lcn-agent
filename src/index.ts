@@ -38,6 +38,7 @@ const ECHO_TOOL = {
 // 工具执行只发生在 Agent 循环中，UI 层不会调用此函数。
 
 function executeTool(name: string, args: Record<string, unknown>): string {
+  // 先按工具名路由，再校验边界参数；失败由 Agent 循环转换为工具失败结果。
   if (name === "echo") {
     if (typeof args.text !== "string") {
       throw new Error("echo 工具参数 text 必须是 string");
@@ -140,6 +141,7 @@ const ANSI_YELLOW = "\u001b[33m";
 function renderMarkdownLine(line: string, markdown: MarkdownState): string {
   // 流式分块可能把 Markdown 标记拆开，因此只在完整行上处理格式。
   if (line.trimStart().startsWith("```")) {
+    // 代码围栏只切换状态，不把围栏本身输出到终端。
     markdown.inCodeBlock = !markdown.inCodeBlock;
     return "";
   }
@@ -150,6 +152,7 @@ function renderMarkdownLine(line: string, markdown: MarkdownState): string {
   if (heading) return `${ANSI_BOLD}${ANSI_CYAN}${heading[2]}${ANSI_RESET}`;
 
   const listItem = line.match(/^(\s*)[-*]\s+(.+)$/);
+  // 列表符号和行内标记只做终端展示转换，原始消息仍保存在 state.message。
   const content = listItem ? `${listItem[1]}• ${listItem[2]}` : line;
 
   return content
@@ -273,6 +276,7 @@ async function streamChat(
 
     // 用量通常位于最后一个 choices 为空的 chunk，缺失时保持 null。
     if (chunk.usage) {
+      // usage chunk 可能没有 choices，因此必须先单独读取再处理 choice。
       usage = {
         promptTokens: chunk.usage.prompt_tokens,
         completionTokens: chunk.usage.completion_tokens,
@@ -296,6 +300,7 @@ async function streamChat(
     // 工具参数也按调用索引累积，直到 finish_reason 表示 tool_calls 才执行。
     if (choice.delta.tool_calls) {
       for (const delta of choice.delta.tool_calls) {
+        // 同一个 index 会跨多个 chunk 到达，第一次出现时先创建累积槽位。
         if (!toolCalls[delta.index]) {
           toolCalls[delta.index] = {
             id: delta.id ?? "",
@@ -369,6 +374,7 @@ async function runAgent(
       const steamChatResult = await streamChat(messages, signal, onEvent);
 
       if (signal.aborted) {
+        // 请求结束后再次检查，避免超时或 Ctrl+C 后继续执行工具。
         onEvent({ type: "agent_end", reason: "cancelled", round });
         return;
       }
@@ -398,6 +404,7 @@ async function runAgent(
       }
 
       messages.push({
+        // 先保存模型的 tool_calls 消息，工具结果才能与调用 ID 配对。
         role: "assistant",
         content: steamChatResult.content,
         tool_calls: steamChatResult.toolCalls.map((tc) => ({
@@ -421,6 +428,7 @@ async function runAgent(
         let output: string;
 
         try {
+          // JSON 解析和参数校验都在核心层完成，UI 不参与工具决策。
           const parsed = JSON.parse(tc.arguments) as Record<string, unknown>;
           output = executeTool(tc.name, parsed);
 
@@ -442,6 +450,7 @@ async function runAgent(
         }
 
         messages.push({
+          // 无论工具成功或失败，都把结果回填给下一轮模型请求。
           role: "tool",
           tool_call_id: tc.id,
           content: output,
@@ -520,14 +529,17 @@ async function main(): Promise<void> {
       activeAbort = userAbort;
 
       try {
+        // await 会暂停当前输入循环，但 readline 仍会缓存用户已提交的后续行。
         await runAgent(userInput, userAbort, createUiRenderer());
       } finally {
+        // 无论完成、失败还是取消，都必须解除“正在运行”状态。
         activeAbort = null;
       }
 
       showPrompt();
     }
   } finally {
+    // 统一清理监听器和终端 ANSI 状态，避免退出后影响用户的 Shell。
     input.close();
     input.off("SIGINT", onSigint);
     input.off("close", onClose);
