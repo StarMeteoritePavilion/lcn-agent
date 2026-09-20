@@ -1,0 +1,47 @@
+src/index.ts
+  h_cc77f976c0845e 2,166-169,172,174-176,178-180,182-184,186,188-192,194,196-199,201,204-270,272-277,279-280,283-285
+docs/agent-development-learning-plan.md
+  s_eea7b4acf3342d::t_63b2b18c31b104 40,395,410-415
+  s_eea7b4acf3342d::t_7917eb8951f40a 416
+docs/agent-coordination-guide.md
+  s_eea7b4acf3342d::t_63b2b18c31b104 105-106,108
+docs/qa-notes.md
+  s_eea7b4acf3342d::t_ed8adedc6a9935 21,829,831,838-839,844-845,849,862,866,872,881
+  s_c2090bd0feaa2d::t_f9b627c3358e0c 18-20
+  s_c2090bd0feaa2d::t_54bf5f9643b19c 788-828,830,832-837,840-843,846-848,850-861,863-865,867-871,873-880
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "2dff2ac56fa4aed6f201024771e8e0169c244979",
+  "prompts": {},
+  "humans": {
+    "h_cc77f976c0845e": {
+      "author": "lcx29 <can@MacBook-Air-M5.local>"
+    }
+  },
+  "sessions": {
+    "s_c2090bd0feaa2d": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_f4cf57780ffen85sq0C2DEujQ1",
+        "model": "claude-opus-4-6-thinking"
+      },
+      "human_author": "lcx29 <can@MacBook-Air-M5.local>",
+      "custom_attributes": {
+        "employee_email": "licanxin@gofo.com"
+      }
+    },
+    "s_eea7b4acf3342d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0b418-0a40-7e52-a9ca-5f42706cdaf4",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "lcx29 <can@MacBook-Air-M5.local>",
+      "custom_attributes": {
+        "employee_email": "licanxin@gofo.com"
+      }
+    }
+  }
+}
