@@ -203,6 +203,7 @@ flowchart TD
   本地模拟接口与 PTY 检查通过：空行提示、取消后继续请求、空闲 Ctrl+C 和 /exit 退出。
   复查命令：`npm run build && python3 tests/terminal-cancel.py`，当前工作区已通过；真实终端外观及退出后编辑体验待用户验收。
 - [ ] 确认界面只消费运行事件，不直接决定工具是否执行。
+  已核对并收拢边界：`runAgent()` 调用 `executeTool()` 并产生 `tool_start/tool_end`，UI 只消费事件；核心循环不再直接打印工具间隔。
 
 学习：终端组件、输入焦点、渲染调度、异步输出时的编辑体验。
 交付：输入区、消息区、执行状态、Markdown、错误提示、取消操作；保留简单非交互输出用于调试。

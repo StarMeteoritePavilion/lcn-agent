@@ -440,8 +440,6 @@ async function runAgent(
           tool_call_id: tc.id,
           content: output,
         });
-
-        console.log("");
       }
     }
 
