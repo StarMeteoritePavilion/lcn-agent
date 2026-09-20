@@ -1,0 +1,30 @@
+docs/agent-coordination-guide.md
+  s_eea7b4acf3342d::t_851547edb50bed 105,109
+docs/agent-development-learning-plan.md
+  s_eea7b4acf3342d::t_622570fa0d8bf9 41,407,420
+  s_eea7b4acf3342d::t_851547edb50bed 32,195,198,201,203,207
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "83bb0003c1e156f5fd26d2966d7d66d3d22d39c7",
+  "prompts": {},
+  "humans": {
+    "h_cc77f976c0845e": {
+      "author": "lcx29 <can@MacBook-Air-M5.local>"
+    }
+  },
+  "sessions": {
+    "s_eea7b4acf3342d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0b418-0a40-7e52-a9ca-5f42706cdaf4",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "lcx29 <can@MacBook-Air-M5.local>",
+      "custom_attributes": {
+        "employee_email": "licanxin@gofo.com"
+      }
+    }
+  }
+}
