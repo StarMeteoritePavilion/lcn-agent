@@ -103,8 +103,8 @@
 - [x] 阶段 2：真实流式模型与可靠取消。
   六个子项和四项验收均已完成，具体证据见 `docs/agent-development-learning-plan.md` 第 8 节。
 - [x] 阶段 3：把核心接入真正的 TUI。
-  已完成 readline 多轮输入、空输入跳过、`/exit` 退出、请求中 Ctrl+C 取消、`runAgent()` 拆分和 RuntimeEvent 事件层；完整 TUI 验收尚未完成。
-  当前节点已增加并验收最小 UI 状态、统一渲染器和 readline 输入提示。
+  已完成 readline 多轮输入、空输入跳过、`/exit` 退出、请求中 Ctrl+C 取消、`runAgent()` 拆分、RuntimeEvent 事件层和完整 TUI 验收。
+  最小 UI 状态、统一渲染器、Markdown 基础渲染、输入边界和终端恢复均已通过本地模拟接口与 PTY 检查。
 
 阶段 2 和阶段 3 全部完成；阶段 3 的展示层、Markdown、取消、退出恢复、输入边界、非交互入口和事件边界均通过本地模拟接口与 PTY 检查。
 核心循环与 UI 边界已核对：工具执行只在 `runAgent()` 中发生，展示层只消费运行事件。
