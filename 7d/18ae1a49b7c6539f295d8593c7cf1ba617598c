@@ -1,0 +1,45 @@
+package.json
+  s_74f29e52698817::t_28ba18acf71a73 8,10
+  s_74f29e52698817::t_892d0703d1f271 33-34
+docs/configuration-loading-research.md
+  s_74f29e52698817::t_9f1073b64118ee 1-2,5-169
+  s_74f29e52698817::t_2f3d6d8e3905e5 3-4
+tests/config.test.mjs
+  s_74f29e52698817::t_2aa4539534be57 1-94
+config.toml
+  s_74f29e52698817::t_28ba18acf71a73 1-3
+src/index.ts
+  s_74f29e52698817::t_28ba18acf71a73 3,5-7,549-551
+README.md
+  s_74f29e52698817::t_2f3d6d8e3905e5 43-61,65-67,165-175
+docs/vscode-debugging-guide.md
+  s_74f29e52698817::t_2f3d6d8e3905e5 9,11,56,74,120,213-215
+src/config.ts
+  s_74f29e52698817::t_28ba18acf71a73 1-58
+package-lock.json
+  s_74f29e52698817::t_96c6dd4bb21335 12-13,424-435
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "7d18ae1a49b7c6539f295d8593c7cf1ba617598c",
+  "prompts": {},
+  "humans": {
+    "h_cc77f976c0845e": {
+      "author": "lcx29 <can@MacBook-Air-M5.local>"
+    }
+  },
+  "sessions": {
+    "s_74f29e52698817": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0c1fa-a201-7162-894e-0c75d9a0421f",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "lcx29 <can@MacBook-Air-M5.local>",
+      "custom_attributes": {
+        "employee_email": "licanxin@gofo.com"
+      }
+    }
+  }
+}
