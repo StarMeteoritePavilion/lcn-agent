@@ -40,9 +40,31 @@ cd lcn-agent
 npm install
 ```
 
+### 模型配置
+
+从仓库根目录启动。`config.toml` 必须存在，默认引用以下变量：
+
+```toml
+apiKey = "${API_KEY}"
+baseURL = "${BASE_URL}"
+model = "${MODEL}"
+```
+
+可以直接设置进程环境变量，也可以复制 `.env.example` 为 `.env` 并填写实际值。
+`.env` 是可选文件；同名时进程环境变量优先，包括已设置的空字符串。
+普通配置可以直接写成 TOML 字符串，固定值不会被环境变量覆盖。不要把真实密钥提交到仓库。
+
+程序先解析 TOML，再按原名替换字符串值中的 `${key}`，支持数组和嵌套表；
+替换只执行一次，不展开环境值中的引用、不自动转换类型、不改写键名。
+引用不存在，或 `apiKey`、`baseURL`、`model` 缺失、非字符串、为空或全空白时，启动失败。
+文件读取和 TOML 语法错误也会终止启动，只有 `.env` 不存在可以忽略。
+
 ### 构建与运行
 
 ```bash
+# 编译并启动（应用统一加载配置）
+npm start
+
 # 编译 TypeScript
 npx tsc
 
@@ -140,3 +162,14 @@ lcn-agent/
 ## 许可证
 
 [Apache License 2.0](LICENSE)
+
+## 配置与终端回归验证
+
+```bash
+npm run check
+npm test
+python3 tests/terminal-cancel.py
+```
+
+`npm test` 编译后运行配置测试；终端测试适用于 macOS/Linux。
+测试使用隔离的测试值和本地模拟服务，不请求真实模型。

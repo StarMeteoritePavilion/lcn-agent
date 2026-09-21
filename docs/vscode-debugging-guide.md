@@ -6,9 +6,9 @@
 
 ## 前置条件
 
-- 用 VS Code **打开仓库根目录** `lcn-agent/`，不要只打开 `src/`。`${workspaceFolder}` 必须指向根目录，否则 `program`、`envFile` 都会找错路径。
+- 用 VS Code **打开仓库根目录** `lcn-agent/`，不要只打开 `src/`。`${workspaceFolder}` 必须指向根目录，否则 `program`、`cwd` 都会找错路径。
 - 已执行 `npm install`
-- 项目根目录有 `.env`（从 `.env.example` 复制），至少包含 `API_KEY`、`BASE_URL`、`MODEL`
+- 项目根目录有 `config.toml`；其中的引用由环境变量或可选 `.env` 提供，环境变量优先。
 - 新版 VS Code 自带 JavaScript Debugger，一般不用另装
 
 `.vscode/` 已被 `.gitignore` 忽略，`launch.json` 不会提交。每个人在本机创建一份即可。
@@ -53,7 +53,7 @@
       "request": "launch",
       "preLaunchTask": "npm: build",
       "program": "${workspaceFolder}/dist/index.js",
-      "envFile": "${workspaceFolder}/.env",
+      "cwd": "${workspaceFolder}",
       "sourceMaps": true,
       "outFiles": ["${workspaceFolder}/dist/**/*.js"],
       "skipFiles": ["<node_internals>/**"],
@@ -71,7 +71,7 @@
 | `request` | `launch` 表示启动新进程，`attach` 表示附加到已运行的进程 |
 | `preLaunchTask` | 调试前自动执行 `npm run build`（即 `tsc`），确保代码最新 |
 | `program` | 要执行的入口文件（编译后的 JS） |
-| `envFile` | 加载项目根目录的 `.env`，等价于 `npm start` 里的 `--env-file=.env` |
+| `cwd` | 设置工作目录；应用从这里读取 `config.toml` 和可选 `.env` |
 | `sourceMaps` | 启用 source map，可在 `.ts` 文件中打断点 |
 | `outFiles` | 告诉调试器编译输出位置，用来定位 source map |
 | `skipFiles` | 单步时跳过 Node 内部实现，避免 `F11` 进运行时源码 |
@@ -117,7 +117,7 @@
 
 ## 使用方法
 
-不要用 `npm start` 打断点。那是普通运行，不会进入调试器。必须用下面的 Launch 配置，或在 **JavaScript Debug Terminal** 里再执行 `node --env-file=.env dist/index.js`。
+不要用 `npm start` 打断点。那是普通运行，不会进入调试器。必须用下面的 Launch 配置，或在 **JavaScript Debug Terminal** 里再执行 `node dist/index.js`。
 
 1. 打开 `src/` 下的 `.ts` 文件（不要打开 `dist/*.js`）
 2. 在**确定会执行**的行，点击行号左侧空白设断点（实心红点），或光标停在该行按 `F9`
@@ -210,7 +210,9 @@ TypeScript 编译优化可能导致部分变量被内联。尝试将变量赋值
 
 ### 环境变量未加载 / 报缺少 `API_KEY`
 
-确认 `.env` 在项目根目录（不要用 `.env.example` 当运行文件），且 `launch.json` 中 `envFile` 路径正确。调试 `index.ts` 或依赖模型的入口时必须加载 `.env`。
+确认 `cwd` 指向仓库根目录，并检查 `config.toml` 中引用的变量是否已设置。
+主入口由应用加载可选 `.env`，不设置 `envFile`；环境变量优先，空值不会回退到 `.env`。
+`stage-xx.ts` 是历史备份，仍沿用原来的配置方式。
 
 ### 程序直接跑完、不停在断点
 

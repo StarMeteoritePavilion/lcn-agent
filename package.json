@@ -5,9 +5,9 @@
   "main": "index.js",
   "scripts": {
     "build": "tsc",
-    "start": "tsc && node --env-file=.env dist/index.js",
+    "start": "tsc && node dist/index.js",
     "check": "tsc --noEmit",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "npm run build && node --test tests/config.test.mjs"
   },
   "keywords": [],
   "author": "",
@@ -30,6 +30,7 @@
   },
   "homepage": "https://github.com/StarMeteoritePavilion/lcn-agent#readme",
   "dependencies": {
-    "openai": "^7.18.0"
+    "openai": "^7.18.0",
+    "smol-toml": "^1.8.0"
   }
 }

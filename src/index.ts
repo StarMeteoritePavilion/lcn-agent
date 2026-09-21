@@ -1,22 +1,10 @@
 import OpenAI from "openai";
 import { createInterface } from "node:readline/promises";
+import { loadConfig } from "./config.js";
 
-// 环境变量是模型客户端启动所需的硬约束，缺少任一项时立即失败。
-
-function requireEnv(name: string): string {
-  const value = process.env[name];
-  if (!value) {
-    throw new Error(`缺少环境变量：${name}`);
-  }
-  return value;
-}
-
-const client = new OpenAI({
-  apiKey: requireEnv("API_KEY"),
-  baseURL: requireEnv("BASE_URL"),
-});
-
-const model = requireEnv("MODEL");
+// 在入口的错误边界内完成初始化，配置校验通过后才允许运行 Agent。
+let client: OpenAI;
+let model: string;
 
 // 工具定义同时发送给模型和约束工具参数；工具是否执行由 Agent 核心决定。
 
@@ -558,6 +546,9 @@ async function runNonInteractive(userInput: string): Promise<void> {
 const nonInteractiveInput = process.argv.slice(2).join(" ").trim();
 
 try {
+  const config = loadConfig();
+  client = new OpenAI({ apiKey: config.apiKey, baseURL: config.baseURL });
+  model = config.model;
   // 有命令行文本时单次运行，否则进入 readline 交互模式。
   if (nonInteractiveInput) await runNonInteractive(nonInteractiveInput);
   else await main();
