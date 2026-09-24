@@ -63,10 +63,11 @@ try:
     assert started.wait(5), 'Mock stream did not start'
     time.sleep(0.1)
     os.write(master, b'\x03')
-    cancelled = expect('> ')
+    # 生成期间也会重绘提示符，必须等待取消事件，不能把提示符当作结束证据。
+    cancelled = expect('请求已取消')
     assert '未换行的文本' in cancelled and '请求已取消' in cancelled, cancelled
     os.write(master, b'hi\n')
-    completed = expect('> ')
+    completed = expect('完成，共 1 轮')
     assert 'Hello!' in completed and '完成，共 1 轮' in completed, completed
     assert '未换行的文本' not in completed, completed
     os.write(master, b'\x03')

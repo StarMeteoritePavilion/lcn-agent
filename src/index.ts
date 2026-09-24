@@ -1,4 +1,5 @@
 import OpenAI from "openai";
+import { clearScreenDown, cursorTo, moveCursor } from "node:readline";
 import { createInterface } from "node:readline/promises";
 import { loadConfig } from "./config.js";
 
@@ -148,7 +149,7 @@ function renderMarkdownLine(line: string, markdown: MarkdownState): string {
     .replace(/`([^`]+)`/g, `${ANSI_YELLOW}$1${ANSI_RESET}`);
 }
 
-function renderMarkdownDelta(state: UiState, text: string): void {
+function renderMarkdownDelta(state: UiState, text: string, write: (text: string) => void): void {
   // 缓存最后一个不完整行，避免半个标题或代码标记被提前渲染。
   state.markdown.pendingLine += text;
 
@@ -156,19 +157,22 @@ function renderMarkdownDelta(state: UiState, text: string): void {
   while (newlineIndex >= 0) {
     const line = state.markdown.pendingLine.slice(0, newlineIndex);
     state.markdown.pendingLine = state.markdown.pendingLine.slice(newlineIndex + 1);
-    process.stdout.write(`${renderMarkdownLine(line, state.markdown)}\n`);
+    write(`${renderMarkdownLine(line, state.markdown)}\n`);
     newlineIndex = state.markdown.pendingLine.indexOf("\n");
   }
 }
 
-function flushMarkdown(state: UiState): void {
+function flushMarkdown(state: UiState, write: (text: string) => void): void {
   // 模型取消、报错或结束时都要冲刷缓存，避免丢失最后一段文字。
   if (!state.markdown.pendingLine) return;
-  process.stdout.write(renderMarkdownLine(state.markdown.pendingLine, state.markdown));
+  write(renderMarkdownLine(state.markdown.pendingLine, state.markdown));
   state.markdown.pendingLine = "";
 }
 
-function createUiRenderer(): EventHandler {
+function createUiRenderer(
+  write: (text: string, isError: boolean) => void = (text, isError) =>
+    (isError ? process.stderr : process.stdout).write(text),
+): EventHandler {
   // 展示层只更新状态和输出事件内容，不参与消息、工具或轮次决策。
   const state: UiState = {
     message: "",
@@ -179,23 +183,28 @@ function createUiRenderer(): EventHandler {
   };
 
   return (event) => {
+    // 同一事件的输出合并后交给终端，避免半行冲刷与提示符互相穿插。
+    let output = "";
+    const append = (text: string): void => {
+      output += text;
+    };
     switch (event.type) {
       case "text_delta":
         state.message += event.text;
-        renderMarkdownDelta(state, event.text);
+        renderMarkdownDelta(state, event.text, append);
         break;
       case "model_end":
-        flushMarkdown(state);
-        console.log(`\nfinish_reason: ${event.finishReason}`);
+        flushMarkdown(state, append);
+        append(`\nfinish_reason: ${event.finishReason}\n`);
         break;
       case "tool_start":
         state.status = "tool";
         state.tool = event.name;
-        console.log(`\n  工具: ${event.name}(${event.arguments})`);
+        append(`\n  工具: ${event.name}(${event.arguments})\n`);
         break;
       case "tool_end":
         state.tool = null;
-        console.log(event.success ? `  结果: ${event.output}` : `  失败: ${event.output}`);
+        append((event.success ? `  结果: ${event.output}` : `  失败: ${event.output}`) + "\n");
         break;
       case "turn_start":
         state.round = event.round;
@@ -203,32 +212,33 @@ function createUiRenderer(): EventHandler {
         state.message = "";
         state.markdown.pendingLine = "";
         state.markdown.inCodeBlock = false;
-        console.log(`--- 第 ${event.round} 轮 ---`);
+        append(`--- 第 ${event.round} 轮 ---\n`);
         break;
       case "usage":
-        printUsage(event.usage);
+        printUsage(event.usage, append);
         break;
       case "agent_end":
-        flushMarkdown(state);
+        flushMarkdown(state, append);
         state.markdown.inCodeBlock = false;
-        if (process.stdout.isTTY) process.stdout.write(ANSI_RESET);
+        if (process.stdout.isTTY) append(ANSI_RESET);
         state.tool = null;
         if (event.reason === "completed") state.status = "completed";
         else if (event.reason === "cancelled") state.status = "cancelled";
         else if (event.reason === "truncated") state.status = "truncated";
         else if (event.reason === "loop_limit") state.status = "loop_limit";
         else state.status = "error";
-        if (event.reason === "completed") console.log(`\n完成，共 ${event.round} 轮`);
-        if (event.reason === "cancelled") console.log("\n请求已取消");
-        if (event.reason === "truncated") console.log("\n响应因长度截断，不执行工具");
-        if (event.reason === "loop_limit") console.log(`\n达到最大轮次限制: ${event.round}`);
+        if (event.reason === "completed") append(`\n完成，共 ${event.round} 轮\n`);
+        if (event.reason === "cancelled") append("\n请求已取消\n");
+        if (event.reason === "truncated") append("\n响应因长度截断，不执行工具\n");
+        if (event.reason === "loop_limit") append(`\n达到最大轮次限制: ${event.round}\n`);
         break;
       case "error":
-        flushMarkdown(state);
+        flushMarkdown(state, append);
         state.status = "error";
-        console.error(`\n请求失败：${event.message}`);
+        append(`\n请求失败：${event.message}\n`);
         break;
     }
+    if (output) write(output, event.type === "error");
   };
 }
 
@@ -323,13 +333,13 @@ async function streamChat(
 
 // 用量显示保留提供商原始结果；没有报告时不伪造数值。
 
-function printUsage(usage: Usage | null): void {
+function printUsage(usage: Usage | null, write: (text: string) => void): void {
   if (!usage) {
-    console.log("用量：未报告");
+    write("用量：未报告\n");
     return;
   }
-  console.log(
-    `用量：prompt ${usage.promptTokens} + completion ${usage.completionTokens} = ${usage.totalTokens} tokens`,
+  write(
+    `用量：prompt ${usage.promptTokens} + completion ${usage.completionTokens} = ${usage.totalTokens} tokens\n`,
   );
 }
 
@@ -487,7 +497,23 @@ async function main(): Promise<void> {
   };
 
   const showPrompt = (): void => {
-    if (!closed && process.stdin.isTTY && process.stdout.isTTY) input.prompt();
+    if (!closed && process.stdin.isTTY && process.stdout.isTTY) input.prompt(true);
+  };
+
+  // 在完整编辑行上方插入输出，再让 readline 按原光标位置重绘输入。
+  const writeOutput = (text: string, isError = false): void => {
+    if (closed || !process.stdin.isTTY || !process.stdout.isTTY) {
+      (isError ? process.stderr : process.stdout).write(text);
+      return;
+    }
+    const { rows } = input.getCursorPos();
+    moveCursor(process.stdout, 0, -rows);
+    cursorTo(process.stdout, 0);
+    clearScreenDown(process.stdout);
+    process.stdout.write(text);
+    // readline 重绘时会上移原光标行数，先留出同样的行数以保留输出。
+    process.stdout.write("\n".repeat(rows));
+    showPrompt();
   };
 
   input.on("SIGINT", onSigint);
@@ -511,14 +537,14 @@ async function main(): Promise<void> {
         continue;
       }
 
-      console.log(`\n用户: ${userInput}\n`);
+      writeOutput(`\n用户: ${userInput}\n\n`);
 
       const userAbort = new AbortController();
       activeAbort = userAbort;
 
       try {
         // await 会暂停当前输入循环，但 readline 仍会缓存用户已提交的后续行。
-        await runAgent(userInput, userAbort, createUiRenderer());
+        await runAgent(userInput, userAbort, createUiRenderer(writeOutput));
       } finally {
         // 无论完成、失败还是取消，都必须解除“正在运行”状态。
         activeAbort = null;

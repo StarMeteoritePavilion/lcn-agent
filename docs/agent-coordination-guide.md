@@ -28,6 +28,12 @@
 当前项目文件包括：
 
 - `src/index.ts`
+- `src/config.ts`
+- `config.toml`
+- `tests/config.test.mjs`
+- `tests/terminal-cancel.py`
+- `tests/terminal-interaction.py`
+- `docs/stage-03-acceptance.md`
 - `src/stage-00.ts`
 - `src/stage-01.ts`
 - `src/stage-02.ts`
@@ -103,14 +109,16 @@
 - [x] 阶段 2：真实流式模型与可靠取消。
   六个子项和四项验收均已完成，具体证据见 `docs/agent-development-learning-plan.md` 第 8 节。
 - [ ] 阶段 3：把核心接入真正的 TUI。
-  readline、基础 Markdown、取消、双入口和事件边界已实现；完整交互体验尚未验收闭环。
+  readline、基础 Markdown、取消、双入口和事件边界已实现。
+  2026-09-24 原两项交互缺陷已修复，20 项检查通过；包含长编辑行缩放与中间光标保留。
+  完整体验仍有覆盖边界，详见 [验收报告](stage-03-acceptance.md)。
 - [ ] 阶段 4：会话保存、恢复和运行诊断。尚未实现。
 
 此前阶段 3 全部完成的记录已纠正。具体证据、缺口、复查命令和阶段 4 首节点见
 [学习计划第 8.1 节](agent-development-learning-plan.md#81-接手基线与下一学习节点)。
-接手先补齐阶段 3 交互验证；用户明确允许暂缓体验缺口时才提前推进阶段 4。
+接手先阅读阶段 3 修复及验收报告，再补齐剩余体验证据；用户明确允许暂缓体验缺口时才提前推进阶段 4。
 
-`src/index.ts` 是唯一主实现；`stage-xx.ts` 仅作备份，不新建阶段文件推进开发。
+`src/index.ts` 是主入口，`src/config.ts` 负责配置加载；`stage-xx.ts` 仅作备份，不新建阶段文件推进开发。
 学习默认由用户主导；“继续”不自动等于授权代写所有后续源码。已经明确授权的修改无需重复询问。
 优先自行验证，测试应留在仓库内；一次性 `/tmp` 脚本不得被记为可复跑的项目测试。
 代码单行最多 120 字符；方法职责与内部关键步骤应有准确注释，不根据历史摘要猜测接口。
