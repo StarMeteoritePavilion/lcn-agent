@@ -1,8 +1,8 @@
 # lcn-agent
 
-从零开始构建的可扩展终端 AI Agent。目前实现流式模型、echo 工具循环和基础终端交互；会话恢复与扩展系统是后续目标。
+从零开始构建的可扩展终端 AI Agent。目前实现流式模型、echo 工具循环和基础终端交互；已加入 JSONL 会话保存与恢复；会话首节点已通过验收，运行诊断与扩展系统是后续目标。
 
-> **项目状态：** 早期开发中（阶段 3 已完成当前环境验收，33 项交互检查通过；阶段 4 尚未开始）
+> **项目状态：** 早期开发中（阶段 3 已完成当前环境验收，33 项交互检查通过；阶段 4 会话首节点已完成，运行诊断待实现）
 
 ## 目标特性
 
@@ -59,6 +59,21 @@ model = "${MODEL}"
 引用不存在，或 `apiKey`、`baseURL`、`model` 缺失、非字符串、为空或全空白时，启动失败。
 文件读取和 TOML 语法错误也会终止启动，只有 `.env` 不存在可以忽略。
 
+### 配置设计依据
+
+加载统一放在 [src/config.ts](src/config.ts)，使 npm、直接 Node 启动和调试走同一流程。
+Node 原生 `loadEnvFile()` 已满足环境文件加载需求，TOML 解析使用现有 `smol-toml`。
+先解析再替换可防止环境值中的引号和换行改变 TOML 结构；日期对象不参与递归替换。
+必填校验只用 `trim()` 判断空白，返回原值；解析错误不透传原始配置行，避免泄露密钥。
+`loadEnvFile()` 不会让 `NODE_OPTIONS` 影响已经启动的 Node，启动参数应放在外部环境或启动命令中。
+
+配置调研的原始依据（2026-09-21 核对）：
+[Node 加载 API](https://github.com/nodejs/node/blob/v25.9.0/doc/api/process.md#processloadenvfilepath)、
+[环境变量优先级源码](https://github.com/nodejs/node/blob/v25.9.0/src/node_dotenv.cc#L69)、
+[TOML 规范](https://github.com/toml-lang/toml/blob/main/toml.md#string)、
+[smol-toml 文档](https://github.com/squirrelchat/smol-toml/blob/mistress/README.md)。
+配置加载实现见 [src/config.ts](src/config.ts)。
+
 ### 构建与运行
 
 ```bash
@@ -80,6 +95,22 @@ npx tsc --noEmit
 # 格式化所有源码
 npx prettier --write "src/**/*.ts"
 ```
+
+### 会话使用
+
+| 命令 | 用途 |
+| --- | --- |
+| `/new` | 新建会话 |
+| `/sessions` | 列出已保存的完整文件名 |
+| `/resume 完整文件名` | 加载指定会话，模型须与当前配置一致 |
+| `/history` | 查看当前消息历史 |
+| `/exit` | 退出；生成中 Ctrl+C 取消当前请求，空闲时 Ctrl+C 退出 |
+
+交互模式首次提问时创建会话；非交互入口每次创建新会话。
+记录保存在 `.lcn-agent/sessions`，已被 Git 忽略。恢复只读取历史，不重放工具。
+取消和截断时只保留完整消息；损坏记录、缺少末尾换行或未配对工具调用会导致恢复被拒绝，原文件不变。
+已有文件丢失时保存报错，不会自动重建。同一项目只允许一个会话写入进程；
+强制结束后若残留 `.lcn-agent/sessions/.writer.lock`，确认项目没有 Agent 进程运行后再手动删除锁。
 
 ## 开发指南
 
@@ -119,6 +150,34 @@ npx prettier --write "src/**/*.ts"
 }
 ```
 
+### VS Code 断点调试
+
+用 VS Code 打开仓库根目录，在本机 `.vscode/launch.json` 中配置：
+
+```json
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "调试 lcn-agent",
+      "type": "node",
+      "request": "launch",
+      "preLaunchTask": "npm: build",
+      "program": "${workspaceFolder}/dist/index.js",
+      "cwd": "${workspaceFolder}",
+      "sourceMaps": true,
+      "outFiles": ["${workspaceFolder}/dist/**/*.js"],
+      "skipFiles": ["<node_internals>/**"],
+      "console": "integratedTerminal"
+    }
+  ]
+}
+```
+
+在 `src/*.ts` 上设断点，选“调试 lcn-agent”并按 F5；编译生成的 source map 将 JS 映射回 TS。
+配置仍由应用加载 `config.toml` 和可选 `.env`，不另设 `envFile`。
+找不到 `npm: build` 时检查 npm 任务自动检测；断点空心时检查 `cwd`、`sourceMap`、`outFiles` 并重新编译。
+
 ### 项目结构
 
 ```
@@ -136,22 +195,8 @@ lcn-agent/
 
 ## 开发计划
 
-项目按 10 个阶段递进式开发：
-
-| 阶段 | 内容 | 状态 |
-| --- | --- | --- |
-| 0 | 掌握链路所需的 TypeScript | 已完成 |
-| 1 | 不依赖真实模型的 Agent 循环 | 已完成 |
-| 2 | 真实流式模型与可靠取消 | 已完成 |
-| 3 | 接入 TUI | 已完成当前环境验收，33 项交互检查通过 |
-| 4 | 会话保存、恢复和运行诊断 | 待开始 |
-| 5 | 可验证的扩展机制 | 待开始 |
-| 6 | 默认工作流（文件操作、计划、权限等） | 待开始 |
-| 7 | Skills、上下文压缩、项目记忆 | 待开始 |
-| 8 | MCP 与网络能力集成 | 待开始 |
-| 9 | 子代理、后台任务与可发布产品 | 待开始 |
-
-详细计划见 [开发学习计划](docs/agent-development-learning-plan.md)。
+按阶段逐步学习 TypeScript、Agent 循环、终端、会话、扩展与默认工作流。
+完整路线、当前进度和下一节点统一见 [开发学习计划](docs/agent-development-learning-plan.md)。
 
 ## 文档
 
@@ -163,17 +208,19 @@ lcn-agent/
 
 [Apache License 2.0](LICENSE)
 
-## 配置与终端回归验证
+## 当前阶段验收
 
 ```bash
 npm run check
 npm test
-python3 tests/terminal-cancel.py
 ```
 
-`npm test` 编译后运行配置测试；终端测试适用于 macOS/Linux。
-测试使用隔离的测试值和本地模拟服务，不请求真实模型。
+`npm run check` 对当前实现和阶段留档进行类型检查。
+`npm test` 运行唯一的阶段 4 验收脚本 `tests/session-persistence.py`：在临时目录编译当前源码，
+通过本地模拟服务验证会话保存、恢复、取消、工具配对、文件损坏和文件丢失。
+需要 Python 3、Node.js 和已安装的 npm 依赖；PTY 验证适用于 macOS/Linux，不需要 pyte，也不请求真实模型。
 
-2026-09-24 阶段 3 验收：33 项交互检查全部通过，八类交互验收完成；环境与覆盖边界见验收报告。
-新增 `tests/terminal-interaction.py` 使用 PTY 和 `pyte==0.8.2` 检查输入、屏幕和终端恢复。
-安装、重跑命令、具体失败与覆盖边界见 [阶段 3 验收报告](docs/stage-03-acceptance.md)。
+项目按阶段学习：`src/index.ts` 是当前入口，`src/stage-xx.ts` 保存已完成阶段。
+测试只维护当前学习节点；阶段完成后记录验收结论，旧测试可移除，下一阶段更换 `npm test` 入口。
+若阶段依赖独立模块，仅复制入口不能冻结完整实现，应使用 Git 提交标记该阶段的完整状态。
+历史结论和覆盖限制见 [学习计划](docs/agent-development-learning-plan.md#验收记录)。

@@ -18,7 +18,10 @@
 - [12 JavaScript falsy 值与空字符串判断](#2026-09-20-12-javascript-falsy-值与空字符串判断)
 
 ### Node.js 运行时
-- [13 readline.on/off 信号监听与 SIGINT 处理](#2026-09-20-13-readlineon-off-信号监听与-sigint-处理)
+- [13 readline.on/off 信号监听与 SIGINT 处理](#2026-09-20-13-readlineonoff-信号监听与-sigint-处理)
+
+### Agent 与会话
+- [14 消息历史与 JSONL 会话恢复](#2026-09-25-14-消息历史与-jsonl-会话恢复)
 
 ### 工程与调试
 - [11 VS Code 断点调试配置](#2026-09-19-11-vs-code-断点调试配置)
@@ -762,29 +765,11 @@ const ECHO_TOOL = { type: "function", function: { ... } } satisfies ChatCompleti
 
 ## 2026-09-19-11 VS Code 断点调试配置
 
-**问题：** 如何在 VS Code 对本项目打断点？完整步骤是什么？`docs/vscode-debugging-guide.md` 和仓库配置是否够用？一个人手能否靠文档上手？
+**问题：** TypeScript 源码如何与运行中的 JavaScript 断点对应？
 
-**答案：**
-
-本项目是 `tsc` 编译后再跑 `dist/*.js`。`tsconfig.json` 已开 `"sourceMap": true`，可以在 `src/*.ts` 打断点，调试器通过 `.js.map` 映射回源码。不要用 `npm start` 断点，那是普通运行。
-
-### 最小步骤
-
-1. 用 VS Code 打开仓库**根目录** `lcn-agent/`
-2. 在 `src/*.ts` 行号左侧点红点（不要打在 `dist/*.js`）
-3. 用 Launch 配置 `F5` 启动，选「调试 lcn-agent」
-
-`launch.json` 关键字段：`program` 指向 `dist/index.js`，`preLaunchTask` 为 `npm: build`，`envFile` 加载 `.env`，`sourceMaps` + `outFiles` 接上 source map。阶段 0 另加 `args: ["normal"]`。
-
-### 文档与仓库核对
-
-`docs/vscode-debugging-guide.md` 已补全：根目录打开、断在 `src/*.ts`、不要用 `npm start`、`skipFiles`、stage-00 的 `args`、任务找不到、source map 对不上。配置手册合格，复制 JSON 就能用。
-
-仓库侧：`sourceMap` 和 `"build": "tsc"` 已就绪。`.vscode/` 被 gitignore，文件搜索会漏掉；本机实际已有 `launch.json` 和 `settings.json`，与文档主体一致，只少可选的 `skipFiles`。不必再新建，`F5` 即可验证。
-
-一个人手照文档能配起来。体验上的缺口：没写「已有 `launch.json` 就对照、不用再建」；后半篇快捷键偏长；macOS 上 `F5`/`F9` 可能要按 `fn`。
-
-**总结：** 断点打在 `src/*.ts`，用 Launch 配置跑 `dist/*.js`，靠 source map 映射。本机 `launch.json` 已存在，文档够独立上手，下一步是 `F5` 验证而不是继续改配置。
+`tsc` 生成 `dist/*.js` 和 source map，调试器据此映射到 `src/*.ts`。
+类似 Java 在 `.java` 上打断点、运行 `.class`。使用 Launch 配置按 F5 启动；普通 `npm start` 不会自动进入调试器。
+项目的最小配置与排查步骤见 [README](../README.md#vs-code-断点调试)。
 
 ---
 
@@ -879,3 +864,42 @@ try {
 | `emitter.emit(event, ...args)` | 手动触发事件 |
 
 **总结：** `input.on("SIGINT", fn)` 注册 readline 的 Ctrl+C 处理器实现优雅取消；`input.off("SIGINT", fn)` 在操作结束后注销避免泄漏。成对使用是固定模式，底层是 Node.js EventEmitter API。
+
+---
+
+## 2026-09-25-14 消息历史与 JSONL 会话恢复
+
+**问题：** 为什么保存完整消息，而不是直接保存 `RuntimeEvent`？
+
+消息历史是下次模型请求的上下文；运行事件负责通知界面或记录诊断。
+会话持有消息数组，`runAgent()` 追加用户输入、完整 assistant 回答、工具调用和结果。
+`text_delta` 只是片段，不作为完整回答恢复；用量、耗时等属于后续诊断记录。
+
+工具交互顺序是 user → assistant 的 tool_calls → 对应 ID 的 tool 结果 → assistant 最终回答。
+恢复只读取这些消息，不调用 `executeTool()`。缺少工具结果表示执行结果未知，不能假定失败并重试。
+
+**问题：** JSONL 怎样保存多轮消息？
+
+每行是独立 JSON 对象；`JSON.stringify()` 将消息内部换行编码为 `\n`，真实换行分隔记录。
+第一行声明格式版本和模型，后续行保存完整消息：
+
+```jsonl
+{"type":"session","version":1,"model":"local-test"}
+{"type":"message","message":{"role":"user","content":"你好"}}
+{"type":"message","message":{"role":"assistant","content":"你好！"}}
+```
+
+实现见 [src/session.ts](../src/session.ts) 和 [src/index.ts](../src/index.ts)：
+
+- `Message` 用 `role` 区分消息；磁盘 JSON 先作为 `unknown`，由 `messageFrom()` 校验，类型断言不能代替校验。
+- `nextPending()` 用 `Set<string>` 跟踪尚未收到结果的调用 ID，拒绝未配对结果或中途插入普通消息。
+- `saveMessage()` 先写入并刷盘，再更新内存；`O_WRONLY | O_APPEND` 只打开已有文件，不隐式创建。
+  不先做文件存在性检查，避免检查与写入之间的竞态。打开后被外部删除或替换仍不在此保证内。
+- `loadSession()` 检查 UTF-8、格式头、模型、逐行内容及配对关系，成功后才替换当前会话。
+- `lockSessions()` 通过 `wx` 独占创建项目级锁，`finally` 清理；强制结束进程会留下需要人工处理的锁。
+
+取消时保留已经完整保存的消息，丢弃未完成 assistant 文本，因此可能出现相邻的两条 user 消息。
+同步文件 API 适用于当前学习规模；需要高吞吐或大历史时再评估异步写入。
+
+复习实验：备份仅含测试数据的会话，在末尾追加不完整 JSON，再尝试恢复。
+应报告行号且不改写原文件；还原备份后应可加载。正式验证见 `tests/session-persistence.py`。

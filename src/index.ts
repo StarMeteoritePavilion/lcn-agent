@@ -3,6 +3,16 @@ import { clearScreenDown, cursorTo, moveCursor } from "node:readline";
 import { createInterface } from "node:readline/promises";
 import { loadConfig } from "./config.js";
 
+import {
+  createSession,
+  listSessions,
+  loadSession,
+  lockSessions,
+  saveMessage,
+  type Session,
+  SessionWriteError,
+} from "./session.js";
+
 // 在入口的错误边界内完成初始化，配置校验通过后才允许运行 Agent。
 let client: OpenAI;
 let model: string;
@@ -100,14 +110,7 @@ type RuntimeEvent =
 type EventHandler = (event: RuntimeEvent) => void;
 
 type UiStatus =
-  | "idle"
-  | "thinking"
-  | "tool"
-  | "completed"
-  | "cancelled"
-  | "truncated"
-  | "loop_limit"
-  | "error";
+  "idle" | "thinking" | "tool" | "completed" | "cancelled" | "truncated" | "loop_limit" | "error";
 
 type MarkdownState = {
   pendingLine: string;
@@ -351,20 +354,17 @@ async function runAgent(
   userInput: string,
   userAbort: AbortController,
   onEvent: EventHandler,
+  session: Session,
 ): Promise<void> {
-  const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
-    { role: "user", content: userInput },
-  ];
+  saveMessage(session, { role: "user", content: userInput });
+  const messages = session.messages;
 
   let round = 0;
 
   try {
     for (round = 1; round <= MAX_ROUNDS; round++) {
       // 每轮拥有自己的超时信号，同时接受用户 Ctrl+C 的取消信号。
-      onEvent({
-        type: "turn_start",
-        round,
-      });
+      onEvent({ type: "turn_start", round });
 
       const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
       const signal = AbortSignal.any([userAbort.signal, timeout]);
@@ -377,17 +377,11 @@ async function runAgent(
         return;
       }
 
-      onEvent({
-        type: "usage",
-        usage: steamChatResult.usage,
-      });
+      onEvent({ type: "usage", usage: steamChatResult.usage });
 
       if (steamChatResult.finishReason === "stop") {
-        onEvent({
-          type: "agent_end",
-          reason: "completed",
-          round,
-        });
+        saveMessage(session, { role: "assistant", content: steamChatResult.content });
+        onEvent({ type: "agent_end", reason: "completed", round });
         return;
       }
 
@@ -401,7 +395,7 @@ async function runAgent(
         continue;
       }
 
-      messages.push({
+      saveMessage(session, {
         // 先保存模型的 tool_calls 消息，工具结果才能与调用 ID 配对。
         role: "assistant",
         content: steamChatResult.content,
@@ -417,11 +411,7 @@ async function runAgent(
 
       for (const tc of steamChatResult.toolCalls) {
         // 先发出开始事件，再在核心层校验参数并执行工具。
-        onEvent({
-          type: "tool_start",
-          name: tc.name,
-          arguments: tc.arguments,
-        });
+        onEvent({ type: "tool_start", name: tc.name, arguments: tc.arguments });
 
         let output: string;
 
@@ -430,24 +420,14 @@ async function runAgent(
           const parsed = JSON.parse(tc.arguments) as Record<string, unknown>;
           output = executeTool(tc.name, parsed);
 
-          onEvent({
-            type: "tool_end",
-            name: tc.name,
-            output,
-            success: true,
-          });
+          onEvent({ type: "tool_end", name: tc.name, output, success: true });
         } catch (error) {
           output = `执行失败：${error instanceof Error ? error.message : String(error)}`;
 
-          onEvent({
-            type: "tool_end",
-            name: tc.name,
-            output,
-            success: false,
-          });
+          onEvent({ type: "tool_end", name: tc.name, output, success: false });
         }
 
-        messages.push({
+        saveMessage(session, {
           // 无论工具成功或失败，都把结果回填给下一轮模型请求。
           role: "tool",
           tool_call_id: tc.id,
@@ -458,20 +438,23 @@ async function runAgent(
 
     onEvent({ type: "agent_end", reason: "loop_limit", round: MAX_ROUNDS });
   } catch (error) {
+    if (error instanceof SessionWriteError) {
+      throw error;
+    }
     if (error instanceof OpenAI.APIUserAbortError) {
       onEvent({ type: "agent_end", reason: "cancelled", round });
       return;
     }
 
-    onEvent({
-      type: "error",
-      message: error instanceof Error ? error.message : String(error),
-    });
+    onEvent({ type: "error", message: error instanceof Error ? error.message : String(error) });
     onEvent({ type: "agent_end", reason: "error", round });
   }
 }
 
 async function main(): Promise<void> {
+  // 启动只创建内存引用；首次提问或 /new 时才创建会话文件。
+  let session: Session | undefined;
+
   // 交互入口只负责读取输入、绑定取消信号和消费运行事件。
   const input = createInterface({
     input: process.stdin,
@@ -522,6 +505,7 @@ async function main(): Promise<void> {
 
   console.log(`模型: ${model}`);
   console.log("输入内容后回车，输入 /exit 退出。");
+  console.log("/new 新建，/sessions 列出，/resume 完整文件名 恢复，/history 查看历史。");
   console.log("生成中 Ctrl+C 取消，空闲时 Ctrl+C 退出。\n");
   showPrompt();
 
@@ -537,6 +521,40 @@ async function main(): Promise<void> {
         continue;
       }
 
+      // 命令仅在当前请求结束后处理，不与正在执行的工具并发切换会话。
+      if (
+        userInput === "/new" ||
+        userInput === "/sessions" ||
+        userInput === "/history" ||
+        userInput.startsWith("/resume ")
+      ) {
+        try {
+          if (userInput === "/new") {
+            session = createSession(model);
+            writeOutput(`会话：${session.file}\n`);
+          } else if (userInput === "/sessions") {
+            writeOutput(listSessions().join("\n") + "\n");
+          } else if (userInput === "/history") {
+            writeOutput(JSON.stringify(session?.messages ?? [], null, 2) + "\n");
+          } else {
+            session = loadSession(userInput.slice("/resume ".length), model);
+            writeOutput(`已恢复：${session.file}，${session.messages.length} 条消息\n`);
+          }
+        } catch (error) {
+          writeOutput(
+            `会话操作失败：${error instanceof Error ? error.message : String(error)}\n`,
+            true,
+          );
+        }
+        showPrompt();
+        continue;
+      }
+
+      if (!session) {
+        session = createSession(model);
+        writeOutput(`会话：${session.file}\n`);
+      }
+
       writeOutput(`\n用户: ${userInput}\n\n`);
 
       const userAbort = new AbortController();
@@ -544,12 +562,11 @@ async function main(): Promise<void> {
 
       try {
         // await 会暂停当前输入循环，但 readline 仍会缓存用户已提交的后续行。
-        await runAgent(userInput, userAbort, createUiRenderer(writeOutput));
+        await runAgent(userInput, userAbort, createUiRenderer(writeOutput), session);
       } finally {
         // 无论完成、失败还是取消，都必须解除“正在运行”状态。
         activeAbort = null;
       }
-
       showPrompt();
     }
   } finally {
@@ -565,7 +582,10 @@ async function main(): Promise<void> {
 async function runNonInteractive(userInput: string): Promise<void> {
   // 非交互入口用于脚本和调试，复用同一 Agent 循环与事件渲染器。
   console.log(`用户: ${userInput}\n`);
-  await runAgent(userInput, new AbortController(), createUiRenderer());
+  const session = createSession(model);
+  // 打印当前会话文件名，便于非交互模式下追踪会话标识并在后续通过 /resume 恢复。
+  console.log(`会话：${session.file}`);
+  await runAgent(userInput, new AbortController(), createUiRenderer(), session);
   if (process.stdout.isTTY) process.stdout.write(ANSI_RESET);
 }
 
@@ -576,8 +596,16 @@ try {
   client = new OpenAI({ apiKey: config.apiKey, baseURL: config.baseURL });
   model = config.model;
   // 有命令行文本时单次运行，否则进入 readline 交互模式。
-  if (nonInteractiveInput) await runNonInteractive(nonInteractiveInput);
-  else await main();
+  const unlock = lockSessions();
+  try {
+    if (nonInteractiveInput) {
+      await runNonInteractive(nonInteractiveInput);
+    }else {
+      await main();
+    }
+  } finally {
+    unlock();
+  }
 } catch (error) {
   if (error instanceof OpenAI.APIUserAbortError) {
     console.log("请求已取消");

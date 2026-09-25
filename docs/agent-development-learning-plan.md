@@ -8,21 +8,7 @@
 
 ## 当前进度与学习节奏
 
-每次按一个完整、可验证的学习节点推进，不把同类事件或机械改动拆成多轮。基本顺序：阅读一小段源码或概念 → 你手敲完整源码 → 执行指定命令 → 做一个小实验 →
-你反馈实际输出 → 我确认通过后再进入下一步。除非你明确要求我修改，否则我只提供文件路径、完整源码、
-逐段解释和验收标准，不直接替你写入实现。用户要求助手验证时，优先自行自动验证并记录覆盖范围。
-
-### 已完成的小步骤
-
-- [x] 初始化 npm 项目并确认 Node.js、npm 可用。
-- [x] 安装 TypeScript 和 Node.js 类型声明，设置 ESM 模块类型。
-- [x] 配置 `tsconfig.json`，编译并运行最小 TypeScript 程序。
-- [x] 用 `TextEvent`、`ToolStartEvent` 和 `AgentEvent` 表达两种事件。
-- [x] 根据 `event.type` 收窄类型并分别格式化事件。
-- [x] 使用 `Promise`、`async/await` 和异常处理。
-- [x] 使用异步迭代和 `for await` 消费事件流。
-- [x] 使用 `AbortController` 取消事件流。
-- [x] 完成阶段 0 的可运行、可取消小程序。
+教学顺序与授权规则见 [协作引导](agent-coordination-guide.md#教学方式)。本文件集中维护路线、勾选和下一节点。
 
 ### 阶段总览
 
@@ -30,8 +16,6 @@
 - [x] 阶段 1：完全不依赖真实模型的 Agent 循环。
 - [x] 阶段 2：真实流式模型与可靠取消。
 - [x] 阶段 3：把核心接入真正的 TUI。
-  当前节点已实现并验收最小 UI 状态、统一渲染器和 readline 输入提示。
-  2026-09-24：33 项交互检查通过，八类交互验收在记录的本地环境中完成；边界见验收报告。
 - [ ] 阶段 4：会话保存、恢复和运行诊断。
 - [ ] 阶段 5：建立可验证的扩展机制。
 - [ ] 阶段 6：形成默认工作流，而不只是一套插件接口。
@@ -39,7 +23,7 @@
 - [ ] 阶段 8：MCP 与网络信息能力默认集成。
 - [ ] 阶段 9：子代理、后台任务与可发布产品。
 
-阶段总览只有在该阶段的交付物和全部验收项都通过后才勾选；当前阶段 0 至阶段 3 已完成；阶段 3 当前采用 readline 与 ANSI 渲染，尚未接入 Pi TUI；阶段 4 尚未实现。
+阶段总览只有在该阶段的交付物和全部验收项都通过后才勾选；当前阶段 0 至阶段 3 已完成；阶段 3 当前采用 readline 与 ANSI 渲染，尚未接入 Pi TUI；阶段 4 会话首节点已通过验收，运行诊断未实现。
 
 ## 1. 最终交付目标
 
@@ -204,28 +188,28 @@ flowchart TD
 - [x] 验证工具状态更新、取消和退出后的终端恢复。
   取消与退出收尾已实现：补齐 Markdown 半行、复位代码块状态、清理监听并重置 ANSI 样式。
   本地模拟接口与 PTY 检查通过：空行提示、取消后继续请求、空闲 Ctrl+C 和 /exit 退出。
-  复查命令：`npm run build && python3 tests/terminal-cancel.py`，当前工作区已通过；新增交互脚本补齐退格、屏幕属性、取消后编辑属性及退出恢复证据。
+  当时的终端验收已补齐退格、屏幕属性、取消后编辑属性及退出恢复证据；脚本已在阶段结束后移除。
 - [x] 确认界面只消费运行事件，不直接决定工具是否执行。
   已核对并收拢边界：`runAgent()` 调用 `executeTool()` 并产生 `tool_start/tool_end`，UI 只消费事件；核心循环不再直接打印工具间隔。
 
 学习：终端组件、输入焦点、渲染调度、异步输出时的编辑体验。
 交付：输入区、消息区、执行状态、Markdown、错误提示、取消操作；保留简单非交互输出用于调试。
 
-2026-09-24：`tests/terminal-interaction.py` 扩充后 33 项检查全部通过。
+2026-09-24：阶段 3 的 33 项交互检查全部通过，脚本现已移除。
 中文和长行传输、多行逐行排队、短及长编辑行缩放、工具状态、退出属性及 Shell 执行通过；
 生成输出混入编辑行、完成后退格继续输入的位置错误已修复，已补齐长输入中间光标、超屏缩放、滚屏历史和取消后编辑验证。
-详见 [阶段 3 验收报告](stage-03-acceptance.md)。
+证据与覆盖限制见本文 [验收记录](#验收记录)。
 
-八项交互验收：中文；长行；多行粘贴；终端缩放；生成时继续编辑；工具状态更新；取消；退出恢复终端。八类在记录的本地环境中均通过；兼容性边界见验收报告。
+八项交互验收：中文；长行；多行粘贴；终端缩放；生成时继续编辑；工具状态更新；取消；退出恢复终端。八类在记录的本地环境中均通过；兼容性边界见本文验收记录。
 界面只消费运行事件，不直接决定工具是否执行；核心测试不需要启动终端。
 阅读：`InteractiveMode.handleEvent`、`createInteractiveTui`、TUI 渲染与终端清理。[S11]
 
 ### 阶段 4：会话保存、恢复和运行诊断
 
-- [ ] 保存 JSONL 线性会话，并支持查看、新建和恢复。
+- [x] 保存 JSONL 线性会话，并支持查看、新建和恢复。
 - [ ] 记录模型与工具耗时、错误原因、用量以及工具开始和结束事件。
-- [ ] 验证重启恢复、取消后恢复、末行损坏识别和工具结果配对。
-- [ ] 验证恢复时不重复执行已有副作用。
+- [x] 验证重启恢复、取消后恢复、末行损坏识别和工具结果配对。
+- [x] 验证恢复时不重复执行已有副作用。
 - [ ] 对只有工具开始记录、没有完成记录的中断操作显示结果未知。
 
 学习：持久记录与内存状态的区别；消息配对；恢复对话与重放副作用的区别。
@@ -408,120 +392,61 @@ Pi 的 `commit/discard` 不能撤销扩展自行造成的文件和网络副作�
 每项记录：输入、运行事件、实际副作用、预期结果、通过/失败及原因。
 允许先用模拟模型通过确定性用例，再用真实模型抽查关键交互；两类结果分别报告。
 
-## 8. 当前可执行的学习单元
+## 8. 下一学习节点：运行诊断持久化
 
-阶段 0 至阶段 3 已完成。接手先阅读第 8.1 节和验收报告，再按学习模式推进阶段 4。
+会话首节点及文件丢失边界修复已验收通过，见本文 [验收记录](#验收记录)。阶段 4 尚未完成的是运行诊断。
 
-- [x] 确认实际使用的模型提供商和配置来源。
-  2026-09-18：OpenAI 兼容第三方网关（`https://api.lcn29.com/v1`，模型 `gemini-3.8-flash-high`），通过 `.env` 文件配置，SDK 使用 `openai@^7.18.0`。
-- [x] 读取该提供商的流式响应格式和取消方式。
-  2026-09-18：流式 chunk 使用 `delta.content` 增量拼接，`finish_reason` 区分 `stop`/`tool_calls`/`length`，取消通过 `AbortController` 的 `signal` 传入 SDK。
-- [x] 在不接入工具的前提下完成一条真实流式文本请求。
-  2026-09-19：`src/index.ts` 流式请求正常输出，`finish_reason: stop`，退出码 0；模型名改为不存在值时得到 `BadRequestError`（400，`model_not_found`），恢复后类型检查通过。
-- [x] 完成一次包含工具调用的流式 Agent 循环。
-  2026-09-19：`src/index.ts` 使用 openai SDK 发起带 `tools` 定义的流式请求，按 `delta.index` 累积工具参数增量，`finish_reason: tool_calls` 时执行 echo 工具并回填结果，第 2 轮模型给出总结后 `finish_reason: stop` 结束。工具执行失败实验：失败信息回填后模型正常回应，程序不崩溃。`finish_reason: length` 时不执行工具。类型检查通过，退出码 0。
-- [x] 完成用量展示、超时和主动取消。
-  2026-09-19：`stream_options: { include_usage: true }` 获取提供商报告用量，缺失时显示"未报告"；`AbortSignal.timeout(30_000)` 每轮超时保护；`process.on("SIGINT")` 捕获 Ctrl+C；`AbortSignal.any` 合并两个取消源；SDK 取消异常用 `OpenAI.APIUserAbortError` 判断。四项验收全部通过：流式问答 2 轮完成、工具循环 echo+回填、错误模型名 400 报错、Ctrl+C 和 1ms 超时均输出"请求已取消"。
+下一节点按学习模式设计模型与工具耗时、错误原因、用量及工具开始/结束记录。
+先区分模型消息与诊断事件，再明确记录格式、写入时机和中断操作的“结果未知”语义，
+提供完整参考源码和本地模拟验收。诊断格式尚未定义，不假定代码已有字段或命令。
+不提前引入会话分支和上下文压缩。
 
-以下是阶段 2、阶段 3 的历史学习记录；阶段状态以总览和第 8.1 节为准。
+## 验收记录
 
-- [x] 将主入口从命令行参数改为一次终端输入，并验证首尾空格清理。
-  2026-09-20：`src/index.ts` 使用 `readline/promises` 读取输入，`trim()` 清理首尾空格；真实模型请求和流式输出通过，类型检查通过。
-- [x] 支持同一进程内的多轮独立输入，并支持 `/exit` 退出。
-  2026-09-20：连续完成两次真实请求，空输入跳过，输入 `/exit` 后正常退出；各轮暂不共享消息历史。
-- [x] 验证流式请求中的 Ctrl+C 取消，并在取消后继续接收下一条输入。
-  2026-09-20：长文本生成过程中按 Ctrl+C 后当前请求结束，未启动下一轮模型调用；随后输入新问题成功完成，最后 `/exit` 正常退出。
-- [x] 将模型、工具、轮次、用量、结束和错误状态统一转换为 `RuntimeEvent`。
-  2026-09-20：`src/index.ts` 已支持 `text_delta`、`model_end`、`tool_start`、`tool_end`、`turn_start`、`usage`、`agent_end` 和 `error`；正常完成、工具成功/失败、取消、截断、轮次上限和请求异常路径已通过类型检查及本地事件验证。
-- [x] 将 Agent 循环从终端输入入口提取为 `runAgent()`。
-  2026-09-20：`main()` 负责 readline 和取消监听，`runAgent()` 负责消息历史、模型轮次、工具执行和事件发送；普通文本、工具循环、取消和 `/exit` 真实运行通过。
+项目只维护当前节点的验收脚本；旧阶段保留源码快照和以下结论，不持续维护全部历史测试。
+独立模块版本随 Git 提交留档，`stage-xx.ts` 本身不保证依赖模块也已冻结。
+
+历史环境：macOS 26.4.1、Node v25.9.0、npm 11.16.0、Python 3.14.4。
+阶段 3 使用 pyte 0.8.2 仿真；阶段 4 当前验收不依赖 pyte。以下模拟验证未请求真实模型。
+
+| 日期与范围 | 已取得结果 | 当前状态 |
+| --- | --- | --- |
+| 2026-09-25 配置 | 2 项配置测试、类型检查通过 | 配置测试已移除；类型检查继续由 `npm run check` 执行 |
+| 2026-09-24 阶段 3，09-25 复验 | 33 项交互及取消检查通过 | 终端测试已移除，保留完成结论 |
+| 2026-09-25 阶段 4 会话首节点 | 保存恢复、工具配对、取消、损坏处理及文件丢失修复通过 | 当前由 `npm test` 统一验收 |
+
+阶段 3 覆盖中文、2100 字符输入、逐行粘贴、缩放、生成中编辑、工具状态、取消和退出恢复，
+包括滚屏顺序、终端属性和 Shell 实际执行；不等同于所有终端与字体兼容。
+Markdown 表格保留原文，多行粘贴仍分成多次请求；输出混行和光标重置问题已修复。
+
+当前阶段 4 的 `tests/session-persistence.py` 覆盖多轮历史、新会话隔离、重启恢复不重放工具、
+取消恢复、损坏记录、模型不匹配、工具配对、独占锁和写入失败。文件丢失断言已合入：
+不重建无头文件，内存消息及配对状态不变；不保证抵御外部进程在打开描述符后删除或替换文件。
+运行诊断尚未实现，继续扩充同一个阶段 4 脚本，整个阶段仍不勾选完成。
+
+执行方式见 [README](../README.md#当前阶段验收)。
 
 ## 9. 一手来源
 
 本地源码均对应文首提交；本地文件后续可变化，复核时以固定提交为准。
 在线规范于研究日期实际读取。本文没有把既有二手笔记当作行为证据。
 
-- [S1] Pi 根 README：[核心包说明](../README.md)。
-- [S2] Pi SDK：[Agent 与会话组装](../packages/coding-agent/src/core/sdk.ts#L306)。
-- [S3] Pi 核心循环：[循环](../packages/agent/src/agent-loop.ts#L163)、[类型](../packages/agent/src/types.ts)。
-- [S4] Pi Agent：[输入与运行状态](../packages/agent/src/agent.ts#L350)。
-- [S5] Pi 会话：[事件与保存](../packages/coding-agent/src/core/agent-session.ts#L639)、[输入处理](../packages/coding-agent/src/core/agent-session.ts#L1175)。
-- [S6] Pi 扩展：[注册](../packages/coding-agent/src/core/extensions/loader.ts#L252)、[动态加载](../packages/coding-agent/src/core/extensions/loader.ts#L493)。
-- [S7] Pi 内置扩展：[装配](../packages/coding-agent/src/main.ts#L564)、[内置清单](../packages/coding-agent/src/extensions/index.ts)。
-- [S8] Pi 产品文档：[Skills 与 Philosophy](../packages/coding-agent/README.md)、[扩展文档](../packages/coding-agent/docs/extensions.md)。
-- [S9] Pi 会话：[JSONL 保存](../packages/coding-agent/src/core/session-manager.ts#L1029)、[会话文档](../packages/coding-agent/docs/sessions.md)。
-- [S10] Pi 示例：[计划](../packages/coding-agent/examples/extensions/plan-mode/README.md)、[待办](../packages/coding-agent/examples/extensions/todo.ts)、[权限](../packages/coding-agent/examples/extensions/permission-gate.ts)、[提问](../packages/coding-agent/examples/extensions/question.ts)、[子代理](../packages/coding-agent/examples/extensions/subagent/README.md)。
-- [S11] Pi TUI：[界面事件](../packages/coding-agent/src/modes/interactive/interactive-mode.ts#L3159)、[模式](../packages/coding-agent/src/modes/interactive/tui-renderer.ts#L22)、[刷新](../packages/tui/src/tui.ts#L952)、[终端清理](../packages/tui/src/terminal.ts#L422)。
-- [S12] Pi TUI：[依赖与 Node 要求](../packages/tui/package.json)。
-- [S13] Pi AI：[依赖](../packages/ai/package.json)、[参数校验](../packages/ai/src/utils/validation.ts)、[模型运行时](../packages/coding-agent/src/core/model-runtime.ts#L636)、[事件流](../packages/ai/src/utils/event-stream.ts)。
+- [S1] Pi 根 README：[核心包说明](https://github.com/earendil-works/pi/blob/60e7e76bd7ea25cad1dd6f3f1ce0d18814a42759/README.md)。
+- [S2] Pi SDK：[Agent 与会话组装](https://github.com/earendil-works/pi/blob/60e7e76bd7ea25cad1dd6f3f1ce0d18814a42759/packages/coding-agent/src/core/sdk.ts#L306)。
+- [S3] Pi 核心循环：[循环](https://github.com/earendil-works/pi/blob/60e7e76bd7ea25cad1dd6f3f1ce0d18814a42759/packages/agent/src/agent-loop.ts#L163)、[类型](https://github.com/earendil-works/pi/blob/60e7e76bd7ea25cad1dd6f3f1ce0d18814a42759/packages/agent/src/types.ts)。
+- [S4] Pi Agent：[输入与运行状态](https://github.com/earendil-works/pi/blob/60e7e76bd7ea25cad1dd6f3f1ce0d18814a42759/packages/agent/src/agent.ts#L350)。
+- [S5] Pi 会话：[事件与保存](https://github.com/earendil-works/pi/blob/60e7e76bd7ea25cad1dd6f3f1ce0d18814a42759/packages/coding-agent/src/core/agent-session.ts#L639)、[输入处理](https://github.com/earendil-works/pi/blob/60e7e76bd7ea25cad1dd6f3f1ce0d18814a42759/packages/coding-agent/src/core/agent-session.ts#L1175)。
+- [S6] Pi 扩展：[注册](https://github.com/earendil-works/pi/blob/60e7e76bd7ea25cad1dd6f3f1ce0d18814a42759/packages/coding-agent/src/core/extensions/loader.ts#L252)、[动态加载](https://github.com/earendil-works/pi/blob/60e7e76bd7ea25cad1dd6f3f1ce0d18814a42759/packages/coding-agent/src/core/extensions/loader.ts#L493)。
+- [S7] Pi 内置扩展：[装配](https://github.com/earendil-works/pi/blob/60e7e76bd7ea25cad1dd6f3f1ce0d18814a42759/packages/coding-agent/src/main.ts#L564)、[内置清单](https://github.com/earendil-works/pi/blob/60e7e76bd7ea25cad1dd6f3f1ce0d18814a42759/packages/coding-agent/src/extensions/index.ts)。
+- [S8] Pi 产品文档：[Skills 与 Philosophy](https://github.com/earendil-works/pi/blob/60e7e76bd7ea25cad1dd6f3f1ce0d18814a42759/packages/coding-agent/README.md)、[扩展文档](https://github.com/earendil-works/pi/blob/60e7e76bd7ea25cad1dd6f3f1ce0d18814a42759/packages/coding-agent/docs/extensions.md)。
+- [S9] Pi 会话：[JSONL 保存](https://github.com/earendil-works/pi/blob/60e7e76bd7ea25cad1dd6f3f1ce0d18814a42759/packages/coding-agent/src/core/session-manager.ts#L1029)、[会话文档](https://github.com/earendil-works/pi/blob/60e7e76bd7ea25cad1dd6f3f1ce0d18814a42759/packages/coding-agent/docs/sessions.md)。
+- [S10] Pi 示例：[计划](https://github.com/earendil-works/pi/blob/60e7e76bd7ea25cad1dd6f3f1ce0d18814a42759/packages/coding-agent/examples/extensions/plan-mode/README.md)、[待办](https://github.com/earendil-works/pi/blob/60e7e76bd7ea25cad1dd6f3f1ce0d18814a42759/packages/coding-agent/examples/extensions/todo.ts)、[权限](https://github.com/earendil-works/pi/blob/60e7e76bd7ea25cad1dd6f3f1ce0d18814a42759/packages/coding-agent/examples/extensions/permission-gate.ts)、[提问](https://github.com/earendil-works/pi/blob/60e7e76bd7ea25cad1dd6f3f1ce0d18814a42759/packages/coding-agent/examples/extensions/question.ts)、[子代理](https://github.com/earendil-works/pi/blob/60e7e76bd7ea25cad1dd6f3f1ce0d18814a42759/packages/coding-agent/examples/extensions/subagent/README.md)。
+- [S11] Pi TUI：[界面事件](https://github.com/earendil-works/pi/blob/60e7e76bd7ea25cad1dd6f3f1ce0d18814a42759/packages/coding-agent/src/modes/interactive/interactive-mode.ts#L3159)、[模式](https://github.com/earendil-works/pi/blob/60e7e76bd7ea25cad1dd6f3f1ce0d18814a42759/packages/coding-agent/src/modes/interactive/tui-renderer.ts#L22)、[刷新](https://github.com/earendil-works/pi/blob/60e7e76bd7ea25cad1dd6f3f1ce0d18814a42759/packages/tui/src/tui.ts#L952)、[终端清理](https://github.com/earendil-works/pi/blob/60e7e76bd7ea25cad1dd6f3f1ce0d18814a42759/packages/tui/src/terminal.ts#L422)。
+- [S12] Pi TUI：[依赖与 Node 要求](https://github.com/earendil-works/pi/blob/60e7e76bd7ea25cad1dd6f3f1ce0d18814a42759/packages/tui/package.json)。
+- [S13] Pi AI：[依赖](https://github.com/earendil-works/pi/blob/60e7e76bd7ea25cad1dd6f3f1ce0d18814a42759/packages/ai/package.json)、[参数校验](https://github.com/earendil-works/pi/blob/60e7e76bd7ea25cad1dd6f3f1ce0d18814a42759/packages/ai/src/utils/validation.ts)、[模型运行时](https://github.com/earendil-works/pi/blob/60e7e76bd7ea25cad1dd6f3f1ce0d18814a42759/packages/coding-agent/src/core/model-runtime.ts#L636)、[事件流](https://github.com/earendil-works/pi/blob/60e7e76bd7ea25cad1dd6f3f1ce0d18814a42759/packages/ai/src/utils/event-stream.ts)。
 - [S14] MCP 官方：[2026-07-28 架构文档](https://modelcontextprotocol.io/docs/2026-07-28/learn/architecture.md)。该版本文档不等于某个已安装 SDK 的兼容性证明。
-- [S15] Pi 测试：[模拟模型与工具循环](../packages/agent/test/agent-loop.test.ts#L274)。
-- [S16] Pi 扩展运行：[拦截](../packages/coding-agent/src/core/extensions/runner.ts#L982)、[工具绑定](../packages/coding-agent/src/core/agent-session.ts#L482)、[扩展发现测试](../packages/coding-agent/test/extensions-discovery.test.ts)、[运行器测试](../packages/coding-agent/test/extensions-runner.test.ts)。
+- [S15] Pi 测试：[模拟模型与工具循环](https://github.com/earendil-works/pi/blob/60e7e76bd7ea25cad1dd6f3f1ce0d18814a42759/packages/agent/test/agent-loop.test.ts#L274)。
+- [S16] Pi 扩展运行：[拦截](https://github.com/earendil-works/pi/blob/60e7e76bd7ea25cad1dd6f3f1ce0d18814a42759/packages/coding-agent/src/core/extensions/runner.ts#L982)、[工具绑定](https://github.com/earendil-works/pi/blob/60e7e76bd7ea25cad1dd6f3f1ce0d18814a42759/packages/coding-agent/src/core/agent-session.ts#L482)、[扩展发现测试](https://github.com/earendil-works/pi/blob/60e7e76bd7ea25cad1dd6f3f1ce0d18814a42759/packages/coding-agent/test/extensions-discovery.test.ts)、[运行器测试](https://github.com/earendil-works/pi/blob/60e7e76bd7ea25cad1dd6f3f1ce0d18814a42759/packages/coding-agent/test/extensions-runner.test.ts)。
 - [S17] Agent Skills 官方：[客户端接入与渐进加载](https://agentskills.io/client-implementation/adding-skills-support.md)。
 
 版本锚点：[Pi 固定提交](https://github.com/earendil-works/pi/tree/60e7e76bd7ea25cad1dd6f3f1ce0d18814a42759)。
-
-
-## 8.1 接手基线与下一学习节点
-
-本节曾纠正阶段 3 的证据不足结论；2026-09-24 已补齐本地可复跑验收，以下保留历史证据局限。
-
-### 当前事实与可复查证据
-
-- `src/index.ts` 是主入口，`src/config.ts` 负责配置加载；`src/stage-00.ts`、`src/stage-01.ts`、`src/stage-02.ts` 仅留档。
-- 每次 `runAgent()` 都新建消息数组；交互支持多次独立提问，但没有跨提问记忆和持久化。
-- Markdown 按完整行输出，半行在结束或取消时冲刷；不是逐 token 的可重绘 TUI。
-- 多行粘贴目前作为多条请求处理；生成中能排队输入，不代表编辑行与模型输出互不干扰。
-- 临时 PTY 脚本只证明缩放未导致进程崩溃；未证明重排布局、光标位置或中文显示宽度正确。
-- 临时 Shell 脚本的匹配会受到输入回显影响，且没有断言退格和终端属性，不能证明完整恢复。
-- 输入边界、Shell 恢复和非交互模拟验证的临时脚本未入库，不能作为可复现验收门槛。
-- 仓库内可复查的取消测试为 `tests/terminal-cancel.py`，需要 Python 3 和 macOS/Linux PTY。
-- 2026-09-24 新增 `tests/terminal-interaction.py`，使用 pyte 验证屏幕与输入、PTY 属性和 Shell 文件副作用；扩充后 33 项全部通过。前述临时脚本局限保留作历史说明，最新覆盖以 [验收报告](stage-03-acceptance.md) 为准。
-
-```bash
-npm run check
-npm test
-python3 tests/terminal-cancel.py
-/tmp/lcn-stage3-acceptance-venv/bin/python tests/terminal-interaction.py
-git diff --check
-```
-
-取消测试覆盖空行提示、半行冲刷和退出；交互测试补齐屏幕、输入、滚屏历史与终端属性。
-交互测试虚拟环境的安装方式见验收报告。
-真实模型单次入口使用 `npm start -- "你好"`；从项目根目录可直接运行 `node dist/index.js "你好"`。
-应用统一加载 `config.toml` 和可选 `.env`，不读取或记录真实密钥。
-当前 `npm test` 会重新编译并运行配置测试，2026-09-24 已通过；本次验收没有调用真实模型。
-
-### 立即下一节点：阶段 4 的消息历史与会话恢复
-
-2026-09-24 阶段 3 已通过 33 项交互检查、配置测试、取消测试和类型检查。
-接下来按下节展开一个完整学习节点：先理解消息历史与 RuntimeEvent 的区别，再设计和实现 JSONL 会话闭环。
-默认提供完整参考源码，由学习者手敲；本次未新增会话字段、目录或命令。
-
-### 阶段 4 首个完整节点：JSONL 线性会话保存与恢复
-
-状态：教学方案待展开，尚未写入实现。前置：阶段 3 本地验收已闭环。
-
-目标：新建会话 → 连续两次提问共享历史 → 保存 JSONL → 退出重启 → 查看并恢复后续问答。
-主实现仍在 `src/index.ts`；阶段备份不改。优先 Node.js 标准库，不增加数据库或扩展框架。
-
-开始时先讲清消息历史与 RuntimeEvent 的区别，再给完整参考改动及验收命令；默认由用户参考修改。
-记录格式、存储目录、会话选择命令均尚未定义，接手者须明确标为新设计，不能假定代码已有字段或命令。
-确定后同步 README、测试和本文，再按用户授权实现。
-
-本节点需要覆盖：
-
-1. 会话持有跨提问消息历史；保存用户、完整 assistant 消息及带调用 ID 的工具结果。
-2. JSONL 每行是独立记录，声明格式版本；不把展示用文本增量当成完整 assistant 消息恢复。
-3. 支持新建、查看、恢复；恢复仅加载历史，不重新执行已经完成的工具。
-4. 明确取消后的不完整响应和未配对工具记录处理；不能把不完整消息直接发给模型。
-5. 写入失败明确报错；末行损坏可定位，不静默覆盖原文件，不隐藏中间损坏记录。
-
-验收使用临时目录和本地模拟接口，测试脚本入库：
-
-- 连续两问和重启后第三问的请求历史均包含应有消息；新会话不混入旧历史。
-- echo 的 assistant 工具调用与 tool 结果按 ID 配对，恢复后工具执行计数不增加。
-- 取消后恢复、末行截断和不可写路径都得到明确行为，原文件不被静默破坏。
-- 回归取消和双入口，记录实际命令与退出码；模拟通过后再做授权范围内的真实模型抽查。
-
-通过上述闭环后再推进模型与工具耗时、运行诊断记录；本节点不提前加入会话分支或上下文压缩。

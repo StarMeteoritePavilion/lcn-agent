@@ -160,3 +160,5 @@ Icon
 .claude/
 .codegraph/
 
+# 本地会话和写入锁
+.lcn-agent/
