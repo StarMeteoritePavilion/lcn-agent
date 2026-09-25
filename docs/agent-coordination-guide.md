@@ -42,7 +42,7 @@
 
 ## 工作区与协作
 
-主入口为 `src/index.ts`，配置为 `src/config.ts`，会话为 `src/session.ts`。
+主入口为 `src/index.ts`，配置为 `src/core/config.ts`，会话为 `src/core/session.ts`，运行诊断为 `src/core/diagnostics.ts`。
 `src/index.ts` 用于当前阶段学习；`src/stage-xx.ts` 保存已完成阶段，不再修改。
 阶段涉及独立模块时，用 Git 提交标记完整状态；仅复制入口不能冻结模块版本。
 代码单行最多 120 字符，方法职责与关键步骤使用准确中文注释。

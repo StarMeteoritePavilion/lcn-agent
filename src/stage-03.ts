@@ -15,7 +15,7 @@ import { clearScreenDown, cursorTo, moveCursor } from "node:readline";
 // readline/promises：提供支持 async iterator 的命令行输入接口。
 import { createInterface } from "node:readline/promises";
 // 读取并校验项目配置，例如 API Key、接口地址和模型名称。
-import { loadConfig } from "./config.js";
+import { loadConfig } from "./core/config.js";
 
 // 在入口的错误边界内完成初始化，配置校验通过后才允许运行 Agent。
 let client: OpenAI;
