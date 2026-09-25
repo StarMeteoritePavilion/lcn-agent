@@ -102,7 +102,7 @@ import { registerEcho } from "./dist/extensions/echo.js";
 
 const registry = createToolRegistry();
 assert.deepEqual(registry.definitions(), []);
-registerEcho(registry.register);
+registerEcho({ registerTool: registry.register, registerCommand: registry.registerCommand });
 assert.deepEqual(registry.definitions().map((tool) => tool.function.name), ["echo"]);
 assert.equal(registry.execute("echo", { text: "中文回显" }), "中文回显");
 assert.equal(registry.execute("echo", { text: "" }), "");
@@ -111,7 +111,7 @@ for (const args of [null, [], "文本", 1, true, {}, { text: 1 }]) {
 }
 assert.throws(() => registry.execute("Echo", { text: "值" }), /未知工具: Echo/);
 assert.throws(() => registry.execute("toString", {}), /未知工具: toString/);
-assert.throws(() => registerEcho(registry.register), /工具重名: echo/);
+assert.throws(() => registerEcho({ registerTool: registry.register, registerCommand: registry.registerCommand }), /工具重名: echo/);
 assert.equal(registry.execute("echo", { text: "原工具仍可用" }), "原工具仍可用");
 
 // 实验工具只用于验证新增注册，无需修改核心路由。
@@ -172,8 +172,8 @@ for (let i = 0; i < 3; i++) {
 const failure = new Error("初始化失败");
 assert.throws(
   () =>
-    mountExtension(registry, (register) => {
-      register(tool("partial"));
+    mountExtension(registry, (api) => {
+      api.registerTool(tool("partial"));
       throw failure;
     }),
   (error) => error === failure,
@@ -181,21 +181,21 @@ assert.throws(
 assert.deepEqual(names(), ["keep"]);
 assert.throws(
   () =>
-    mountExtension(registry, (register) => {
-      register(tool("partial"));
-      register(tool("keep"));
+    mountExtension(registry, (api) => {
+      api.registerTool(tool("partial"));
+      api.registerTool(tool("keep"));
     }),
   /工具重名: keep/,
 );
 assert.deepEqual(names(), ["keep"]);
 assert.equal(registry.execute("keep", {}), "keep");
 
-let savedRegister;
-const close = mountExtension(registry, (register) => {
-  savedRegister = register;
+let savedApi;
+const close = mountExtension(registry, (api) => {
+  savedApi = api;
 });
 close();
-assert.throws(() => savedRegister(tool("late")), /扩展已卸载/);
+assert.throws(() => savedApi.registerTool(tool("late")), /扩展已卸载/);
 const remove = registry.register(tool("again"));
 remove();
 const removeNew = registry.register(tool("again"));
@@ -229,6 +229,7 @@ const close = mountExtension(registry, registerEcho);
 for (let i = 0; i < 3; i++) {
   const dispose = await loadExtension(registry, "dist/extensions/upper.js");
   assert.equal(registry.execute("upper", { text: "hello" }), "HELLO");
+  assert.equal(registry.executeCommand("upper", "hello  world"), "HELLO  WORLD");
   assert.equal(registry.execute("echo", { text: "hello" }), "hello");
   for (const args of [null, [], {}, {text: 1}]) {
     assert.throws(() => registry.execute("upper", args), /upper 工具参数/);
@@ -236,13 +237,14 @@ for (let i = 0; i < 3; i++) {
   await assert.rejects(loadExtension(registry, "dist/extensions/upper.js"), /工具重名: upper/);
   dispose(); dispose();
   assert.throws(() => registry.execute("upper", {}), /未知工具/);
+  assert.throws(() => registry.executeCommand("upper", ""), /未知命令/);
 }
 for (const [file, source, message] of [
   ["invalid.mjs", "export default 1;", "默认导出注册函数"],
   ["named.mjs", "export function setup() {}", "默认导出注册函数"],
   ["throws.mjs", "throw new Error('模块执行失败');", "模块执行失败"],
-  ["partial.mjs", `export default function(register) {
-    register({definition:{type:"function",function:{name:"partial"}},execute:()=>""});
+  ["partial.mjs", `export default function(api) {
+    api.registerTool({definition:{type:"function",function:{name:"partial"}},execute:()=>""});
     throw new Error("注册失败");
   }`, "注册失败"],
   ["missing.mjs", null, "Cannot find module"],
@@ -256,6 +258,57 @@ close();
 console.log("通过：外部模块加载、参数校验、重名保护、错误定位、失败回滚与三次装载清理");
 '''
         subprocess.run(['node', '--input-type=module', '-e', external_verification],
+                       cwd=project, env=test_env, check=True)
+
+        command_verification = r'''
+import assert from "node:assert/strict";
+import { createToolRegistry, mountExtension } from "./dist/core/tools.js";
+const r = createToolRegistry();
+const command = { name: "sample", execute: text => text };
+for (const name of ["exit", "new", "sessions", "history", "diagnostics", "resume"]) {
+  assert.throws(() => r.registerCommand({ ...command, name }), /宿主命令不可覆盖/);
+}
+for (const name of ["", "/bad", "bad name", "Upper", "1bad"]) {
+  assert.throws(() => r.registerCommand({ ...command, name }), /命令名不合法/);
+}
+const old = r.registerCommand(command);
+assert.throws(() => r.registerCommand(command), /命令重名/);
+assert.equal(r.executeCommand("sample", "保留  空格"), "保留  空格");
+old();
+const fresh = r.registerCommand(command);
+old();
+assert.equal(r.executeCommand("sample", "新注册"), "新注册");
+fresh(); fresh();
+assert.throws(() => r.executeCommand("sample", ""), /未知命令/);
+let saved;
+const failure = new Error("注册中断");
+assert.throws(() => mountExtension(r, api => {
+  saved = api;
+  api.registerTool({ definition: { type: "function", function: {name: "partial"} }, execute: () => "" });
+  api.registerCommand(command);
+  throw failure;
+}), error => error === failure);
+assert.deepEqual(r.definitions(), []);
+assert.throws(() => r.executeCommand("sample", ""), /未知命令/);
+assert.throws(() => saved.registerCommand(command), /扩展已卸载/);
+const keep = r.registerCommand(command);
+assert.throws(() => mountExtension(r, api => {
+  api.registerCommand({ ...command, name: "partial" });
+  api.registerCommand(command);
+}), /命令重名/);
+assert.throws(() => r.executeCommand("partial", ""), /未知命令/);
+assert.equal(r.executeCommand("sample", "原命令"), "原命令");
+keep();
+const close = mountExtension(r, api => {
+  saved = api;
+  api.registerCommand({name: "fail", execute() { throw failure; }});
+});
+assert.throws(() => r.executeCommand("fail", ""), error => error === failure);
+close(); close();
+assert.throws(() => saved.registerCommand(command), /扩展已卸载/);
+console.log("通过：命令名称与宿主保护、重名、错误传播、混合注册回滚、失效拒绝及清理隔离");
+'''
+        subprocess.run(['node', '--input-type=module', '-e', command_verification],
                        cwd=project, env=test_env, check=True)
 
         # 直接验证持久化边界，所有损坏均写在临时目录，比较原始字节不被恢复操作修改。
@@ -303,8 +356,8 @@ console.log("通过：保存恢复、损坏定位、原文件保护、工具配�
 '''
         subprocess.run(['node', '--input-type=module', '-e', verification], cwd=project, env=test_env, check=True)
 
-        def launch():
-            child = subprocess.Popen(['node', 'dist/index.js'], cwd=project, env=test_env, stdin=subprocess.PIPE,
+        def launch(env=None):
+            child = subprocess.Popen(['node', 'dist/index.js'], cwd=project, env=test_env if env is None else env, stdin=subprocess.PIPE,
                                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
             children.append(child)
             lines = queue.Queue()
@@ -492,6 +545,23 @@ console.log("通过：保存恢复、损坏定位、原文件保护、工具配�
             assert result.returncode == 1 and str(missing) in result.stderr
             assert requests.empty(), '扩展加载失败时不得请求模型'
         print('通过：项目外特殊字符路径、入口加载、模型工具发现与结果回填、加载失败不请求模型')
+
+        # 交互命令不请求模型、不创建会话，错误后仍能继续使用终端。
+        before = set((project / '.lcn-agent/sessions').glob('*.jsonl'))
+        child, lines = launch({**test_env, 'LCN_AGENT_EXTENSION': './dist/extensions/upper.js'})
+        expect(lines, '生成中 Ctrl+C')
+        for text, expected in [('/upper hello  world', 'HELLO  WORLD'),
+                               ('/upper\thello', 'HELLO'),
+                               ('/unknow', '未知命令: /unknow'),
+                               ('/', '命令不能为空'),
+                               ('/upper again', 'AGAIN')]:
+            send(child, text)
+            expect(lines, expected)
+        send(child, '/exit')
+        assert child.wait(timeout=5) == 0
+        assert requests.empty(), '命令不能请求模型'
+        assert set((project / '.lcn-agent/sessions').glob('*.jsonl')) == before
+        print('通过：交互命令分发、空格与 Tab 参数、错误后继续、无模型请求及无新会话')
 
         diagnostic_verification = r'''
 import assert from "node:assert/strict";

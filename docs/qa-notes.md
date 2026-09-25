@@ -16,6 +16,10 @@
 - [08 TypeScript 枚举写法与字符串联合类型的选择](#2026-09-18-08-typescript-枚举写法与字符串联合类型的选择)
 - [10 字面量类型 widening 与 as const](#2026-09-19-10-字面量类型-widening-与-as-const)
 - [12 JavaScript falsy 值与空字符串判断](#2026-09-20-12-javascript-falsy-值与空字符串判断)
+- [17 解构赋值中的冒号重命名](#2026-09-25-17-解构赋值中的冒号重命名)
+
+### ESM 模块
+- [16 export function 与 export default function 的区别](#2026-09-25-16-export-function-与-export-default-function-的区别)
 
 ### Node.js 运行时
 - [13 readline.on/off 信号监听与 SIGINT 处理](#2026-09-20-13-readlineonoff-信号监听与-sigint-处理)
@@ -952,3 +956,137 @@ try {
 
 本节点不引入日志库、数据库、自动重试或扩展框架。当前 echo 工具的错误理由可直接记录；
 新增可能携带凭据的工具时，需按该工具的错误结构制定脱敏规则，不直接保存任意异常正文。
+
+---
+
+## 2026-09-25-16 export function 与 export default function 的区别
+
+**问题：** `export function` 和 `export default function` 有什么区别？`src/extensions/upper.ts` 的 `export default` 是否需要修改？
+
+**答案：**
+
+### 两种导出方式
+
+**命名导出（Named Export）：**
+
+```ts
+export function add(a: number, b: number) { return a + b; }
+```
+
+导入时必须用花括号，名字要对上：
+
+```ts
+import { add } from "./utils.js";
+import { add as plus } from "./utils.js";  // 重命名
+```
+
+一个文件可以有任意多个命名导出。
+
+**默认导出（Default Export）：**
+
+```ts
+export default function log(msg: string) { console.log(msg); }
+```
+
+导入时不用花括号，名字随便取：
+
+```ts
+import log from "./logger.js";
+import myLogger from "./logger.js";  // 叫什么都行
+```
+
+一个文件只能有一个 `default`。
+
+### 对比
+
+| | 命名导出 | 默认导出 |
+|--|---|---|
+| 数量 | 一个文件可以有多个 | 一个文件只能有一个 |
+| 导入语法 | `import { name }` | `import name`（无花括号） |
+| 名字 | 必须匹配（或用 `as` 重命名） | 导入方随意命名 |
+| 重构友好 | IDE 全局重命名能追踪 | 每个导入方名字不同，难追踪 |
+
+社区倾向优先用命名导出。默认导出常见于框架约定（React 组件、Next.js 页面等）。
+
+### upper.ts 的问题
+
+同一目录下两个扩展文件风格不一致：
+
+```ts
+// echo.ts — 命名导出
+export function registerEcho(register: RegisterTool): void { ... }
+
+// upper.ts — 默认导出
+export default function registerUpper(register: RegisterTool): void { ... }
+```
+
+`echo.ts` 在 `index.ts` 里的导入是 `import { registerEcho } from "./extensions/echo.js"`。如果 `upper.ts` 保持默认导出，导入就会变成无花括号的 `import registerUpper from "./extensions/upper.js"`，和 echo 不一致。
+
+建议去掉 `default`，改成命名导出：
+
+```ts
+export function registerUpper(register: RegisterTool): void {
+  register({ definition, execute });
+}
+```
+
+**总结：** 命名导出用花括号、名字固定、可以多个；默认导出无花括号、名字随意、只能一个。同一目录的扩展文件应保持统一风格，`upper.ts` 应改为命名导出以和 `echo.ts` 一致。
+
+---
+
+## 2026-09-25-17 解构赋值中的冒号重命名
+
+**问题：** `export function registerEcho({ registerTool: register }: ExtensionAPI): void` 中 `registerTool: register` 是什么写法？
+
+**答案：**
+
+这是**解构赋值 + 重命名**，一步完成"从参数对象里取出属性"和"在函数内部换个名字用"。
+
+### 语法结构
+
+```ts
+function registerEcho({ registerTool: register }: ExtensionAPI): void {
+//                      ^^^^^^^^^^^^  ^^^^^^^^    ^^^^^^^^^^^^
+//                      原属性名       本地变量名    参数的类型标注
+  register({ definition, execute });
+}
+```
+
+`ExtensionAPI` 的定义：
+
+```ts
+type ExtensionAPI = {
+  registerTool: RegisterTool;
+  registerCommand: (command: Command) => void;
+};
+```
+
+等价于分开写：
+
+```ts
+function registerEcho(api: ExtensionAPI): void {
+  const register = api.registerTool;
+  register({ definition, execute });
+}
+```
+
+### 冒号在解构里是重命名，不是类型标注
+
+| 上下文 | 冒号含义 | 例子 |
+|--------|---------|------|
+| 变量声明 | 类型标注 | `const x: string = "hi"` |
+| 解构赋值 | 重命名 | `const { registerTool: register } = api` |
+
+### 不重命名的写法
+
+如果不需要换名字，直接用属性名当变量：
+
+```ts
+function registerEcho({ registerTool }: ExtensionAPI): void {
+  registerTool({ definition, execute });
+}
+```
+
+选择重命名成 `register`，是因为函数内部只关心"注册"这个动作，用短名字更简洁。
+
+**总结：** `{ registerTool: register }` 是从参数对象里取出 `registerTool` 属性，在函数内部叫 `register`。冒号在解构里是重命名，不是类型标注。

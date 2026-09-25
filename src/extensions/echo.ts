@@ -1,4 +1,4 @@
-import { RegisterTool, Tool } from "../core/tools.js";
+import type { ExtensionAPI, Tool } from "../core/tools.js";
 
 // 第 1 部分：给模型看的说明书。
 // 告诉模型：有个叫 echo 的工具，需要一个 string 类型的 text 参数。
@@ -37,7 +37,14 @@ function execute(args: unknown): string {
   return text;
 }
 
-// 第 3 部分：把说明书和执行逻辑组合成一个工具，交给注册表。
-export function registerEcho(register: RegisterTool): void {
+/**
+ * 第 3 部分：把说明书和执行逻辑组合成一个工具，通过 ExtensionAPI 交给注册表。
+ *
+ * echo 是内嵌扩展（命名导出），由宿主直接 import 后通过 mountExtension 装载；
+ * 不使用 export default，因此不通过 loadExtension 动态加载。
+ *
+ * @param api 宿主提供的扩展 API，此处解构出 registerTool 用于注册工具
+ */
+export function registerEcho({ registerTool: register }: ExtensionAPI): void {
   register({ definition, execute });
 }

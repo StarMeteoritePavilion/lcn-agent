@@ -22,6 +22,38 @@ export type Tool = {
 };
 
 /**
+ * 一个可供用户在交互命令行中以 `/名称` 形式调用的命令。
+ *
+ * 与 Tool 的区别：Tool 由模型决定何时调用，参数是模型构造的 JSON；
+ * Command 由用户直接输入触发，参数是斜杠后的原始字符串。
+ */
+export type Command = {
+  /** 命令名（不含斜杠），必须匹配 /^[a-z][a-z0-9_]*$/ 的格式约定。 */
+  name: string;
+  /**
+   * 命令执行函数。
+   *
+   * @param args 用户在命令名之后输入的原始文本（已去除命令名前缀）
+   * @returns 执行结果字符串，输出给用户
+   */
+  execute: (args: string) => string;
+};
+
+/**
+ * 扩展 API：扩展通过同一个入口对象注册工具和命令两种能力。
+ *
+ * - registerTool:    注册一个可被模型调用的工具（签名为 RegisterTool，返回 void）。
+ * - registerCommand: 注册一个可被用户以 `/名称` 调用的命令（签名同样返回 void）。
+ *
+ * 扩展拿到的 API 只有"添加"能力，无法删除、覆盖或遍历已有注册项；
+ * 卸载由宿主（mountExtension）统一管理。
+ */
+export type ExtensionAPI = {
+  registerTool: RegisterTool;
+  registerCommand: (command: Command) => void;
+};
+
+/**
  * 注册工具的函数签名。
  *
  * 扩展只获得注册能力，不接触注册表内部的可变集合。
@@ -30,42 +62,59 @@ export type Tool = {
 export type RegisterTool = (tool: Tool) => void;
 
 /**
- * 工具注册表对外暴露的接口。
+ * 工具与命令注册表对外暴露的接口。
  *
- * - register:    注册一个新工具，工具名重复时抛错；返回一个“撤销注册”函数，调用后删除该工具。
+ * 工具侧：
+ * - register:    注册一个新工具，工具名重复时抛错；返回一个"撤销注册"函数，调用后删除该工具。
  * - definitions: 获取所有已注册工具的 definition 列表，用于随请求一起发给模型（即请求参数 `tools`）。
  * - execute:     按工具名找到对应工具并执行，用于处理模型返回的 tool_calls。
+ *
+ * 命令侧：
+ * - registerCommand: 注册一个用户命令，命令名重复或与宿主保留命令冲突时抛错；返回撤销函数。
+ * - executeCommand:  按命令名找到对应命令并执行，用于处理用户输入的 `/命令名` 交互指令。
  *
  * 注意 register 与 RegisterTool 的区别：
  * 宿主（如 mountExtension）拿到的是带返回值的 register，可以收集撤销函数统一卸载；
  * 交给扩展的是 RegisterTool（返回 void），扩展无法自行删除工具。
- * 由于“返回函数”的函数可以赋值给“返回 void”的函数类型，
+ * 由于"返回函数"的函数可以赋值给"返回 void"的函数类型，
  * registry.register 仍可直接当作 RegisterTool 传给扩展。
+ * registerCommand 同理。
  */
 export type ToolRegistry = {
   register: (tool: Tool) => () => void;
   definitions: () => OpenAI.Chat.Completions.ChatCompletionFunctionTool[];
   execute: (name: string, args: unknown) => string;
+  registerCommand: (command: Command) => () => void;
+  executeCommand: (name: string, args: string) => string;
 };
 
 /**
- * 创建一个工具注册表。
+ * 创建一个工具与命令注册表。
  *
- * 典型使用流程：
+ * 典型使用流程（工具侧）：
  * 1. 启动时调用 register 注册所有工具；
  * 2. 每次请求模型时，把 definitions() 的结果作为 `tools` 参数传入，告诉模型有哪些工具可用；
  * 3. 模型回复中若包含 tool_calls，对每个调用执行 execute(call.function.name, 解析后的参数)，
  *    再把返回的字符串作为 role = "tool" 的消息回传给模型。
  *
- * 内部用闭包持有一个 Map 保存工具，外部只能通过返回对象上的三个方法访问，
- * 无法直接修改这份集合。
+ * 典型使用流程（命令侧）：
+ * 1. 启动时调用 registerCommand 注册扩展命令；
+ * 2. 用户在交互模式输入 `/命令名 参数` 时，调用 executeCommand 执行。
  *
- * @returns 新的 ToolRegistry 对象，初始不包含任何工具
+ * 内部用闭包持有两个 Map 分别保存工具和命令，外部只能通过返回对象上的五个方法访问，
+ * 无法直接修改这两份集合。
+ *
+ * @returns 新的 ToolRegistry 对象，初始不包含任何工具和命令
  */
 export function createToolRegistry(): ToolRegistry {
   // Map<工具名, 工具>：以 definition.function.name 为键。
   // 选用 Map 而非普通对象：键查找语义明确，且不会与 Object 原型上的属性名（如 "toString"）冲突。
   const tools = new Map<string, Tool>();
+
+  // Map<命令名, 命令>：以 command.name 为键，存储所有已注册的扩展命令。
+  const commands = new Map<string, Command>();
+  // 宿主保留命令集合：这些命令名由宿主（index.ts）直接处理，扩展不可覆盖。
+  const reserved = new Set(["exit", "new", "sessions", "history", "diagnostics", "resume"]);
 
   /**
    * 注册一个工具。
@@ -128,50 +177,104 @@ export function createToolRegistry(): ToolRegistry {
       // ponytail: 本节点仅支持同步工具；接入异步工具时再贯通 await 与取消信号。
       return tool.execute(args);
     },
+
+    /**
+     * 注册一个用户命令。
+     *
+     * @param command 要注册的命令对象
+     * @returns 撤销注册函数：调用后从注册表删除该命令；重复调用无副作用
+     * @throws {Error} 命令名不符合 /^[a-z][a-z0-9_]*$/ 格式约定时抛出
+     * @throws {Error} 命令名与宿主保留命令冲突时抛出
+     * @throws {Error} 已存在同名命令时抛出
+     */
+    registerCommand(command: Command): () => void {
+      const { name } = command;
+
+      // 正则校验：命令名必须以小写字母开头，仅含小写字母、数字和下划线；不带斜杠前缀。
+      if (!/^[a-z][a-z0-9_]*$/.test(name)) {
+        throw new Error(`命令名不合法: ${name}`);
+      }
+      // has: 检查 Set 中是否包含该值（说明同 Map.has）。
+      if (reserved.has(name)) {
+        throw new Error(`宿主命令不可覆盖: ${name}`);
+      }
+      if (commands.has(name)) {
+        throw new Error(`命令重名: ${name}`);
+      }
+
+      commands.set(name, command);
+
+      // 状态属于本次注册，旧清理函数不能删除后续注册（逻辑同 register 的 active 守卫）。
+      let active = true;
+      return () => {
+        if (!active) {
+          return;
+        }
+        active = false;
+        commands.delete(name);
+      };
+    },
+
+    /**
+     * 按名称执行命令。
+     *
+     * @param name 命令名（不含斜杠前缀），通常来自用户交互输入
+     * @param args 命令参数，即用户在命令名之后输入的原始文本
+     * @returns 命令执行结果字符串，输出给用户
+     * @throws {Error} 找不到对应命令时抛出
+     */
+    executeCommand(name: string, args: string): string {
+      const command = commands.get(name);
+      if (!command) throw new Error(`未知命令: /${name}`);
+      return command.execute(args);
+    },
   };
 }
 
 /**
- * 装载一个同步静态扩展，将其工具注册归为同一批资源。
+ * 装载一个同步静态扩展，将其注册的工具和命令归为同一批资源。
  *
- * “扩展”就是一个接收 register 函数的普通函数（如 registerEcho），
- * 它在内部调用 register 注册一个或多个工具。
- * mountExtension 负责在中间“记账”：扩展每注册一个工具，就把对应的撤销函数记下来，
- * 这样之后可以一次性卸载这个扩展注册的全部工具，而不影响其他扩展。
+ * "扩展"就是一个接收 ExtensionAPI 的普通函数（如 registerEcho），
+ * 它在内部通过 api.registerTool / api.registerCommand 注册工具和命令。
+ * mountExtension 负责在中间"记账"：扩展每注册一个工具或命令，就把对应的撤销函数记下来，
+ * 这样之后可以一次性卸载这个扩展注册的全部工具和命令，而不影响其他扩展。
  *
  * 典型用法：
  * ```ts
- * const dispose = mountExtension(registry, registerEcho);
- * // ……运行期间 echo 工具可用……
- * dispose(); // 卸载：echo 工具从注册表移除
+ * const dispose = mountExtension(registry, (api) => {
+ *   api.registerTool({ definition, execute });
+ *   api.registerCommand({ name: "greet", execute: () => "hello" });
+ * });
+ * // ……运行期间扩展注册的工具和命令可用……
+ * dispose(); // 卸载：该扩展注册的全部工具和命令从注册表移除
  * ```
  *
  * 要点：
- * - 全有或全无：setup 执行中途抛错时，已注册的工具会全部撤销，不会残留“注册了一半”的扩展。
- * - 卸载后失效：扩展若偷偷保存了 register 函数、卸载后再调用，会直接抛错。
+ * - 全有或全无：setup 执行中途抛错时，已注册的工具和命令会全部撤销，不会残留"注册了一半"的扩展。
+ * - 卸载后失效：扩展若偷偷保存了 api 对象、卸载后再调用注册方法，会直接抛错。
  * - 返回的 dispose 可重复调用，只有第一次生效。
  *
- * @param registry 工具要注册到的目标注册表
- * @param setup 扩展的注册函数，接收一个 RegisterTool，用它登记工具；必须是同步函数
- * @returns 卸载函数：调用后按注册的逆序撤销该扩展注册的所有工具
- * @throws {Error} setup 抛出的错误会在撤销已注册工具后原样向上传递（包括工具重名错误）
+ * @param registry 工具和命令要注册到的目标注册表
+ * @param setup 扩展的注册函数，接收一个 ExtensionAPI 对象，通过它登记工具和命令；必须是同步函数
+ * @returns 卸载函数：调用后按注册的逆序撤销该扩展注册的所有工具和命令
+ * @throws {Error} setup 抛出的错误会在撤销已注册项后原样向上传递（包括工具/命令重名错误）
  */
 export function mountExtension(
   registry: ToolRegistry,
-  setup: (register: RegisterTool) => void,
+  setup: (api: ExtensionAPI) => void,
 ): () => void {
-  // 本扩展每注册一个工具，就把 registry.register 返回的撤销函数存到这里。
+  // 本扩展每注册一个工具或命令，就把 registry.register / registry.registerCommand 返回的撤销函数存到这里。
   const disposers: Array<() => void> = [];
   // 扩展是否仍处于装载状态；dispose 后置为 false，之后的注册请求一律拒绝。
   let active = true;
 
   /**
-   * 卸载本扩展注册的全部工具。重复调用时直接返回，不会重复撤销。
+   * 卸载本扩展注册的全部工具和命令。重复调用时直接返回，不会重复撤销。
    */
   const dispose = (): void => {
     if (!active) return;
     active = false;
-    // 按注册的逆序释放。本节点只收集宿主返回的工具删除函数。
+    // 按注册的逆序释放。本节点收集宿主返回的工具和命令删除函数。
     // （逆序是资源清理的惯例：后申请的资源可能依赖先申请的，先释放后者更安全。）
     //
     // reverse: 原地反转数组并返回该数组本身；此处数组随后即被清空，原地修改无副作用。
@@ -183,24 +286,28 @@ export function mountExtension(
   };
 
   try {
-    // 交给扩展的不是 registry.register 本身，而是包了一层的函数：
-    // 1. 类型是 RegisterTool（返回 void），扩展拿不到撤销函数，无法自行删除工具；
-    // 2. 可以在注册前检查扩展是否已卸载；
-    // 3. 可以把撤销函数收集进 disposers，供 dispose 统一使用。
-    setup((tool) => {
-      // 扩展可能保留注册函数；失效后也不允许向旧实例继续登记。
-      if (!active) {
-        throw new Error("扩展已卸载，不能继续注册工具");
-      }
-      disposers.push(registry.register(tool));
+    // 工具和命令的撤销函数归属于同一个扩展实例。
+    setup({
+      registerTool(tool) {
+        if (!active) {
+          throw new Error("扩展已卸载，不能继续注册工具");
+        }
+        disposers.push(registry.register(tool));
+      },
+      registerCommand(command) {
+        if (!active) {
+          throw new Error("扩展已卸载，不能继续注册命令");
+        }
+        disposers.push(registry.registerCommand(command));
+      },
     });
   } catch (error) {
-    // 初始化失败：撤销本次已经注册成功的工具，再把原错误抛给调用方。
+    // 初始化失败：撤销本次已经注册成功的工具和命令，再把原错误抛给调用方。
     dispose();
     throw error;
   }
 
-  // ponytail: 仅管理同步工具注册；监听器、定时器等接入时再扩展资源清理协议。
+  // ponytail: 仅管理同步工具和命令注册；监听器、定时器等接入时再扩展资源清理协议。
   return dispose;
 }
 
@@ -210,14 +317,15 @@ export function mountExtension(
  * 与 mountExtension 的区别：mountExtension 接收的是代码里已经 import 好的函数，
  * loadExtension 接收的是文件路径，在运行时才去导入模块，适合加载用户自定义的扩展文件。
  *
- * 对扩展文件的要求：必须用 `export default` 默认导出注册函数，例如：
+ * 对扩展文件的要求：必须用 `export default` 默认导出注册函数，该函数接收 ExtensionAPI 对象，例如：
  * ```ts
- * export default function (register) {
- *   register({ definition, execute });
+ * export default function (api) {
+ *   api.registerTool({ definition, execute });
+ *   api.registerCommand({ name: "greet", execute: () => "hello" });
  * }
  * ```
  *
- * @param registry 工具要注册到的目标注册表
+ * @param registry 工具和命令要注册到的目标注册表
  * @param file 扩展文件路径，可以是相对路径（相对于当前工作目录 process.cwd()）或绝对路径；
  *             Node.js 需要能直接执行该文件（通常是 .js / .mjs）
  * @returns Promise，完成后得到卸载函数（即 mountExtension 的返回值）

@@ -1,4 +1,4 @@
-import { RegisterTool, Tool } from "../core/tools.js";
+import type { ExtensionAPI, Tool } from "../core/tools.js";
 
 // 第 1 部分：给模型看的说明书。
 // 告诉模型：有个叫 upper 的工具，需要一个 string 类型的 text 参数。
@@ -55,8 +55,17 @@ function execute(args: unknown): string {
  * 默认导出与命名导出都是标准 ESM 语法，并不存在默认导出普遍更规范的规则。
  * 本项目为“一个外部扩展的主入口”选择默认导出；核心模块的多个公共函数使用命名导出。
  * Pi 在本项目参考版本中的扩展入口也采用默认导出工厂函数，加载器按该约定取得入口。
- * 这里沿用入口组织方式；参数仍是本项目的 RegisterTool，不代表兼容 Pi 的 ExtensionAPI。
+ * 这里沿用入口组织方式；参数是本项目的 ExtensionAPI，通过它注册工具和命令。
  */
-export default function registerUpper(register: RegisterTool): void {
+export default function registerUpper({
+  registerTool: register,
+  registerCommand,
+}: ExtensionAPI): void {
   register({ definition, execute });
+
+  // 用户直接输入命令时执行，不经过模型。
+  registerCommand({
+    name: "upper",
+    execute: (args) => args.toUpperCase(),
+  });
 }

@@ -594,6 +594,27 @@ async function main(): Promise<void> {
         continue;
       }
 
+      // 宿主命令优先；扩展命令及未知斜杠命令都不发送给模型。
+      if (userInput.startsWith("/")) {
+        try {
+          const match = /^\/(\S+)(?:\s+([\s\S]*))?$/.exec(userInput);
+          if (!match) {
+            throw new Error("命令不能为空");
+          }
+          const name = match[1];
+          const args = match[2] ?? "";
+          writeOutput(toolRegistry.executeCommand(name, args) + "\n");
+        } catch (error) {
+          writeOutput(
+            `命令执行失败：${error instanceof Error ? error.message : String(error)}\n`,
+            true,
+          );
+        }
+
+        showPrompt();
+        continue;
+      }
+
       if (!session) {
         session = createSession(model);
         writeOutput(`会话：${session.file}\n`);
