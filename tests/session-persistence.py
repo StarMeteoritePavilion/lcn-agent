@@ -14,6 +14,7 @@ from pathlib import Path
 
 root = Path(__file__).resolve().parents[1]
 requests = queue.Queue()
+tool_definitions = queue.Queue()
 started = threading.Event()
 release = threading.Event()
 tool_requests = 0
@@ -28,6 +29,7 @@ class Handler(BaseHTTPRequestHandler):
         body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
         messages = body['messages']
         requests.put(messages)
+        tool_definitions.put(body.get('tools'))
         if messages[-1]['content'] == '模型错误验证':
             self.send_response(400)
             self.send_header('Content-Type', 'application/json')
@@ -78,6 +80,7 @@ try:
         source.mkdir()
         shutil.copy(root / 'src/index.ts', source / 'index.ts')
         shutil.copytree(root / 'src/core', source / 'core')
+        shutil.copytree(root / 'src/extensions', source / 'extensions')
         (project / 'node_modules').symlink_to(root / 'node_modules', target_is_directory=True)
         (project / 'package.json').write_text('{"type":"module"}')
         subprocess.run([str(root / 'node_modules/.bin/tsc'), '--ignoreConfig', '--target', 'ES2022',
@@ -85,6 +88,129 @@ try:
                         *map(str, source.rglob('*.ts'))], cwd=project, check=True)
         (project / 'config.toml').write_text(
             f'apiKey = "local-test"\nbaseURL = "http://127.0.0.1:{server.server_port}/v1"\nmodel = "local-test"\n')
+
+        registry_verification = r'''
+import assert from "node:assert/strict";
+import { createToolRegistry } from "./dist/core/tools.js";
+import { registerEcho } from "./dist/extensions/echo.js";
+
+const registry = createToolRegistry();
+assert.deepEqual(registry.definitions(), []);
+registerEcho(registry.register);
+assert.deepEqual(registry.definitions().map((tool) => tool.function.name), ["echo"]);
+assert.equal(registry.execute("echo", { text: "中文回显" }), "中文回显");
+assert.equal(registry.execute("echo", { text: "" }), "");
+for (const args of [null, [], "文本", 1, true, {}, { text: 1 }]) {
+  assert.throws(() => registry.execute("echo", args), /echo 工具参数/);
+}
+assert.throws(() => registry.execute("Echo", { text: "值" }), /未知工具: Echo/);
+assert.throws(() => registry.execute("toString", {}), /未知工具: toString/);
+assert.throws(() => registerEcho(registry.register), /工具重名: echo/);
+assert.equal(registry.execute("echo", { text: "原工具仍可用" }), "原工具仍可用");
+
+// 实验工具只用于验证新增注册，无需修改核心路由。
+let calls = 0;
+registry.register({
+  definition: {
+    type: "function",
+    function: { name: "lesson_probe", description: "注册实验", parameters: { type: "object" } },
+  },
+  execute() {
+    calls++;
+    throw new Error("实验执行异常");
+  },
+});
+assert.equal(calls, 0);
+assert.deepEqual(registry.definitions().map((tool) => tool.function.name), ["echo", "lesson_probe"]);
+assert.throws(() => registry.execute("lesson_probe", {}), /实验执行异常/);
+assert.equal(calls, 1);
+assert.deepEqual(createToolRegistry().definitions(), []);
+console.log("通过：定义发现、参数校验、未知工具、重名保护、新工具注册、异常传播与实例隔离");
+'''
+        subprocess.run(['node', '--input-type=module', '-e', registry_verification], cwd=project, check=True)
+
+        lifecycle_verification = r'''
+import assert from "node:assert/strict";
+import { createToolRegistry, mountExtension } from "./dist/core/tools.js";
+import { registerEcho } from "./dist/extensions/echo.js";
+
+const registry = createToolRegistry();
+const tool = (name) => ({
+  definition: {
+    type: "function",
+    function: { name, parameters: { type: "object" } },
+  },
+  execute: () => name,
+});
+const names = () => registry.definitions().map((entry) => entry.function.name);
+const keep = registry.register(tool("keep"));
+const unload = mountExtension(registry, registerEcho);
+assert.deepEqual(names(), ["keep", "echo"]);
+unload();
+unload();
+assert.deepEqual(names(), ["keep"]);
+assert.throws(() => registry.execute("echo", {}), /未知工具/);
+
+// 旧清理函数不能删除新实例中重新注册的同名工具。
+const reload = mountExtension(registry, registerEcho);
+unload();
+assert.equal(registry.execute("echo", { text: "新实例" }), "新实例");
+reload();
+for (let i = 0; i < 3; i++) {
+  const dispose = mountExtension(registry, registerEcho);
+  assert.deepEqual(names(), ["keep", "echo"]);
+  dispose();
+  assert.deepEqual(names(), ["keep"]);
+}
+
+const failure = new Error("初始化失败");
+assert.throws(
+  () =>
+    mountExtension(registry, (register) => {
+      register(tool("partial"));
+      throw failure;
+    }),
+  (error) => error === failure,
+);
+assert.deepEqual(names(), ["keep"]);
+assert.throws(
+  () =>
+    mountExtension(registry, (register) => {
+      register(tool("partial"));
+      register(tool("keep"));
+    }),
+  /工具重名: keep/,
+);
+assert.deepEqual(names(), ["keep"]);
+assert.equal(registry.execute("keep", {}), "keep");
+
+let savedRegister;
+const close = mountExtension(registry, (register) => {
+  savedRegister = register;
+});
+close();
+assert.throws(() => savedRegister(tool("late")), /扩展已卸载/);
+const remove = registry.register(tool("again"));
+remove();
+const removeNew = registry.register(tool("again"));
+remove();
+assert.equal(registry.execute("again", {}), "again");
+removeNew();
+keep();
+assert.deepEqual(names(), []);
+// 同一个工具对象复用时，也必须按注册次数隔离清理状态。
+const shared = tool("shared");
+const oldDispose = registry.register(shared);
+oldDispose();
+const newDispose = registry.register(shared);
+oldDispose();
+assert.equal(registry.execute("shared", {}), "shared");
+newDispose();
+newDispose();
+assert.deepEqual(names(), []);
+console.log("通过：扩展卸载、三次重载、失败回滚、失效注册拒绝及同一对象重注册隔离");
+'''
+        subprocess.run(['node', '--input-type=module', '-e', lifecycle_verification], cwd=project, check=True)
 
         # 直接验证持久化边界，所有损坏均写在临时目录，比较原始字节不被恢复操作修改。
         verification = r'''
@@ -160,6 +286,9 @@ console.log("通过：保存恢复、损坏定位、原文件保护、工具配�
         child, lines = launch()
         expect(lines, '生成中 Ctrl+C')
         assert len(ask(child, lines, '第一问')) == 1
+        definitions = tool_definitions.get(timeout=5)
+        assert [tool['function']['name'] for tool in definitions] == ['echo']
+        assert definitions[0]['function']['parameters']['required'] == ['text']
         history = ask(child, lines, '第二问')
         assert [m['role'] for m in history] == ['user', 'assistant', 'user']
         assert history[0]['content'] == '第一问'

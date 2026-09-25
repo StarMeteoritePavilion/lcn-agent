@@ -1,4 +1,6 @@
 import OpenAI from "openai";
+import { createToolRegistry, mountExtension } from "./core/tools.js";
+import { registerEcho } from "./extensions/echo.js";
 import { clearScreenDown, cursorTo, moveCursor } from "node:readline";
 import { createInterface } from "node:readline/promises";
 import { loadConfig } from "./core/config.js";
@@ -18,36 +20,8 @@ import {
 let client: OpenAI;
 let model: string;
 
-// 工具定义同时发送给模型和约束工具参数；工具是否执行由 Agent 核心决定。
-
-const ECHO_TOOL = {
-  type: "function" as const,
-  function: {
-    name: "echo",
-    description: "原样返回用户提供的文本",
-    parameters: {
-      type: "object",
-      properties: {
-        text: { type: "string", description: "要回显的文本" },
-      },
-      required: ["text"],
-    },
-  },
-};
-
-// 工具执行只发生在 Agent 循环中，UI 层不会调用此函数。
-
-function executeTool(name: string, args: Record<string, unknown>): string {
-  // 先按工具名路由，再校验边界参数；失败由 Agent 循环转换为工具失败结果。
-  if (name === "echo") {
-    if (typeof args.text !== "string") {
-      throw new Error("echo 工具参数 text 必须是 string");
-    }
-    return args.text;
-  }
-
-  throw new Error(`未知工具: ${name}`);
-}
+// 注册表由入口持有；扩展在启动时登记，Agent 循环统一查找和执行。
+const toolRegistry = createToolRegistry();
 
 // RuntimeEvent 是核心与展示层之间的唯一运行时通信边界。
 
@@ -259,7 +233,7 @@ async function streamChat(
     {
       model,
       messages,
-      tools: [ECHO_TOOL],
+      tools: toolRegistry.definitions(),
       stream: true,
       // openai SDK 的 stream: true 默认不返回 usage。需要加 stream_options: { include_usage: true }
       // 这个还需要产商支持的
@@ -465,9 +439,9 @@ async function runAgent(
         let success = true;
         let reason = "工具执行完成";
         try {
-          // JSON 解析和参数校验都在核心层完成，UI 不参与工具决策。
-          const parsed = JSON.parse(tc.arguments) as Record<string, unknown>;
-          output = executeTool(tc.name, parsed);
+          // 核心解析 JSON，工具入口校验参数，失败仍由这里统一回填。
+          const parsed: unknown = JSON.parse(tc.arguments);
+          output = toolRegistry.execute(tc.name, parsed);
         } catch (error) {
           success = false;
           reason =
@@ -664,8 +638,10 @@ async function runNonInteractive(userInput: string): Promise<void> {
 }
 
 const nonInteractiveInput = process.argv.slice(2).join(" ").trim();
+let disposeExtension: (() => void) | undefined;
 
 try {
+  disposeExtension = mountExtension(toolRegistry, registerEcho);
   const config = loadConfig();
   client = new OpenAI({ apiKey: config.apiKey, baseURL: config.baseURL });
   model = config.model;
@@ -688,4 +664,6 @@ try {
     console.error(`\n请求失败：${error instanceof Error ? error.message : String(error)}`);
     process.exitCode = 1;
   }
+} finally {
+  disposeExtension?.();
 }

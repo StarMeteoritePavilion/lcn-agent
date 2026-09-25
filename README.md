@@ -201,7 +201,7 @@ lcn-agent/
 ## 开发计划
 
 按阶段逐步学习 TypeScript、Agent 循环、终端、会话、扩展与默认工作流。
-下一步是阶段 5 的最小扩展注册机制，目前尚未开始。
+阶段 5 的静态工具注册、注册资源归属与清理已完成本地验收；下一步是已编译 JavaScript 外部模块加载。
 完整路线、当前进度和下一节点统一见 [开发学习计划](docs/agent-development-learning-plan.md)。
 
 ## 文档
@@ -222,8 +222,8 @@ npm test
 ```
 
 `npm run check` 对当前实现和阶段留档进行类型检查。
-`npm test` 运行唯一的阶段 4 验收脚本 `tests/session-persistence.py`：在临时目录编译当前源码，
-通过本地模拟服务验证会话保存恢复、工具配对、存储异常和运行诊断；包含真实 30 秒超时，运行约半分钟。
+`npm test` 运行当前唯一的验收脚本 `tests/session-persistence.py`：在临时目录编译当前源码，
+检查静态工具注册、参数校验、重名保护、卸载与失败回滚、同一对象重注册隔离及实际请求中的工具定义，并通过本地模拟服务验证会话保存恢复、工具配对、存储异常和运行诊断；包含真实 30 秒超时，运行约半分钟。
 需要 Python 3、Node.js 和已安装的 npm 依赖；PTY 验证适用于 macOS/Linux，不需要 pyte，也不请求真实模型。
 
 项目按阶段学习：`src/index.ts` 是当前入口，`src/stage-xx.ts` 保存已完成阶段。
