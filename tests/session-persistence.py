@@ -220,6 +220,10 @@ console.log("通过：扩展卸载、三次重载、失败回滚、失效注册�
 
         external_verification = r'''
 import assert from "node:assert/strict";
+const context = Object.freeze({
+  cwd: process.cwd(), model: "local-test", sessionFile: null,
+  ui: Object.freeze({ notify: () => {} }),
+});
 import { writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { createToolRegistry, mountExtension, loadExtension } from "./dist/core/tools.js";
@@ -229,15 +233,15 @@ const close = mountExtension(registry, registerEcho);
 for (let i = 0; i < 3; i++) {
   const dispose = await loadExtension(registry, "dist/extensions/upper.js");
   assert.equal(registry.execute("upper", { text: "hello" }), "HELLO");
-  assert.equal(registry.executeCommand("upper", "hello  world"), "HELLO  WORLD");
+  assert.equal(registry.executeCommand("upper", "hello  world", context), "HELLO  WORLD");
   assert.equal(registry.execute("echo", { text: "hello" }), "hello");
   for (const args of [null, [], {}, {text: 1}]) {
     assert.throws(() => registry.execute("upper", args), /upper 工具参数/);
   }
-  await assert.rejects(loadExtension(registry, "dist/extensions/upper.js"), /命令重名: runs/);
+  await assert.rejects(loadExtension(registry, "dist/extensions/upper.js"), /命令重名: context/);
   dispose(); dispose();
   assert.throws(() => registry.execute("upper", {}), /未知工具/);
-  assert.throws(() => registry.executeCommand("upper", ""), /未知命令/);
+  assert.throws(() => registry.executeCommand("upper", "", context), /未知命令/);
 }
 for (const [file, source, message] of [
   ["invalid.mjs", "export default 1;", "默认导出注册函数"],
@@ -262,6 +266,10 @@ console.log("通过：外部模块加载、参数校验、重名保护、错误�
 
         command_verification = r'''
 import assert from "node:assert/strict";
+const context = Object.freeze({
+  cwd: process.cwd(), model: "local-test", sessionFile: null,
+  ui: Object.freeze({ notify: () => {} }),
+});
 import { createToolRegistry, mountExtension } from "./dist/core/tools.js";
 const r = createToolRegistry();
 const command = { name: "sample", execute: text => text };
@@ -273,13 +281,13 @@ for (const name of ["", "/bad", "bad name", "Upper", "1bad"]) {
 }
 const old = r.registerCommand(command);
 assert.throws(() => r.registerCommand(command), /命令重名/);
-assert.equal(r.executeCommand("sample", "保留  空格"), "保留  空格");
+assert.equal(r.executeCommand("sample", "保留  空格", context), "保留  空格");
 old();
 const fresh = r.registerCommand(command);
 old();
-assert.equal(r.executeCommand("sample", "新注册"), "新注册");
+assert.equal(r.executeCommand("sample", "新注册", context), "新注册");
 fresh(); fresh();
-assert.throws(() => r.executeCommand("sample", ""), /未知命令/);
+assert.throws(() => r.executeCommand("sample", "", context), /未知命令/);
 let saved;
 const failure = new Error("注册中断");
 assert.throws(() => mountExtension(r, api => {
@@ -289,21 +297,21 @@ assert.throws(() => mountExtension(r, api => {
   throw failure;
 }), error => error === failure);
 assert.deepEqual(r.definitions(), []);
-assert.throws(() => r.executeCommand("sample", ""), /未知命令/);
+assert.throws(() => r.executeCommand("sample", "", context), /未知命令/);
 assert.throws(() => saved.registerCommand(command), /扩展已卸载/);
 const keep = r.registerCommand(command);
 assert.throws(() => mountExtension(r, api => {
   api.registerCommand({ ...command, name: "partial" });
   api.registerCommand(command);
 }), /命令重名/);
-assert.throws(() => r.executeCommand("partial", ""), /未知命令/);
-assert.equal(r.executeCommand("sample", "原命令"), "原命令");
+assert.throws(() => r.executeCommand("partial", "", context), /未知命令/);
+assert.equal(r.executeCommand("sample", "原命令", context), "原命令");
 keep();
 const close = mountExtension(r, api => {
   saved = api;
   api.registerCommand({name: "fail", execute() { throw failure; }});
 });
-assert.throws(() => r.executeCommand("fail", ""), error => error === failure);
+assert.throws(() => r.executeCommand("fail", "", context), error => error === failure);
 close(); close();
 assert.throws(() => saved.registerCommand(command), /扩展已卸载/);
 console.log("通过：命令名称与宿主保护、重名、错误传播、混合注册回滚、失效拒绝及清理隔离");
@@ -313,6 +321,10 @@ console.log("通过：命令名称与宿主保护、重名、错误传播、混�
 
         event_verification = r'''
 import assert from "node:assert/strict";
+const context = Object.freeze({
+  cwd: process.cwd(), model: "local-test", sessionFile: null,
+  ui: Object.freeze({ notify: () => {} }),
+});
 import {createToolRegistry, mountExtension, loadExtension} from "./dist/core/tools.js";
 const r = createToolRegistry();
 const event = {type:"agent_end", reason:"completed", round:1};
@@ -347,12 +359,12 @@ assert.deepEqual(r.emitAgentEnd(event), []); assert.equal(count,2);
 r.emitAgentEnd(event); assert.equal(count,3);stop();added();
 for(let i=0;i<3;i++) {
  const close=await loadExtension(r,"dist/extensions/upper.js");
- assert.equal(r.executeCommand("runs",""),"本次装载已结束运行：0");
- await assert.rejects(loadExtension(r,"dist/extensions/upper.js"),/命令重名: runs/);
+ assert.equal(r.executeCommand("runs", "", context),"本次装载已结束运行：0");
+ await assert.rejects(loadExtension(r,"dist/extensions/upper.js"),/命令重名: context/);
  r.emitAgentEnd(event);
- assert.equal(r.executeCommand("runs",""),"本次装载已结束运行：1");
+ assert.equal(r.executeCommand("runs", "", context),"本次装载已结束运行：1");
  close();close();assert.deepEqual(r.emitAgentEnd(event),[]);
- assert.throws(()=>r.executeCommand("runs",""),/未知命令/);
+ assert.throws(()=>r.executeCommand("runs", "", context),/未知命令/);
 }
 console.log("通过：事件顺序、只读快照、异常隔离、分发期间增删、回滚与三次装载计数");
 '''
@@ -626,6 +638,50 @@ console.log("通过：保存恢复、损坏定位、原文件保护、工具配�
         send(child, '/exit'); assert child.wait(timeout=5) == 0
         assert requests.empty()
         print('通过：入口成功与错误结束计数、命令不计数及跨会话保留')
+
+        # 使用真实入口创建上下文，测试快照冻结与会话切换，扩展只读取公开字段。
+        probe = project / 'context-probe.mjs'
+        probe.write_text('''
+import assert from "node:assert/strict";
+import upper from "./dist/extensions/upper.js";
+export default function(api) {
+  upper(api);
+  api.registerCommand({ name: "probe", execute(args, context) {
+    assert(Object.isFrozen(context));
+    assert(Object.isFrozen(context.ui));
+    assert.throws(() => { context.sessionFile = "篡改"; }, TypeError);
+    assert.throws(() => { context.ui.notify = () => {}; }, TypeError);
+    context.ui.notify("上下文只读验证通过");
+  }});
+}
+''')
+        env = {**test_env, 'LCN_AGENT_EXTENSION': str(probe)}
+        child, lines = launch(env)
+        expect(lines, '生成中 Ctrl+C')
+        before = set((project / '.lcn-agent/sessions').glob('*.jsonl'))
+        send(child, '/context')
+        output = expect(lines, '当前会话：尚未创建')
+        assert f'工作目录：{project.resolve()}' in output and '模型：local-test' in output, repr(output)
+        assert 'undefined' not in output
+        send(child, '/probe'); expect(lines, '上下文只读验证通过')
+        assert set((project / '.lcn-agent/sessions').glob('*.jsonl')) == before
+        files = []
+        for _ in range(2):
+            send(child, '/new')
+            output = expect(lines, '会话：')
+            file = output.split('会话：')[-1].strip()
+            files.append(file)
+            send(child, '/context'); expect(lines, '当前会话：' + file)
+        assert files[0] != files[1]
+        send(child, '/exit'); assert child.wait(timeout=5) == 0
+        child, lines = launch(env)
+        expect(lines, '生成中 Ctrl+C')
+        send(child, '/resume ' + files[0]); expect(lines, '已恢复：')
+        send(child, '/context'); expect(lines, '当前会话：' + files[0])
+        send(child, '/upper hello'); expect(lines, 'HELLO')
+        send(child, '/exit'); assert child.wait(timeout=5) == 0
+        assert requests.empty(), '上下文命令不得请求模型'
+        print('通过：真实入口上下文冻结、通知输出、无会话、连续新建、重启恢复及旧命令兼容')
 
         diagnostic_verification = r'''
 import assert from "node:assert/strict";

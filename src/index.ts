@@ -330,6 +330,9 @@ async function runAgent(
   saveMessage(session, { role: "user", content: userInput });
   const messages = session.messages;
   const diagnostics = createDiagnostics(session);
+  // 包装事件处理器：先交给展示层，再在运行结束时额外做两件事——
+  // 1. 写入诊断结束记录；2. 通知扩展订阅的 onAgentEnd 监听器。
+  // 监听器失败只返回提示文本，不会抛错，这里转成 error 事件交给展示层输出。
   const display = onEvent;
   onEvent = (event) => {
     if (event.type === "agent_end") {
@@ -607,7 +610,24 @@ async function main(): Promise<void> {
           }
           const name = match[1];
           const args = match[2] ?? "";
-          writeOutput(toolRegistry.executeCommand(name, args) + "\n");
+          // 每次执行时读取当前状态，避免扩展一直引用旧会话。
+          // Object.freeze 让扩展在运行时也无法改写上下文（CommandContext 的 Readonly 只在编译期生效）。
+          const context = Object.freeze({
+            cwd: process.cwd(),
+            model,
+            sessionFile: session?.file ?? null,
+            ui: Object.freeze({
+              notify: (message: string): void => {
+                writeOutput(message + "\n");
+              },
+            }),
+          });
+
+          const output = toolRegistry.executeCommand(name, args, context);
+          // 命令可以直接返回字符串，也可以只通过 context.ui.notify 输出而不返回。
+          if (output !== undefined) {
+            writeOutput(output + "\n");
+          }
         } catch (error) {
           writeOutput(
             `命令执行失败：${error instanceof Error ? error.message : String(error)}\n`,
@@ -667,7 +687,10 @@ let disposeExtension: (() => void) | undefined;
 let disposeExternal: (() => void) | undefined;
 
 try {
+  // 内置扩展：代码中直接 import，同步装载。
   disposeExtension = mountExtension(toolRegistry, registerEcho);
+  // 外部扩展（可选）：由环境变量 LCN_AGENT_EXTENSION 指定文件路径，运行时动态加载，
+  // 例如 LCN_AGENT_EXTENSION=dist/extensions/upper.js。
   const extensionPath = process.env.LCN_AGENT_EXTENSION;
   if (extensionPath) {
     disposeExternal = await loadExtension(toolRegistry, extensionPath);
@@ -695,6 +718,7 @@ try {
     process.exitCode = 1;
   }
 } finally {
+  // 按装载的逆序卸载：后装载的外部扩展先卸载。
   disposeExternal?.();
   disposeExtension?.();
 }

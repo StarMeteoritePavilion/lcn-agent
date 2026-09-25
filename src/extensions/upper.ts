@@ -38,7 +38,11 @@ function execute(args: unknown): string {
 }
 
 /**
- * 第 3 部分：扩展的统一入口，把工具定义和执行函数交给宿主注册。
+ * 第 3 部分：扩展的统一入口，通过 ExtensionAPI 向宿主注册本扩展提供的全部能力：
+ * - 命令 /context：展示当前工作目录、模型和会话文件（演示 CommandContext 的用法）；
+ * - 命令 /runs：展示本次装载以来已结束的 Agent 运行次数（演示 onAgentEnd 订阅）；
+ * - 工具 upper：供模型调用，把文本转为大写；
+ * - 命令 /upper：供用户直接调用，效果同上但不经过模型。
  *
  * 为什么使用 export default：
  * - 外部扩展通过路径动态加载，宿主事先不知道本文件中的函数叫什么。
@@ -55,23 +59,45 @@ function execute(args: unknown): string {
  * 默认导出与命名导出都是标准 ESM 语法，并不存在默认导出普遍更规范的规则。
  * 本项目为“一个外部扩展的主入口”选择默认导出；核心模块的多个公共函数使用命名导出。
  * Pi 在本项目参考版本中的扩展入口也采用默认导出工厂函数，加载器按该约定取得入口。
- * 这里沿用入口组织方式；参数是本项目的 ExtensionAPI，通过它注册工具和命令。
+ * 这里沿用入口组织方式；参数是本项目的 ExtensionAPI，通过它注册工具、命令和订阅事件。
+ *
+ * @param api 宿主提供的扩展 API。参数处直接解构出三个方法；
+ *            `registerTool: register` 是解构时重命名的写法，表示取出 registerTool 并命名为 register。
  */
 export default function registerUpper({
   registerTool: register,
   registerCommand,
   onAgentEnd,
 }: ExtensionAPI): void {
+  // 命令 /context：不返回值，而是通过 context.ui.notify 逐行输出。
+  // 命令执行函数返回 void 时，宿主不会再额外输出内容。
+  registerCommand({
+    name: "context",
+    // _args：用不到的参数习惯以下划线开头，表示“有意忽略”。
+    // 仍需写出它，因为 context 是第 2 个参数，只能按位置接收。
+    execute(_args, context) {
+      context.ui.notify(`工作目录：${context.cwd}`);
+      context.ui.notify(`模型：${context.model}`);
+      // ??：左侧为 null 或 undefined 时取右侧值（尚未创建会话时 sessionFile 为 null）。
+      context.ui.notify(`当前会话：${context.sessionFile ?? "尚未创建"}`);
+    },
+  });
+
+  // runs 保存在本函数的闭包中，属于“这一次装载”的私有状态：
+  // 订阅回调负责累加，/runs 命令负责读取；扩展卸载后重新装载会从 0 开始计数。
   let runs = 0;
+  // 每次 Agent 运行结束（无论完成、取消还是出错）都会调用一次该回调。
   onAgentEnd(() => {
     runs++;
   });
 
+  // 命令 /runs：直接返回字符串，由宿主负责输出给用户。
   registerCommand({
     name: "runs",
     execute: () => `本次装载已结束运行：${runs}`,
   });
 
+  // 工具 upper：由模型决定何时调用，参数是模型构造的 JSON（见上方 definition 与 execute）。
   register({ definition, execute });
 
   // 用户直接输入命令时执行，不经过模型。

@@ -42,6 +42,26 @@ export type AgentEndEvent = Readonly<AgentEndEventFields>;
 export type AgentEndListener = (event: AgentEndEvent) => void;
 
 /**
+ * 命令执行时的上下文：宿主提供给命令的只读运行信息与输出能力。
+ *
+ * 每次命令执行时由宿主创建，不暴露可修改的会话对象。
+ * （每次执行都新建，因此命令总能读到最新的会话状态，而不是注册时的旧值。）
+ *
+ * - cwd:         当前工作目录。
+ * - model:       当前使用的模型名称。
+ * - sessionFile: 当前会话文件名；尚未创建会话时为 null。
+ * - ui.notify:   向用户输出一行消息。适合需要输出多行、或边执行边输出的命令。
+ */
+export type CommandContext = Readonly<{
+  cwd: string;
+  model: string;
+  sessionFile: string | null;
+  ui: Readonly<{
+    notify: (message: string) => void;
+  }>;
+}>;
+
+/**
  * 一个可供用户在交互命令行中以 `/名称` 形式调用的命令。
  *
  * 与 Tool 的区别：Tool 由模型决定何时调用，参数是模型构造的 JSON；
@@ -54,16 +74,19 @@ export type Command = {
    * 命令执行函数。
    *
    * @param args 用户在命令名之后输入的原始文本（已去除命令名前缀）
-   * @returns 执行结果字符串，输出给用户
+   * @param context 本次执行的上下文（工作目录、模型、会话文件与输出能力），见 CommandContext
+   * @returns 返回字符串时，宿主把它输出给用户；
+   *          不返回（void）时宿主不额外输出，适合已通过 context.ui.notify 自行输出的命令
    */
-  execute: (args: string) => string;
+  execute: (args: string, context: CommandContext) => string | void;
 };
 
 /**
- * 扩展 API：扩展通过同一个入口对象注册工具和命令两种能力。
+ * 扩展 API：扩展通过同一个入口对象注册工具、命令和事件监听三种能力。
  *
  * - registerTool:    注册一个可被模型调用的工具（签名为 RegisterTool，返回 void）。
  * - registerCommand: 注册一个可被用户以 `/名称` 调用的命令（签名同样返回 void）。
+ * - onAgentEnd:      订阅“一次 Agent 运行结束”事件（同样返回 void，不给扩展取消订阅的函数）。
  *
  * 扩展拿到的 API 只有"添加"能力，无法删除、覆盖或遍历已有注册项；
  * 卸载由宿主（mountExtension）统一管理。
@@ -83,7 +106,7 @@ export type ExtensionAPI = {
 export type RegisterTool = (tool: Tool) => void;
 
 /**
- * 工具与命令注册表对外暴露的接口。
+ * 工具、命令与运行结束事件注册表对外暴露的接口。
  *
  * 工具侧：
  * - register:    注册一个新工具，工具名重复时抛错；返回一个"撤销注册"函数，调用后删除该工具。
@@ -92,27 +115,32 @@ export type RegisterTool = (tool: Tool) => void;
  *
  * 命令侧：
  * - registerCommand: 注册一个用户命令，命令名重复或与宿主保留命令冲突时抛错；返回撤销函数。
- * - executeCommand:  按命令名找到对应命令并执行，用于处理用户输入的 `/命令名` 交互指令。
+ * - executeCommand:  按命令名找到对应命令并执行，用于处理用户输入的 `/命令名` 交互指令；
+ *                    宿主需传入本次执行的 CommandContext。
+ *
+ * 运行结束事件侧：
+ * - onAgentEnd:   订阅运行结束事件；返回取消订阅函数。
+ * - emitAgentEnd: 由宿主在每次 Agent 运行结束时调用，通知所有订阅者；返回监听器失败提示列表。
  *
  * 注意 register 与 RegisterTool 的区别：
  * 宿主（如 mountExtension）拿到的是带返回值的 register，可以收集撤销函数统一卸载；
  * 交给扩展的是 RegisterTool（返回 void），扩展无法自行删除工具。
  * 由于"返回函数"的函数可以赋值给"返回 void"的函数类型，
  * registry.register 仍可直接当作 RegisterTool 传给扩展。
- * registerCommand 同理。
+ * registerCommand、onAgentEnd 同理。
  */
 export type ToolRegistry = {
   register: (tool: Tool) => () => void;
   definitions: () => OpenAI.Chat.Completions.ChatCompletionFunctionTool[];
   execute: (name: string, args: unknown) => string;
   registerCommand: (command: Command) => () => void;
-  executeCommand: (name: string, args: string) => string;
+  executeCommand: (name: string, args: string, context: CommandContext) => string | void;
   onAgentEnd: (listener: AgentEndListener) => () => void;
   emitAgentEnd: (event: AgentEndEvent) => string[];
 };
 
 /**
- * 创建一个工具与命令注册表。
+ * 创建一个工具、命令与运行结束事件的注册表。
  *
  * 典型使用流程（工具侧）：
  * 1. 启动时调用 register 注册所有工具；
@@ -122,7 +150,8 @@ export type ToolRegistry = {
  *
  * 典型使用流程（命令侧）：
  * 1. 启动时调用 registerCommand 注册扩展命令；
- * 2. 用户在交互模式输入 `/命令名 参数` 时，调用 executeCommand 执行。
+ * 2. 用户在交互模式输入 `/命令名 参数` 时，宿主创建本次的 CommandContext，
+ *    调用 executeCommand(命令名, 参数, context) 执行。
  *
  * 典型使用流程（运行结束事件）：
  * 1. 扩展调用 onAgentEnd 订阅“一次 Agent 运行结束”的通知；
@@ -250,15 +279,16 @@ export function createToolRegistry(): ToolRegistry {
    *
    * @param name 命令名（不含斜杠前缀），通常来自用户交互输入
    * @param args 命令参数，即用户在命令名之后输入的原始文本
-   * @returns 命令执行结果字符串，输出给用户
-   * @throws {Error} 找不到对应命令时抛出
+   * @param context 本次执行的上下文，原样传给命令的 execute
+   * @returns 命令返回的字符串（由宿主输出给用户）；命令不返回时为 undefined
+   * @throws {Error} 找不到对应命令时抛出；命令自身抛出的错误也会原样向上传递
    */
-  function executeCommand(name: string, args: string): string {
+  function executeCommand(name: string, args: string, context: CommandContext): string | void {
     const command = commands.get(name);
     if (!command) {
       throw new Error(`未知命令: /${name}`);
     }
-    return command.execute(args);
+    return command.execute(args, context);
   }
 
   // ── 运行结束事件 ──
@@ -353,49 +383,50 @@ function once(fn: () => void): () => void {
 }
 
 /**
- * 装载一个同步静态扩展，将其注册的工具和命令归为同一批资源。
+ * 装载一个同步静态扩展，将其注册的工具、命令和事件订阅归为同一批资源。
  *
  * "扩展"就是一个接收 ExtensionAPI 的普通函数（如 registerEcho），
- * 它在内部通过 api.registerTool / api.registerCommand 注册工具和命令。
- * mountExtension 负责在中间"记账"：扩展每注册一个工具或命令，就把对应的撤销函数记下来，
- * 这样之后可以一次性卸载这个扩展注册的全部工具和命令，而不影响其他扩展。
+ * 它在内部通过 api.registerTool / api.registerCommand / api.onAgentEnd 注册工具、命令和订阅事件。
+ * mountExtension 负责在中间"记账"：扩展每注册一项，就把对应的撤销函数记下来，
+ * 这样之后可以一次性卸载这个扩展注册的全部内容，而不影响其他扩展。
  *
  * 典型用法：
  * ```ts
  * const dispose = mountExtension(registry, (api) => {
  *   api.registerTool({ definition, execute });
  *   api.registerCommand({ name: "greet", execute: () => "hello" });
+ *   api.onAgentEnd((event) => console.log(event.reason));
  * });
- * // ……运行期间扩展注册的工具和命令可用……
- * dispose(); // 卸载：该扩展注册的全部工具和命令从注册表移除
+ * // ……运行期间扩展注册的工具、命令和订阅均生效……
+ * dispose(); // 卸载：该扩展注册的全部工具、命令和订阅从注册表移除
  * ```
  *
  * 要点：
- * - 全有或全无：setup 执行中途抛错时，已注册的工具和命令会全部撤销，不会残留"注册了一半"的扩展。
- * - 卸载后失效：扩展若偷偷保存了 api 对象、卸载后再调用注册方法，会直接抛错。
+ * - 全有或全无：setup 执行中途抛错时，已注册的内容会全部撤销，不会残留"注册了一半"的扩展。
+ * - 卸载后失效：扩展若偷偷保存了 api 对象、卸载后再调用注册或订阅方法，会直接抛错。
  * - 返回的 dispose 可重复调用，只有第一次生效。
  *
- * @param registry 工具和命令要注册到的目标注册表
- * @param setup 扩展的注册函数，接收一个 ExtensionAPI 对象，通过它登记工具和命令；必须是同步函数
- * @returns 卸载函数：调用后按注册的逆序撤销该扩展注册的所有工具和命令
+ * @param registry 工具、命令和订阅要注册到的目标注册表
+ * @param setup 扩展的注册函数，接收一个 ExtensionAPI 对象，通过它登记工具、命令和订阅；必须是同步函数
+ * @returns 卸载函数：调用后按注册的逆序撤销该扩展注册的所有内容
  * @throws {Error} setup 抛出的错误会在撤销已注册项后原样向上传递（包括工具/命令重名错误）
  */
 export function mountExtension(
   registry: ToolRegistry,
   setup: (api: ExtensionAPI) => void,
 ): () => void {
-  // 本扩展每注册一个工具或命令，就把 registry.register / registry.registerCommand 返回的撤销函数存到这里。
+  // 本扩展每注册一项（工具、命令或订阅），就把注册表返回的撤销函数存到这里。
   const disposers: Array<() => void> = [];
   // 扩展是否仍处于装载状态；dispose 后置为 false，之后的注册请求一律拒绝。
   let active = true;
 
   /**
-   * 卸载本扩展注册的全部工具和命令。重复调用时直接返回，不会重复撤销。
+   * 卸载本扩展注册的全部工具、命令和订阅。重复调用时直接返回，不会重复撤销。
    */
   const dispose = (): void => {
     if (!active) return;
     active = false;
-    // 按注册的逆序释放。本节点收集宿主返回的工具和命令删除函数。
+    // 按注册的逆序释放。本节点收集宿主返回的工具、命令删除函数和取消订阅函数。
     // （逆序是资源清理的惯例：后申请的资源可能依赖先申请的，先释放后者更安全。）
     //
     // reverse: 原地反转数组并返回该数组本身；此处数组随后即被清空，原地修改无副作用。
@@ -407,7 +438,9 @@ export function mountExtension(
   };
 
   try {
-    // 工具和命令的撤销函数归属于同一个扩展实例。
+    // 工具、命令和订阅的撤销函数归属于同一个扩展实例。
+    // 交给扩展的每个方法都包了一层：先检查是否已卸载，再把撤销函数收进 disposers；
+    // 方法本身返回 void，扩展拿不到撤销函数，无法自行删除。
     setup({
       registerTool(tool) {
         if (!active) {
@@ -429,12 +462,12 @@ export function mountExtension(
       },
     });
   } catch (error) {
-    // 初始化失败：撤销本次已经注册成功的工具和命令，再把原错误抛给调用方。
+    // 初始化失败：撤销本次已经注册成功的工具、命令和订阅，再把原错误抛给调用方。
     dispose();
     throw error;
   }
 
-  // ponytail: 仅管理同步工具和命令注册；监听器、定时器等接入时再扩展资源清理协议。
+  // ponytail: 仅管理同步注册的工具、命令和运行结束订阅；定时器等其他资源接入时再扩展清理协议。
   return dispose;
 }
 
@@ -449,10 +482,11 @@ export function mountExtension(
  * export default function (api) {
  *   api.registerTool({ definition, execute });
  *   api.registerCommand({ name: "greet", execute: () => "hello" });
+ *   api.onAgentEnd((event) => console.log(event.reason));
  * }
  * ```
  *
- * @param registry 工具和命令要注册到的目标注册表
+ * @param registry 工具、命令和订阅要注册到的目标注册表
  * @param file 扩展文件路径，可以是相对路径（相对于当前工作目录 process.cwd()）或绝对路径；
  *             Node.js 需要能直接执行该文件（通常是 .js / .mjs）
  * @returns Promise，完成后得到卸载函数（即 mountExtension 的返回值）
