@@ -1,4 +1,6 @@
 import OpenAI from "openai";
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
 /**
  * 一个可供模型调用的工具。
@@ -131,26 +133,60 @@ export function createToolRegistry(): ToolRegistry {
 
 /**
  * 装载一个同步静态扩展，将其工具注册归为同一批资源。
- * 返回值用于在当前运行结束后卸载；初始化抛错时自动撤销本次注册。
+ *
+ * “扩展”就是一个接收 register 函数的普通函数（如 registerEcho），
+ * 它在内部调用 register 注册一个或多个工具。
+ * mountExtension 负责在中间“记账”：扩展每注册一个工具，就把对应的撤销函数记下来，
+ * 这样之后可以一次性卸载这个扩展注册的全部工具，而不影响其他扩展。
+ *
+ * 典型用法：
+ * ```ts
+ * const dispose = mountExtension(registry, registerEcho);
+ * // ……运行期间 echo 工具可用……
+ * dispose(); // 卸载：echo 工具从注册表移除
+ * ```
+ *
+ * 要点：
+ * - 全有或全无：setup 执行中途抛错时，已注册的工具会全部撤销，不会残留“注册了一半”的扩展。
+ * - 卸载后失效：扩展若偷偷保存了 register 函数、卸载后再调用，会直接抛错。
+ * - 返回的 dispose 可重复调用，只有第一次生效。
+ *
+ * @param registry 工具要注册到的目标注册表
+ * @param setup 扩展的注册函数，接收一个 RegisterTool，用它登记工具；必须是同步函数
+ * @returns 卸载函数：调用后按注册的逆序撤销该扩展注册的所有工具
+ * @throws {Error} setup 抛出的错误会在撤销已注册工具后原样向上传递（包括工具重名错误）
  */
 export function mountExtension(
   registry: ToolRegistry,
   setup: (register: RegisterTool) => void,
 ): () => void {
+  // 本扩展每注册一个工具，就把 registry.register 返回的撤销函数存到这里。
   const disposers: Array<() => void> = [];
+  // 扩展是否仍处于装载状态；dispose 后置为 false，之后的注册请求一律拒绝。
   let active = true;
 
+  /**
+   * 卸载本扩展注册的全部工具。重复调用时直接返回，不会重复撤销。
+   */
   const dispose = (): void => {
     if (!active) return;
     active = false;
     // 按注册的逆序释放。本节点只收集宿主返回的工具删除函数。
+    // （逆序是资源清理的惯例：后申请的资源可能依赖先申请的，先释放后者更安全。）
+    //
+    // reverse: 原地反转数组并返回该数组本身；此处数组随后即被清空，原地修改无副作用。
     for (const cleanup of disposers.reverse()) {
       cleanup();
     }
+    // 把数组长度设为 0 即清空数组，释放对撤销函数的引用。
     disposers.length = 0;
   };
 
   try {
+    // 交给扩展的不是 registry.register 本身，而是包了一层的函数：
+    // 1. 类型是 RegisterTool（返回 void），扩展拿不到撤销函数，无法自行删除工具；
+    // 2. 可以在注册前检查扩展是否已卸载；
+    // 3. 可以把撤销函数收集进 disposers，供 dispose 统一使用。
     setup((tool) => {
       // 扩展可能保留注册函数；失效后也不允许向旧实例继续登记。
       if (!active) {
@@ -159,10 +195,67 @@ export function mountExtension(
       disposers.push(registry.register(tool));
     });
   } catch (error) {
+    // 初始化失败：撤销本次已经注册成功的工具，再把原错误抛给调用方。
     dispose();
     throw error;
   }
 
   // ponytail: 仅管理同步工具注册；监听器、定时器等接入时再扩展资源清理协议。
   return dispose;
+}
+
+/**
+ * 从磁盘文件动态加载一个扩展并装载到注册表。
+ *
+ * 与 mountExtension 的区别：mountExtension 接收的是代码里已经 import 好的函数，
+ * loadExtension 接收的是文件路径，在运行时才去导入模块，适合加载用户自定义的扩展文件。
+ *
+ * 对扩展文件的要求：必须用 `export default` 默认导出注册函数，例如：
+ * ```ts
+ * export default function (register) {
+ *   register({ definition, execute });
+ * }
+ * ```
+ *
+ * @param registry 工具要注册到的目标注册表
+ * @param file 扩展文件路径，可以是相对路径（相对于当前工作目录 process.cwd()）或绝对路径；
+ *             Node.js 需要能直接执行该文件（通常是 .js / .mjs）
+ * @returns Promise，完成后得到卸载函数（即 mountExtension 的返回值）
+ * @throws {Error} 文件不存在、模块执行出错、未默认导出函数、或注册过程出错时抛出；
+ *                 错误信息统一带上扩展的绝对路径，原始错误保存在 cause 中便于排查
+ */
+export async function loadExtension(registry: ToolRegistry, file: string): Promise<() => void> {
+  // resolve: 把路径转换为绝对路径。
+  // - 参数 1 path: 若为相对路径，则以当前工作目录（process.cwd()）为基准拼接。
+  // 转成绝对路径后，报错信息能明确指出是哪个文件，不受工作目录变化影响。
+  const absolutePath = resolve(file);
+
+  try {
+    // import(): 动态导入模块，返回 Promise，完成后得到模块命名空间对象
+    //           （所有导出都挂在它上面，默认导出在 .default 属性）。
+    // 与文件顶部的静态 import 不同，动态 import 可以在运行时根据变量决定加载哪个文件。
+    //
+    // pathToFileURL: 把文件系统路径转换为 file:// URL 对象，.href 取其字符串形式。
+    // - 参数 1 path: 要转换的绝对路径。
+    // ESM 的 import() 需要 URL 形式的模块标识；直接传路径在 Windows 上会失败
+    // （如 "C:\\ext.js" 会被误认为协议名为 "c:" 的 URL），路径中的空格、中文等特殊字符也会被正确编码。
+    const extension = await import(pathToFileURL(absolutePath).href);
+
+    // 默认导出是宿主与外部扩展约定的统一入口，不依赖扩展内部的具体函数名。
+    // export default function registerUpper 对应 extension.default；
+    // export function registerUpper 则对应 extension.registerUpper，不能直接满足当前约定。
+    // 运行时检查只确认入口可调用；其参数契约以及同步注册要求仍由扩展实现遵守。
+    if (typeof extension.default !== "function") {
+      throw new Error("扩展必须默认导出注册函数");
+    }
+    return mountExtension(registry, extension.default);
+  } catch (error) {
+    // 统一包装错误：无论是导入失败、校验失败还是注册失败，都在消息里附上扩展路径。
+    // throw 的值不一定是 Error 实例（JS 允许 throw 任意值），所以先判断再取 message。
+    const reason = error instanceof Error ? error.message : String(error);
+    // Error 构造函数：
+    // - 参数 1 message: 错误描述。
+    // - 参数 2 options: { cause } 记录引发本错误的原始错误，保留完整的错误链与堆栈，便于调试。
+    throw new Error(`加载扩展失败（${absolutePath}）：${reason}`, { cause: error });
+  }
 }

@@ -1,7 +1,7 @@
 import OpenAI from "openai";
-import { createToolRegistry, mountExtension } from "./core/tools.js";
-import { registerEcho } from "./extensions/echo.js";
 import { clearScreenDown, cursorTo, moveCursor } from "node:readline";
+import { createToolRegistry, loadExtension, mountExtension } from "./core/tools.js";
+import { registerEcho } from "./extensions/echo.js";
 import { createInterface } from "node:readline/promises";
 import { loadConfig } from "./core/config.js";
 import { createDiagnostics, DiagnosticWriteError, showDiagnostics } from "./core/diagnostics.js";
@@ -639,9 +639,14 @@ async function runNonInteractive(userInput: string): Promise<void> {
 
 const nonInteractiveInput = process.argv.slice(2).join(" ").trim();
 let disposeExtension: (() => void) | undefined;
+let disposeExternal: (() => void) | undefined;
 
 try {
   disposeExtension = mountExtension(toolRegistry, registerEcho);
+  const extensionPath = process.env.LCN_AGENT_EXTENSION;
+  if (extensionPath) {
+    disposeExternal = await loadExtension(toolRegistry, extensionPath);
+  }
   const config = loadConfig();
   client = new OpenAI({ apiKey: config.apiKey, baseURL: config.baseURL });
   model = config.model;
@@ -665,5 +670,6 @@ try {
     process.exitCode = 1;
   }
 } finally {
+  disposeExternal?.();
   disposeExtension?.();
 }

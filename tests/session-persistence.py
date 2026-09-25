@@ -57,6 +57,10 @@ class Handler(BaseHTTPRequestHandler):
             if last['content'] == '工具参数错误':
                 delta['tool_calls'][0]['function']['arguments'] = '{坏JSON'
             reason = 'tool_calls'
+        elif last['role'] == 'user' and last['content'] == '外部工具验证':
+            delta = {'tool_calls': [{'index': 0, 'id': 'upper_1', 'type': 'function',
+                                    'function': {'name': 'upper', 'arguments': '{"text":"hello"}'}}]}
+            reason = 'tool_calls'
         else:
             delta = {'content': '完整回答\n'}
             reason = 'stop'
@@ -72,6 +76,8 @@ class Handler(BaseHTTPRequestHandler):
 server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
 threading.Thread(target=server.serve_forever, daemon=True).start()
 children = []
+test_env = os.environ.copy()
+test_env.pop('LCN_AGENT_EXTENSION', None)
 
 try:
     with tempfile.TemporaryDirectory(prefix='lcn-stage4-') as temporary:
@@ -85,7 +91,7 @@ try:
         (project / 'package.json').write_text('{"type":"module"}')
         subprocess.run([str(root / 'node_modules/.bin/tsc'), '--ignoreConfig', '--target', 'ES2022',
                         '--module', 'NodeNext', '--strict', '--outDir', str(project / 'dist'),
-                        *map(str, source.rglob('*.ts'))], cwd=project, check=True)
+                        *map(str, source.rglob('*.ts'))], cwd=project, env=test_env, check=True)
         (project / 'config.toml').write_text(
             f'apiKey = "local-test"\nbaseURL = "http://127.0.0.1:{server.server_port}/v1"\nmodel = "local-test"\n')
 
@@ -127,7 +133,7 @@ assert.equal(calls, 1);
 assert.deepEqual(createToolRegistry().definitions(), []);
 console.log("通过：定义发现、参数校验、未知工具、重名保护、新工具注册、异常传播与实例隔离");
 '''
-        subprocess.run(['node', '--input-type=module', '-e', registry_verification], cwd=project, check=True)
+        subprocess.run(['node', '--input-type=module', '-e', registry_verification], cwd=project, env=test_env, check=True)
 
         lifecycle_verification = r'''
 import assert from "node:assert/strict";
@@ -210,7 +216,47 @@ newDispose();
 assert.deepEqual(names(), []);
 console.log("通过：扩展卸载、三次重载、失败回滚、失效注册拒绝及同一对象重注册隔离");
 '''
-        subprocess.run(['node', '--input-type=module', '-e', lifecycle_verification], cwd=project, check=True)
+        subprocess.run(['node', '--input-type=module', '-e', lifecycle_verification], cwd=project, env=test_env, check=True)
+
+        external_verification = r'''
+import assert from "node:assert/strict";
+import { writeFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { createToolRegistry, mountExtension, loadExtension } from "./dist/core/tools.js";
+import { registerEcho } from "./dist/extensions/echo.js";
+const registry = createToolRegistry();
+const close = mountExtension(registry, registerEcho);
+for (let i = 0; i < 3; i++) {
+  const dispose = await loadExtension(registry, "dist/extensions/upper.js");
+  assert.equal(registry.execute("upper", { text: "hello" }), "HELLO");
+  assert.equal(registry.execute("echo", { text: "hello" }), "hello");
+  for (const args of [null, [], {}, {text: 1}]) {
+    assert.throws(() => registry.execute("upper", args), /upper 工具参数/);
+  }
+  await assert.rejects(loadExtension(registry, "dist/extensions/upper.js"), /工具重名: upper/);
+  dispose(); dispose();
+  assert.throws(() => registry.execute("upper", {}), /未知工具/);
+}
+for (const [file, source, message] of [
+  ["invalid.mjs", "export default 1;", "默认导出注册函数"],
+  ["named.mjs", "export function setup() {}", "默认导出注册函数"],
+  ["throws.mjs", "throw new Error('模块执行失败');", "模块执行失败"],
+  ["partial.mjs", `export default function(register) {
+    register({definition:{type:"function",function:{name:"partial"}},execute:()=>""});
+    throw new Error("注册失败");
+  }`, "注册失败"],
+  ["missing.mjs", null, "Cannot find module"],
+]) {
+  if (source !== null) writeFileSync(file, source);
+  await assert.rejects(loadExtension(registry, file), error =>
+    error.message.includes(resolve(file)) && error.message.includes(message) && error.cause instanceof Error);
+  assert.deepEqual(registry.definitions().map(t => t.function.name), ["echo"]);
+}
+close();
+console.log("通过：外部模块加载、参数校验、重名保护、错误定位、失败回滚与三次装载清理");
+'''
+        subprocess.run(['node', '--input-type=module', '-e', external_verification],
+                       cwd=project, env=test_env, check=True)
 
         # 直接验证持久化边界，所有损坏均写在临时目录，比较原始字节不被恢复操作修改。
         verification = r'''
@@ -255,10 +301,10 @@ assert.throws(() => lockSessions(), /EEXIST/);
 unlock();
 console.log("通过：保存恢复、损坏定位、原文件保护、工具配对、写入失败、文件丢失和独占锁");
 '''
-        subprocess.run(['node', '--input-type=module', '-e', verification], cwd=project, check=True)
+        subprocess.run(['node', '--input-type=module', '-e', verification], cwd=project, env=test_env, check=True)
 
         def launch():
-            child = subprocess.Popen(['node', 'dist/index.js'], cwd=project, stdin=subprocess.PIPE,
+            child = subprocess.Popen(['node', 'dist/index.js'], cwd=project, env=test_env, stdin=subprocess.PIPE,
                                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
             children.append(child)
             lines = queue.Queue()
@@ -326,7 +372,7 @@ console.log("通过：保存恢复、损坏定位、原文件保护、工具配�
 
         # 取消必须通过真实终端输入触发 readline 的 SIGINT 事件。
         master, slave = pty.openpty()
-        child = subprocess.Popen(['node', 'dist/index.js'], cwd=project,
+        child = subprocess.Popen(['node', 'dist/index.js'], cwd=project, env=test_env,
                                  stdin=slave, stdout=slave, stderr=slave)
         children.append(child)
         os.close(slave)
@@ -366,7 +412,7 @@ console.log("通过：保存恢复、损坏定位、原文件保护、工具配�
         assert history == [{'role': 'user', 'content': '等待取消'}, {'role': 'user', 'content': '取消后恢复'}]
         send(child, '/exit')
         assert child.wait(timeout=5) == 0
-        result = subprocess.run(['node', 'dist/index.js', '单次入口'], cwd=project,
+        result = subprocess.run(['node', 'dist/index.js', '单次入口'], cwd=project, env=test_env,
                                 capture_output=True, text=True, timeout=5)
         assert result.returncode == 0 and '完成，共 1 轮' in result.stdout
         assert requests.get(timeout=5) == [{'role': 'user', 'content': '单次入口'}]
@@ -413,7 +459,7 @@ console.log("通过：保存恢复、损坏定位、原文件保护、工具配�
         print('通过：诊断耗时、用量、调用关联、模型和工具错误、取消及查看不重放')
 
         # 使用主实现的真实 30 秒超时，不修改生产常量。
-        result = subprocess.run(['node', 'dist/index.js', '等待超时'], cwd=project,
+        result = subprocess.run(['node', 'dist/index.js', '等待超时'], cwd=project, env=test_env,
                                 capture_output=True, text=True, timeout=40)
         assert '请求已取消' in result.stdout
         requests.get(timeout=5)
@@ -422,6 +468,30 @@ console.log("通过：保存恢复、损坏定位、原文件保护、工具配�
         assert any(record['type'] == 'end' and record['outcome'] == 'timeout'
                    and record['reason'] == '请求超时' and record['elapsedMs'] >= 29000 for record in timed_out)
         print('通过：真实 30 秒模型超时与独立超时原因', flush=True)
+
+        # 将真实编译产物放到项目目录外，验证入口的路径选择和完整工具回填。
+        with tempfile.TemporaryDirectory(prefix='lcn-外部 # ') as external:
+            external_file = Path(external) / 'upper.mjs'
+            shutil.copy(project / 'dist/extensions/upper.js', external_file)
+            external_env = {**test_env, 'LCN_AGENT_EXTENSION': str(external_file)}
+            while not tool_definitions.empty():
+                tool_definitions.get_nowait()
+            result = subprocess.run(['node', 'dist/index.js', '外部工具验证'], cwd=project,
+                                    env=external_env, capture_output=True, text=True, timeout=5)
+            assert result.returncode == 0 and '完成，共 2 轮' in result.stdout, result.stderr
+            first = requests.get(timeout=5)
+            assert first[-1]['content'] == '外部工具验证'
+            history = requests.get(timeout=5)
+            assert history[-1] == {'role': 'tool', 'tool_call_id': 'upper_1', 'content': 'HELLO'}
+            assert [t['function']['name'] for t in tool_definitions.get(timeout=5)] == ['echo', 'upper']
+            assert requests.empty()
+            missing = Path(external) / '不存在.mjs'
+            result = subprocess.run(['node', 'dist/index.js', '不应请求模型'], cwd=project,
+                                    env={**test_env, 'LCN_AGENT_EXTENSION': str(missing)},
+                                    capture_output=True, text=True, timeout=5)
+            assert result.returncode == 1 and str(missing) in result.stderr
+            assert requests.empty(), '扩展加载失败时不得请求模型'
+        print('通过：项目外特殊字符路径、入口加载、模型工具发现与结果回填、加载失败不请求模型')
 
         diagnostic_verification = r'''
 import assert from "node:assert/strict";
@@ -448,7 +518,7 @@ appendFileSync(".lcn-agent/diagnostics", "阻止创建子目录");
 assert.throws(() => createDiagnostics(s));
 console.log("通过：中断操作显示未知、损坏记录保持原文件、无日志兼容及日志路径失败");
 '''
-        subprocess.run(['node', '--input-type=module', '-e', diagnostic_verification], cwd=project, check=True)
+        subprocess.run(['node', '--input-type=module', '-e', diagnostic_verification], cwd=project, env=test_env, check=True)
 
 finally:
     release.set()
