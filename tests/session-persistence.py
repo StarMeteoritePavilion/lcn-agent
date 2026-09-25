@@ -234,7 +234,7 @@ for (let i = 0; i < 3; i++) {
   for (const args of [null, [], {}, {text: 1}]) {
     assert.throws(() => registry.execute("upper", args), /upper 工具参数/);
   }
-  await assert.rejects(loadExtension(registry, "dist/extensions/upper.js"), /工具重名: upper/);
+  await assert.rejects(loadExtension(registry, "dist/extensions/upper.js"), /命令重名: runs/);
   dispose(); dispose();
   assert.throws(() => registry.execute("upper", {}), /未知工具/);
   assert.throws(() => registry.executeCommand("upper", ""), /未知命令/);
@@ -309,6 +309,54 @@ assert.throws(() => saved.registerCommand(command), /扩展已卸载/);
 console.log("通过：命令名称与宿主保护、重名、错误传播、混合注册回滚、失效拒绝及清理隔离");
 '''
         subprocess.run(['node', '--input-type=module', '-e', command_verification],
+                       cwd=project, env=test_env, check=True)
+
+        event_verification = r'''
+import assert from "node:assert/strict";
+import {createToolRegistry, mountExtension, loadExtension} from "./dist/core/tools.js";
+const r = createToolRegistry();
+const event = {type:"agent_end", reason:"completed", round:1};
+const order = [];
+const a = mountExtension(r, api => api.onAgentEnd(() => order.push(1)));
+const b = mountExtension(r, api => api.onAgentEnd(e => { e.round = 99; }));
+const c = mountExtension(r, api => api.onAgentEnd(e => { order.push(2); assert.equal(e.round,1); }));
+assert.deepEqual(r.emitAgentEnd(event), ["运行结束监听器执行失败"]);
+assert.deepEqual(order,[1,2]); assert.equal(event.round,1);
+a(); b(); c();
+let count = 0;
+const same = () => count++;
+const old = r.onAgentEnd(same); const other = r.onAgentEnd(same);
+old(); old(); r.emitAgentEnd(event); assert.equal(count,1); other();
+const fresh = r.onAgentEnd(same); old(); r.emitAgentEnd(event); assert.equal(count,2); fresh();
+let saved;
+assert.throws(() => mountExtension(r, api => {
+ saved = api; api.onAgentEnd(same); throw new Error("失败");
+}), /失败/);
+r.emitAgentEnd(event); assert.equal(count,2);
+assert.throws(() => saved.onAgentEnd(same), /已卸载/);
+const dispose = mountExtension(r, api => { saved=api; api.onAgentEnd(same); });
+dispose();dispose();assert.throws(() => saved.onAgentEnd(same),/已卸载/);
+let removeLater;
+let added;
+const stop = r.onAgentEnd(() => {
+ removeLater();
+ if (!added) added=r.onAgentEnd(same);
+});
+removeLater = r.onAgentEnd(() => { throw new Error("已移除者不能执行"); });
+assert.deepEqual(r.emitAgentEnd(event), []); assert.equal(count,2);
+r.emitAgentEnd(event); assert.equal(count,3);stop();added();
+for(let i=0;i<3;i++) {
+ const close=await loadExtension(r,"dist/extensions/upper.js");
+ assert.equal(r.executeCommand("runs",""),"本次装载已结束运行：0");
+ await assert.rejects(loadExtension(r,"dist/extensions/upper.js"),/命令重名: runs/);
+ r.emitAgentEnd(event);
+ assert.equal(r.executeCommand("runs",""),"本次装载已结束运行：1");
+ close();close();assert.deepEqual(r.emitAgentEnd(event),[]);
+ assert.throws(()=>r.executeCommand("runs",""),/未知命令/);
+}
+console.log("通过：事件顺序、只读快照、异常隔离、分发期间增删、回滚与三次装载计数");
+'''
+        subprocess.run(['node', '--input-type=module', '-e', event_verification],
                        cwd=project, env=test_env, check=True)
 
         # 直接验证持久化边界，所有损坏均写在临时目录，比较原始字节不被恢复操作修改。
@@ -562,6 +610,22 @@ console.log("通过：保存恢复、损坏定位、原文件保护、工具配�
         assert requests.empty(), '命令不能请求模型'
         assert set((project / '.lcn-agent/sessions').glob('*.jsonl')) == before
         print('通过：交互命令分发、空格与 Tab 参数、错误后继续、无模型请求及无新会话')
+
+        # 验证真实入口发出结束事件，命令不计数，切换会话不重置装载状态。
+        child, lines = launch({**test_env, 'LCN_AGENT_EXTENSION': './dist/extensions/upper.js'})
+        expect(lines, '生成中 Ctrl+C')
+        send(child, '/runs'); expect(lines, '本次装载已结束运行：0')
+        ask(child, lines, '事件计数验证')
+        send(child, '/runs'); expect(lines, '本次装载已结束运行：1')
+        send(child, '/upper hello'); expect(lines, 'HELLO')
+        send(child, '/new'); expect(lines, '会话：')
+        send(child, '/runs'); expect(lines, '本次装载已结束运行：1')
+        send(child, '模型错误验证'); expect(lines, '请求失败：')
+        requests.get(timeout=5)
+        send(child, '/runs'); expect(lines, '本次装载已结束运行：2')
+        send(child, '/exit'); assert child.wait(timeout=5) == 0
+        assert requests.empty()
+        print('通过：入口成功与错误结束计数、命令不计数及跨会话保留')
 
         diagnostic_verification = r'''
 import assert from "node:assert/strict";

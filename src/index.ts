@@ -1,6 +1,6 @@
 import OpenAI from "openai";
 import { clearScreenDown, cursorTo, moveCursor } from "node:readline";
-import { createToolRegistry, loadExtension, mountExtension } from "./core/tools.js";
+import { AgentEndEvent, createToolRegistry, loadExtension, mountExtension } from "./core/tools.js";
 import { registerEcho } from "./extensions/echo.js";
 import { createInterface } from "node:readline/promises";
 import { loadConfig } from "./core/config.js";
@@ -72,11 +72,7 @@ type RuntimeEvent =
       type: "usage";
       usage: Usage | null;
     }
-  | {
-      type: "agent_end";
-      reason: "completed" | "cancelled" | "loop_limit" | "truncated" | "error";
-      round: number;
-    }
+  | AgentEndEvent
   | {
       type: "error";
       message: string;
@@ -336,8 +332,16 @@ async function runAgent(
   const diagnostics = createDiagnostics(session);
   const display = onEvent;
   onEvent = (event) => {
-    if (event.type === "agent_end") diagnostics.finish(event.reason, event.round);
+    if (event.type === "agent_end") {
+      diagnostics.finish(event.reason, event.round);
+    }
     display(event);
+
+    if (event.type === "agent_end") {
+      for (const message of toolRegistry.emitAgentEnd(event)) {
+        display({ type: "error", message });
+      }
+    }
   };
 
   let round = 0;

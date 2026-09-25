@@ -60,7 +60,18 @@ function execute(args: unknown): string {
 export default function registerUpper({
   registerTool: register,
   registerCommand,
+  onAgentEnd,
 }: ExtensionAPI): void {
+  let runs = 0;
+  onAgentEnd(() => {
+    runs++;
+  });
+
+  registerCommand({
+    name: "runs",
+    execute: () => `本次装载已结束运行：${runs}`,
+  });
+
   register({ definition, execute });
 
   // 用户直接输入命令时执行，不经过模型。
