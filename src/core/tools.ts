@@ -163,6 +163,7 @@ export type Command = {
  * - registerTool:    注册一个可被模型调用的工具（签名为 RegisterTool，返回 void）。
  * - registerCommand: 注册一个可被用户以 `/名称` 调用的命令（签名同样返回 void）。
  * - onAgentEnd:      订阅“一次 Agent 运行结束”事件（同样返回 void，不给扩展取消订阅的函数）。
+ * - onDispose:      登记扩展自有资源的同步清理回调，按登记逆序执行。
  * - readState / writeState: 读写指定命名空间的会话状态；扩展负责数据版本和业务校验。
  *
  * 注册接口只有“添加”能力，无法删除、覆盖或遍历已有注册项。
@@ -172,6 +173,8 @@ export type ExtensionAPI = {
   registerTool: RegisterTool;
   registerCommand: (command: Command) => void;
   onAgentEnd: (listener: AgentEndListener) => void;
+  /** 创建资源后立即登记；只接受同步清理约定，不等待 Promise。 */
+  onDispose: (cleanup: () => void) => void;
   readState: typeof readState;
   writeState: typeof writeState;
 };
@@ -526,7 +529,7 @@ function once(fn: () => void): () => void {
 }
 
 /**
- * 装载一个同步静态扩展，将其注册的工具、命令和事件订阅归为同一批资源。
+ * 装载一个同步静态扩展，统一管理注册项和通过 onDispose 登记的自有资源。
  *
  * "扩展"就是一个接收 ExtensionAPI 的普通函数（如 registerEcho），
  * 它在内部通过 api.registerTool / api.registerCommand / api.onAgentEnd 注册工具、命令和订阅事件。
@@ -547,39 +550,42 @@ function once(fn: () => void): () => void {
  * 要点：
  * - 全有或全无：setup 执行中途抛错时，已注册的内容会全部撤销，不会残留"注册了一半"的扩展。
  * - 卸载后失效：保存的 api 对象不能继续注册、订阅或读写状态；已持久化的状态不会删除。
- * - 回滚只撤销注册资源，不能撤销初始化代码已经写入的文件。
+ * - 回滚撤销注册资源并执行已登记的清理，不能撤销初始化代码已经写入的文件。
+ * - 每项清理最多执行一次；单项失败继续清理其余资源，最后用 AggregateError 汇总。
  * - 返回的 dispose 可重复调用，只有第一次生效。
  *
  * @param registry 工具、命令和订阅要注册到的目标注册表
  * @param setup 扩展的注册函数，接收一个 ExtensionAPI 对象，通过它登记工具、命令和订阅；必须是同步函数
  *              （“同步”只针对注册过程本身；注册进来的工具和命令的执行函数都可以是 async）
  * @returns 卸载函数：调用后按注册的逆序撤销该扩展注册的所有内容
- * @throws {Error} setup 抛出的错误会在撤销已注册项后原样向上传递（包括工具/命令重名错误）
+ * @throws {Error} 初始化失败时回滚；回滚成功则原样抛出，回滚也失败则汇总两类错误。
  */
 export function mountExtension(
   registry: ToolRegistry,
   setup: (api: ExtensionAPI) => void,
 ): () => void {
-  // 本扩展每注册一项（工具、命令或订阅），就把注册表返回的撤销函数存到这里。
+  // 注册资源的撤销函数与扩展自有资源的清理函数共用一个栈。
   const disposers: Array<() => void> = [];
   // 扩展是否仍处于装载状态；dispose 后置为 false，之后的 API 请求一律拒绝。
   let active = true;
 
   /**
-   * 卸载本扩展注册的全部工具、命令和订阅。重复调用时直接返回，不会重复撤销。
+   * 撤销注册项并清理已登记资源。重复调用直接返回；清理失败也不自动重试。
    */
   const dispose = (): void => {
     if (!active) return;
     active = false;
-    // 按注册的逆序释放。本节点收集宿主返回的工具、命令删除函数和取消订阅函数。
-    // （逆序是资源清理的惯例：后申请的资源可能依赖先申请的，先释放后者更安全。）
-    //
-    // reverse: 原地反转数组并返回该数组本身；此处数组随后即被清空，原地修改无副作用。
-    for (const cleanup of disposers.reverse()) {
-      cleanup();
+    const errors: unknown[] = [];
+    // splice(0) 取出并清空整个栈，再逆序执行；失败或重入也不会重复调用。
+    for (const cleanup of disposers.splice(0).reverse()) {
+      try {
+        cleanup();
+      } catch (error) {
+        errors.push(error);
+      }
     }
-    // 把数组长度设为 0 即清空数组，释放对撤销函数的引用。
-    disposers.length = 0;
+    // 所有清理都尝试后才报告；幂等不代表失败资源已经释放，不自动重试。
+    if (errors.length) throw new AggregateError(errors, "扩展资源清理失败");
   };
 
   try {
@@ -587,6 +593,10 @@ export function mountExtension(
     // 每个方法先检查是否已卸载；注册方法把撤销函数收进 disposers，不交给扩展。
     // 状态方法每次直接读写磁盘，不缓存数据，也不把持久状态当作卸载时要删除的资源。
     setup({
+      onDispose(cleanup) {
+        if (!active) throw new Error("扩展已卸载，不能继续登记清理");
+        disposers.push(cleanup);
+      },
       readState(context, namespace) {
         if (!active) throw new Error("扩展已卸载，不能继续读取状态");
         return readState(context, namespace);
@@ -615,13 +625,18 @@ export function mountExtension(
       },
     });
   } catch (error) {
-    // 初始化失败：撤销本次已经注册成功的工具、命令和订阅，再把原错误抛给调用方。
-    dispose();
+    // 初始化和回滚同时失败时保留两个原因，不能让清理异常掩盖初始化异常。
+    try {
+      dispose();
+    } catch (cleanupError) {
+      throw new AggregateError([error, cleanupError], "扩展初始化失败，且资源清理失败", { cause: error });
+    }
     throw error;
   }
 
-  // ponytail: 仅管理同步注册的工具、命令和运行结束订阅；定时器等其他资源接入时再扩展清理协议。
-  // 注意：卸载只会移除注册项，不会取消已在执行中的异步工具或命令；取消由宿主通过 context.signal 负责。
+  // ponytail: 清理仅支持同步操作；需要等待连接关闭或子进程退出时再增加异步清理协议。
+  // () => void 在类型层面不能排除 async 函数；扩展必须遵守同步约定，不返回 Promise。
+  // 卸载撤销注册项并尝试已登记清理，不自动取消正在运行的工具或命令；取消由宿主信号负责。
   return dispose;
 }
 

@@ -866,7 +866,13 @@ try {
     process.exitCode = 1;
   }
 } finally {
-  // 按装载的逆序卸载：后装载的外部扩展先卸载。
-  disposeExternal?.();
-  disposeExtension?.();
+  // 按装载逆序逐个清理；一个扩展失败不能跳过其他扩展。
+  for (const dispose of [disposeExternal, disposeExtension]) {
+    try {
+      dispose?.();
+    } catch {
+      console.error("扩展清理失败，部分资源可能尚未释放");
+      process.exitCode = 1;
+    }
+  }
 }

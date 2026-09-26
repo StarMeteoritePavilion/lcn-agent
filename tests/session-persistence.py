@@ -402,6 +402,66 @@ console.log("通过：事件顺序、只读快照、异常隔离、分发期间�
         subprocess.run(['node', '--input-type=module', '-e', event_verification],
                        cwd=project, env=test_env, check=True)
 
+        cleanup_verification = r'''
+import assert from "node:assert/strict";
+import {createToolRegistry,mountExtension} from "./dist/core/tools.js";
+const r=createToolRegistry();const order=[];let saved;let calls=0;
+const failure=Error("清理失败");
+const context={signal:new AbortController().signal};
+const close=mountExtension(r,api=>{
+ saved=api;
+ api.registerCommand({name:"cleanup_probe",execute:()=>"已注册"});
+ api.onAgentEnd(()=>calls++);
+ const timer=setInterval(()=>{},1000);
+ api.onDispose(()=>{clearInterval(timer);order.push(1)});
+ api.onDispose(()=>{order.push(2);throw failure});
+ api.onDispose(()=>{order.push(3);close()});
+});
+assert.throws(close,e=>e instanceof AggregateError&&e.errors[0]===failure);
+assert.deepEqual(order,[3,2,1]);close();assert.deepEqual(order,[3,2,1]);
+assert.throws(()=>saved.onDispose(()=>{}),/已卸载/);
+await assert.rejects(r.executeCommand("cleanup_probe","",context),/未知命令/);
+r.emitAgentEnd({type:"agent_end",reason:"completed",round:1});assert.equal(calls,0);
+const original=Error("初始化失败");
+assert.throws(()=>mountExtension(r,api=>{
+ const timer=setInterval(()=>{},1000);api.onDispose(()=>clearInterval(timer));throw original;
+}),e=>e===original);
+assert.throws(()=>mountExtension(r,api=>{
+ saved=api;const timer=setInterval(()=>{},1000);
+ api.onDispose(()=>clearInterval(timer));api.onDispose(()=>{throw failure});throw original;
+}),e=>e instanceof AggregateError&&e.cause===original&&e.errors[0]===original&&e.errors[1].errors[0]===failure);
+assert.throws(()=>saved.onDispose(()=>{}),/已卸载/);
+console.log("通过：同步资源逆序清理、异常隔离、重入幂等、初始化双重错误保留及定时器释放");
+'''
+        subprocess.run(['node', '--input-type=module', '-e', cleanup_verification],
+                       cwd=project, env=test_env, check=True, timeout=5)
+
+        # 真实入口创建有引用的定时器：未清理会导致进程不能在限定时间自然退出。
+        cleanup_probe = project / 'cleanup-probe.mjs'
+        cleanup_probe.write_text('''
+import {appendFileSync} from "node:fs";
+export default function(api) {
+ const timer=setInterval(()=>{},1000);
+ api.onDispose(()=>{clearInterval(timer);appendFileSync("cleanup-marker","已释放\\n")});
+ if(process.env.CLEANUP_FAIL==="1") api.onDispose(()=>{throw Error("测试清理异常")});
+ if(process.env.CLEANUP_INIT_FAIL==="1") throw Error("测试初始化异常");
+}
+''')
+        for fail, init_fail, expected in [('0','0',0), ('1','0',1), ('0','1',1), ('1','1',1)]:
+            marker_path = project / 'cleanup-marker'
+            marker_path.unlink(missing_ok=True)
+            result = subprocess.run(['node', 'dist/index.js'], cwd=project,
+                                    env={**test_env, 'LCN_AGENT_EXTENSION': str(cleanup_probe),
+                                         'CLEANUP_FAIL': fail, 'CLEANUP_INIT_FAIL': init_fail},
+                                    input='/exit\n', capture_output=True, text=True, timeout=5)
+            assert result.returncode == expected, result.stderr
+            assert marker_path.read_text() == '已释放\n'
+            if fail == '1' and init_fail == '0':
+                assert '扩展清理失败' in result.stderr
+            assert not (project / '.lcn-agent/sessions/.writer.lock').exists()
+            assert requests.empty()
+        print('通过：真实入口正常退出、清理异常退出码、初始化回滚及定时器自然退出')
+
         workflow_verification = r'''
 import assert from "node:assert/strict";
 import {createToolRegistry,loadExtension,mountExtension} from "./dist/core/tools.js";
