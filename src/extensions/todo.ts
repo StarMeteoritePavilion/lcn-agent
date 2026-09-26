@@ -26,8 +26,8 @@ type Todo = {
  * 待办“按会话隔离”：每个会话文件对应一份独立的列表，
  * 切换会话（/new 或 /resume）后看到的是另一份列表，切回来时原列表仍在。
  *
- * 与 upper.ts 一样使用 export default，供 loadExtension 通过文件路径动态加载，例如：
- * LCN_AGENT_EXTENSION=dist/extensions/todo.js
+ * 使用默认导出供组合入口和动态加载器共用；当前主入口已通过 workflow 默认装载。
+ * 不要再用 LCN_AGENT_EXTENSION 重复加载本模块，否则会触发重名保护。
  *
  * 通过宿主状态接口读写 .lcn-agent/todos，沿用原有格式；保存成功后才报告修改完成。
  * @param api 宿主提供的注册及会话状态读写能力；命令和工具使用独立名称集合，因此可以同名

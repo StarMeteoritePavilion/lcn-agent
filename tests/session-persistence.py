@@ -78,7 +78,7 @@ class Handler(BaseHTTPRequestHandler):
         elif last['role'] == 'user' and last['content'] == '工具超时验证':
             delta = {'tool_calls': [
                 {'index': 0, 'id': 'slow_1', 'type': 'function',
-                 'function': {'name': 'upper', 'arguments': '{}'}},
+                 'function': {'name': 'delay_echo', 'arguments': '{}'}},
                 {'index': 1, 'id': 'skipped_2', 'type': 'function',
                  'function': {'name': 'echo', 'arguments': '{"text":"不应执行"}'}}]}
             reason = 'tool_calls'
@@ -836,7 +836,7 @@ console.log("通过：保存恢复、损坏定位、原文件保护、工具配�
         expect(lines, '生成中 Ctrl+C')
         assert len(ask(child, lines, '第一问')) == 1
         definitions = tool_definitions.get(timeout=5)
-        assert [tool['function']['name'] for tool in definitions] == ['echo']
+        assert [tool['function']['name'] for tool in definitions] == ['echo', 'upper', 'todo_list', 'todo_add', 'todo_done']
         assert definitions[0]['function']['parameters']['required'] == ['text']
         history = ask(child, lines, '第二问')
         assert [m['role'] for m in history] == ['user', 'assistant', 'user']
@@ -975,8 +975,8 @@ console.log("通过：保存恢复、损坏定位、原文件保护、工具配�
 
         # 将真实编译产物放到项目目录外，验证入口的路径选择和完整工具回填。
         with tempfile.TemporaryDirectory(prefix='lcn-外部 # ') as external:
-            external_file = Path(external) / 'upper.mjs'
-            shutil.copy(project / 'dist/extensions/upper.js', external_file)
+            external_file = Path(external) / 'delay.mjs'
+            shutil.copy(project / 'dist/extensions/delay.js', external_file)
             external_env = {**test_env, 'LCN_AGENT_EXTENSION': str(external_file)}
             while not tool_definitions.empty():
                 tool_definitions.get_nowait()
@@ -987,7 +987,7 @@ console.log("通过：保存恢复、损坏定位、原文件保护、工具配�
             assert first[-1]['content'] == '外部工具验证'
             history = requests.get(timeout=5)
             assert history[-1] == {'role': 'tool', 'tool_call_id': 'upper_1', 'content': 'HELLO'}
-            assert [t['function']['name'] for t in tool_definitions.get(timeout=5)] == ['echo', 'upper']
+            assert [t['function']['name'] for t in tool_definitions.get(timeout=5)] == ['echo', 'upper', 'todo_list', 'todo_add', 'todo_done', 'delay_echo']
             assert requests.empty()
             missing = Path(external) / '不存在.mjs'
             result = subprocess.run(['node', 'dist/index.js', '不应请求模型'], cwd=project,
@@ -997,9 +997,21 @@ console.log("通过：保存恢复、损坏定位、原文件保护、工具配�
             assert requests.empty(), '扩展加载失败时不得请求模型'
         print('通过：项目外特殊字符路径、入口加载、模型工具发现与结果回填、加载失败不请求模型')
 
+        # 默认装配后，重复加载任一已包含模块必须失败，不能悄悄重复注册。
+        for module in ['upper', 'todo', 'workflow']:
+            before = set((project / '.lcn-agent/sessions').glob('*.jsonl'))
+            result = subprocess.run(['node', 'dist/index.js', '不应请求模型'], cwd=project,
+                                    env={**test_env, 'LCN_AGENT_EXTENSION': f'./dist/extensions/{module}.js'},
+                                    capture_output=True, text=True, timeout=5)
+            assert result.returncode == 1 and '重名' in result.stderr, result.stderr
+            assert set((project / '.lcn-agent/sessions').glob('*.jsonl')) == before
+            assert not (project / '.lcn-agent/sessions/.writer.lock').exists()
+            assert requests.empty()
+        print('通过：默认扩展重复加载明确失败，不创建会话、不遗留锁、不请求模型')
+
         # 交互命令不请求模型、不创建会话，错误后仍能继续使用终端。
         before = set((project / '.lcn-agent/sessions').glob('*.jsonl'))
-        child, lines = launch({**test_env, 'LCN_AGENT_EXTENSION': './dist/extensions/upper.js'})
+        child, lines = launch()
         expect(lines, '生成中 Ctrl+C')
         for text, expected in [('/upper hello  world', 'HELLO  WORLD'),
                                ('/upper\thello', 'HELLO'),
@@ -1015,7 +1027,7 @@ console.log("通过：保存恢复、损坏定位、原文件保护、工具配�
         print('通过：交互命令分发、空格与 Tab 参数、错误后继续、无模型请求及无新会话')
 
         # 验证真实入口发出结束事件，命令不计数，切换会话不重置装载状态。
-        child, lines = launch({**test_env, 'LCN_AGENT_EXTENSION': './dist/extensions/upper.js'})
+        child, lines = launch()
         expect(lines, '生成中 Ctrl+C')
         send(child, '/runs'); expect(lines, '本次装载已结束运行：0')
         ask(child, lines, '事件计数验证')
@@ -1034,9 +1046,7 @@ console.log("通过：保存恢复、损坏定位、原文件保护、工具配�
         probe = project / 'context-probe.mjs'
         probe.write_text('''
 import assert from "node:assert/strict";
-import upper from "./dist/extensions/upper.js";
 export default function(api) {
-  upper(api);
   api.registerCommand({ name: "parallelask", async execute(args, context) {
     const first = context.ui.ask("第一问：");
     await assert.rejects(context.ui.ask("不应显示的第二问："), /已有提问/);
@@ -1153,7 +1163,7 @@ export default function(api) {
         print('通过：真实终端异步正常完成、Ctrl+C 取消、取消后继续、排队顺序和退出')
 
         # 同一个真实终端交替使用两个扩展，验证回答路由、取消恢复及重启持久化。
-        workflow_env = {**test_env, 'LCN_AGENT_EXTENSION': './dist/extensions/workflow.js'}
+        workflow_env = test_env
         master, slave = pty.openpty()
         child = subprocess.Popen(['node', 'dist/index.js'], cwd=project, env=workflow_env,
                                  stdin=slave, stdout=slave, stderr=slave)
@@ -1236,7 +1246,7 @@ export default function(api) {
         print('通过：异步拒绝后恢复、忽略信号的迟到返回值抑制及输入关闭取消退出')
 
         # 从当前源码编译的真实待办扩展检查会话切换与重启后的持久化状态。
-        todo_env = {**test_env, 'LCN_AGENT_EXTENSION': './dist/extensions/todo.js'}
+        todo_env = test_env
         child, lines = launch(todo_env)
         expect(lines, '生成中 Ctrl+C')
         send(child, '/todo_list'); expect(lines, '请先 /new 或 /resume')
@@ -1253,7 +1263,7 @@ export default function(api) {
         history = requests.get(timeout=5)
         assert history[-1] == {'role':'tool', 'tool_call_id':'todo_read_1',
                                'content':'[x] #1 阅读会话模块\n[ ] #2 吃饭'}
-        assert [tool['function']['name'] for tool in tool_definitions.get(timeout=5)] == ['echo', 'todo_list', 'todo_add', 'todo_done']
+        assert [tool['function']['name'] for tool in tool_definitions.get(timeout=5)] == ['echo', 'upper', 'todo_list', 'todo_add', 'todo_done']
         assert todo_path.read_bytes() == original_todo
         assert requests.empty()
         print('通过：模型发现待办工具、列表正确回填且待办文件字节不变')
@@ -1307,7 +1317,7 @@ export default function(api) {
 import {setTimeout as delay} from "node:timers/promises";
 export default function(api) {
   api.registerTool({
-    definition: {type:"function",function:{name:"upper",parameters:{type:"object"}}},
+    definition: {type:"function",function:{name:"delay_echo",parameters:{type:"object"}}},
     async execute(args, context) {
       await delay(35000, undefined, {signal:context.signal});
       return "不应返回";
@@ -1316,11 +1326,21 @@ export default function(api) {
 }
 ''')
         before = set((project / '.lcn-agent/sessions').glob('*.jsonl'))
-        result = subprocess.run(['node', 'dist/index.js', '工具超时验证'], cwd=project,
-                                env={**test_env, 'LCN_AGENT_EXTENSION': str(slow)},
-                                capture_output=True, text=True, timeout=40)
-        assert '请求超时：本轮超过 30 秒预算' in result.stdout, result.stdout
-        assert '请求已取消' not in result.stdout
+        master, slave = pty.openpty()
+        child = subprocess.Popen(['node', 'dist/index.js'], cwd=project,
+                                 env={**test_env, 'LCN_AGENT_EXTENSION': str(slow)},
+                                 stdin=slave, stdout=slave, stderr=slave)
+        children.append(child); os.close(slave)
+        try:
+            command_expect('生成中 Ctrl+C')
+            os.write(master, '工具超时验证\n'.encode()); command_expect('[y/N]')
+            os.write(master, b'y\n')
+            output = command_expect('请求超时：本轮超过 30 秒预算', timeout=35)
+            assert '请求已取消'.encode() not in output
+            os.write(master, b'/exit\n'); command_expect('终端程序已退出')
+            assert child.wait(timeout=5) == 0
+        finally:
+            os.close(master)
         requests.get(timeout=5)
         assert requests.empty(), '工具超时后不能继续请求模型'
         file = (set((project / '.lcn-agent/sessions').glob('*.jsonl')) - before).pop()

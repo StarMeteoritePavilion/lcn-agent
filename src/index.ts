@@ -3,6 +3,7 @@ import OpenAI from "openai";
 import { clearScreenDown, cursorTo, moveCursor } from "node:readline";
 import { AgentEndEvent, createToolRegistry, loadExtension, mountExtension } from "./core/tools.js";
 import { registerEcho } from "./extensions/echo.js";
+import registerWorkflow from "./extensions/workflow.js";
 import { createInterface } from "node:readline/promises";
 import { loadConfig } from "./core/config.js";
 import { createDiagnostics, DiagnosticWriteError, showDiagnostics } from "./core/diagnostics.js";
@@ -835,10 +836,13 @@ let disposeExtension: (() => void) | undefined;
 let disposeExternal: (() => void) | undefined;
 
 try {
-  // 内置扩展：代码中直接 import，同步装载。
-  disposeExtension = mountExtension(toolRegistry, registerEcho);
+  // 默认能力共用装载与清理：初始化失败统一回滚，无需环境变量即可提问和管理待办。
+  disposeExtension = mountExtension(toolRegistry, (api) => {
+    registerEcho(api);
+    registerWorkflow(api);
+  });
   // 外部扩展（可选）：由环境变量 LCN_AGENT_EXTENSION 指定文件路径，运行时动态加载，
-  // 例如 LCN_AGENT_EXTENSION=dist/extensions/upper.js。
+  // 例如 LCN_AGENT_EXTENSION=dist/extensions/delay.js；重复加载默认扩展会明确报重名。
   const extensionPath = process.env.LCN_AGENT_EXTENSION;
   if (extensionPath) {
     disposeExternal = await loadExtension(toolRegistry, extensionPath);
