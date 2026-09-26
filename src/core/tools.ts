@@ -42,7 +42,7 @@ export type AgentEndEvent = Readonly<AgentEndEventFields>;
 export type AgentEndListener = (event: AgentEndEvent) => void;
 
 /**
- * 命令执行时的上下文：宿主提供给命令的只读运行信息与输出能力。
+ * 命令执行时的上下文：宿主提供给命令的只读运行信息与输入输出能力。
  *
  * 每次命令执行时由宿主创建，不暴露可修改的会话对象。
  * （每次执行都新建，因此命令总能读到最新的会话状态，而不是注册时的旧值。）
@@ -52,6 +52,9 @@ export type AgentEndListener = (event: AgentEndEvent) => void;
  * - sessionFile: 当前会话文件名；尚未创建会话时为 null。
  * - signal:      本次命令的取消信号（AbortSignal），用户按 Ctrl+C 时被触发。
  * - ui.notify:   向用户输出一行消息。适合需要输出多行、或边执行边输出的命令。
+ * - ui.ask:      向用户提问并等待回答，返回 Promise<用户输入的一行文本>；需在 async 命令中 await。
+ *                以下情况 Promise 会被拒绝：命令已取消（含等待回答时按 Ctrl+C）、
+ *                输入已关闭、不是终端环境、或已有另一个提问正在等待回答。
  */
 export type CommandContext = Readonly<{
   cwd: string;

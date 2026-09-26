@@ -392,6 +392,34 @@ close();console.log("通过：异步异常、执行中取消、已取消信号�
         subprocess.run(['node', '--input-type=module', '-e', async_verification],
                        cwd=project, env=test_env, check=True)
 
+        todo_verification = r'''
+import assert from "node:assert/strict";
+import {createToolRegistry,loadExtension,mountExtension} from "./dist/core/tools.js";
+import todo from "./dist/extensions/todo.js";
+const r=createToolRegistry();let close=await loadExtension(r,"dist/extensions/todo.js");
+const controller=new AbortController();
+const ctx={cwd:process.cwd(),model:"test",sessionFile:null,signal:controller.signal,ui:{notify(){},async ask(){return "提问新增"}}};
+await assert.rejects(r.executeCommand("todo_add","任务",ctx),/先 \/new/);
+const a={...ctx,sessionFile:"a"},b={...ctx,sessionFile:"b"};
+assert.equal(await r.executeCommand("todo_add","任务一",a),"已添加 #1：任务一");
+assert.equal(await r.executeCommand("todo_add","",a),"已添加 #2：提问新增");
+assert.equal(await r.executeCommand("todo_list","",b),"当前会话暂无待办");
+assert.match(await r.executeCommand("todo_done","1",a),/已完成/);
+assert.equal(await r.executeCommand("todo_done","1",a),"#1 已经完成");
+for(const id of ["", "1x", "01", "99"]) await assert.rejects(r.executeCommand("todo_done",id,a),/编号/);
+const before=await r.executeCommand("todo_list","",a);
+await assert.rejects(r.executeCommand("todo_add","",{...a,ui:{...a.ui,async ask(){return "  "}}}),/不能为空/);
+await assert.rejects(r.executeCommand("todo_add","",{...a,ui:{...a.ui,async ask(){controller.abort();return "迟到"}}}),{name:"AbortError"});
+assert.equal(await r.executeCommand("todo_list","",{...a,signal:new AbortController().signal}),before);
+close();
+await assert.rejects(r.executeCommand("todo_list","",a),/未知命令/);
+close=mountExtension(r,todo);
+assert.equal(await r.executeCommand("todo_list","",{...a,signal:new AbortController().signal}),"当前会话暂无待办");close();
+console.log("通过：新增、提问、完成、重入、编号校验、取消不写入、会话隔离、卸载及内外共用入口");
+'''
+        subprocess.run(['node', '--input-type=module', '-e', todo_verification],
+                       cwd=project, env=test_env, check=True)
+
         # 直接验证持久化边界，所有损坏均写在临时目录，比较原始字节不被恢复操作修改。
         verification = r'''
 import assert from "node:assert/strict";
@@ -818,6 +846,57 @@ export default function(api) {
         assert child.wait(timeout=5) == 0
         assert requests.empty()
         print('通过：异步拒绝后恢复、忽略信号的迟到返回值抑制及输入关闭取消退出')
+
+        # 从当前源码编译的真实待办扩展检查会话切换与重启后的内存边界。
+        todo_env = {**test_env, 'LCN_AGENT_EXTENSION': './dist/extensions/todo.js'}
+        child, lines = launch(todo_env)
+        expect(lines, '生成中 Ctrl+C')
+        send(child, '/todo_list'); expect(lines, '请先 /new 或 /resume')
+        send(child, '/new')
+        first = expect(lines, '会话：').split('会话：')[-1].strip()
+        send(child, '/todo_add 阅读会话模块'); expect(lines, '已添加 #1：阅读会话模块')
+        send(child, '/todo_add 吃饭'); expect(lines, '已添加 #2：吃饭')
+        send(child, '/todo_done 1'); expect(lines, '已完成 #1')
+        send(child, '/todo_list')
+        output = expect(lines, '[ ] #2 吃饭')
+        assert '[x] #1 阅读会话模块' in output
+        send(child, '/new')
+        second = expect(lines, '会话：').split('会话：')[-1].strip()
+        assert first != second
+        send(child, '/todo_list'); expect(lines, '当前会话暂无待办')
+        send(child, '/resume ' + first); expect(lines, '已恢复：')
+        send(child, '/todo_list')
+        output = expect(lines, '[ ] #2 吃饭')
+        assert '[x] #1 阅读会话模块' in output
+        send(child, '/exit'); assert child.wait(timeout=5) == 0
+        child, lines = launch(todo_env)
+        expect(lines, '生成中 Ctrl+C')
+        send(child, '/resume ' + first); expect(lines, '已恢复：')
+        send(child, '/todo_list'); expect(lines, '当前会话暂无待办')
+        send(child, '/exit'); assert child.wait(timeout=5) == 0
+
+        master, slave = pty.openpty()
+        child = subprocess.Popen(['node', 'dist/index.js'], cwd=project, env=todo_env,
+                                 stdin=slave, stdout=slave, stderr=slave)
+        children.append(child)
+        os.close(slave)
+        try:
+            command_expect('生成中 Ctrl+C')
+            os.write(master, b'/new\n'); command_expect('会话：')
+            os.write(master, b'/todo_add\n'); command_expect('请输入待办内容：')
+            os.write(master, '提问创建\n'.encode()); command_expect('已添加 #1：提问创建')
+            os.write(master, b'/todo_add\n'); command_expect('请输入待办内容：')
+            os.write(master, b'\x03'); command_expect('命令已取消')
+            os.write(master, b'/todo_add after\n'); command_expect('已添加 #2：after')
+            os.write(master, b'/todo_list\n')
+            output = command_expect('[ ] #2 after')
+            assert '[ ] #1 提问创建'.encode() in output
+            os.write(master, b'/exit\n'); command_expect('终端程序已退出')
+            assert child.wait(timeout=5) == 0
+        finally:
+            os.close(master)
+        assert requests.empty(), '待办命令不得请求模型'
+        print('通过：待办真实入口会话隔离、切回恢复、重启不持久化、PTY 提问与取消不占编号')
 
         diagnostic_verification = r'''
 import assert from "node:assert/strict";
