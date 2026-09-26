@@ -57,6 +57,10 @@ class Handler(BaseHTTPRequestHandler):
             if last['content'] == '工具参数错误':
                 delta['tool_calls'][0]['function']['arguments'] = '{坏JSON'
             reason = 'tool_calls'
+        elif last['role'] == 'user' and last['content'] == '待办工具验证':
+            delta = {'tool_calls': [{'index': 0, 'id': 'todo_read_1', 'type': 'function',
+                                    'function': {'name': 'todo_list', 'arguments': '{}'}}]}
+            reason = 'tool_calls'
         elif last['role'] == 'user' and last['content'] == '工具超时验证':
             delta = {'tool_calls': [
                 {'index': 0, 'id': 'slow_1', 'type': 'function',
@@ -478,6 +482,34 @@ try {
 } finally {close();rmSync(cwd,{recursive:true,force:true});}
 '''
         subprocess.run(['node', '--input-type=module', '-e', todo_storage_verification],
+                       cwd=project, env=test_env, check=True)
+
+        todo_read_verification = r'''
+import assert from "node:assert/strict";
+import {mkdtempSync,readFileSync,writeFileSync,rmSync,existsSync} from "node:fs";
+import {tmpdir} from "node:os";
+import {join} from "node:path";
+import {createToolRegistry,loadExtension} from "./dist/core/tools.js";
+const cwd=mkdtempSync(join(tmpdir(),"todo-read-data-"));const r=createToolRegistry();
+const close=await loadExtension(r,"dist/extensions/todo.js");
+const ctx={cwd,sessionFile:"a.jsonl",signal:new AbortController().signal,model:"test",callId:"call",ui:{notify(){},async ask(){return "任务"}}};
+try {
+ assert.equal(await r.execute("todo_list",{},ctx),"当前会话暂无待办");
+ assert(!existsSync(join(cwd,".lcn-agent")));
+ await r.executeCommand("todo_add","阅读",ctx);
+ await r.executeCommand("todo_done","1",ctx);
+ const file=join(cwd,".lcn-agent/todos/a.jsonl.json");const before=readFileSync(file);
+ assert.equal(await r.execute("todo_list",{},ctx),"[x] #1 阅读");
+ assert.equal(await r.execute("todo_list",{},ctx),await r.executeCommand("todo_list","",ctx));
+ for (const args of [null,[],"",{sessionFile:"b.jsonl"}]) await assert.rejects(r.execute("todo_list",args,ctx),/空对象/);
+ assert.deepEqual(readFileSync(file),before);
+ assert.equal(await r.execute("todo_list",{},{...ctx,sessionFile:"b.jsonl"}),"当前会话暂无待办");
+ writeFileSync(file,"{");await assert.rejects(r.execute("todo_list",{},ctx),/损坏/);assert.equal(readFileSync(file,"utf8"),"{");
+ close();await assert.rejects(r.execute("todo_list",{},ctx),/未知工具/);
+ console.log("通过：命令工具共用读取、无写入、参数拒绝、会话隔离、损坏保留与卸载");
+} finally {close();rmSync(cwd,{recursive:true,force:true});}
+'''
+        subprocess.run(['node', '--input-type=module', '-e', todo_read_verification],
                        cwd=project, env=test_env, check=True)
 
         # 直接验证持久化边界，所有损坏均写在临时目录，比较原始字节不被恢复操作修改。
@@ -918,6 +950,19 @@ export default function(api) {
         send(child, '/todo_add 阅读会话模块'); expect(lines, '已添加 #1：阅读会话模块')
         send(child, '/todo_add 吃饭'); expect(lines, '已添加 #2：吃饭')
         send(child, '/todo_done 1'); expect(lines, '已完成 #1')
+        todo_path = project / '.lcn-agent/todos' / (first + '.json')
+        original_todo = todo_path.read_bytes()
+        while not tool_definitions.empty():
+            tool_definitions.get_nowait()
+        ask(child, lines, '待办工具验证')
+        history = requests.get(timeout=5)
+        assert history[-1] == {'role':'tool', 'tool_call_id':'todo_read_1',
+                               'content':'[x] #1 阅读会话模块\n[ ] #2 吃饭'}
+        assert [tool['function']['name'] for tool in tool_definitions.get(timeout=5)] == ['echo', 'todo_list']
+        assert todo_path.read_bytes() == original_todo
+        assert requests.empty()
+        print('通过：模型发现待办工具、列表正确回填且待办文件字节不变')
+
         send(child, '/todo_list')
         output = expect(lines, '[ ] #2 吃饭')
         assert '[x] #1 阅读会话模块' in output
