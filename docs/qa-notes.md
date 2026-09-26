@@ -1101,7 +1101,7 @@ function registerEcho({ registerTool }: ExtensionAPI): void {
 
 ## 2026-09-26-18 数组展开语法与不可变追加
 
-**问题：** `src/extensions/todo.ts` 中 `saveItems(path, [...items, item]);` 是什么写法？
+**问题：** `src/extensions/todo.ts` 中 `saveItems(context, [...items, item]);` 是什么写法？
 
 **答案：**
 
@@ -1110,7 +1110,7 @@ function registerEcho({ registerTool }: ExtensionAPI): void {
 ### 拆解
 
 ```ts
-saveItems(path, [...items, item]);
+saveItems(context, [...items, item]);
 //              ^^^^^^^^^^^^^^^^
 //              新数组 = items 的全部元素 + item
 ```
@@ -1130,7 +1130,7 @@ items;  // [a, b]     原数组没变
 ```ts
 const next = items.slice();  // 复制一份
 next.push(item);             // 在副本上追加
-saveItems(path, next);
+saveItems(context, next);
 ```
 
 ### 和 push 的区别
@@ -1140,7 +1140,7 @@ saveItems(path, next);
 | `items.push(item)` | 返回新长度（数字） | 被修改 |
 | `[...items, item]` | 返回新数组 | 不变 |
 
-不能写成 `saveItems(path, items.push(item))`，那样传进去的是一个数字。
+不能写成 `saveItems(context, items.push(item))`，那样传进去的是一个数字。
 
 ### 其他用法
 
@@ -1168,7 +1168,7 @@ next[0] === items[0];  // true，同一个对象
 ```java
 List<Todo> next = new ArrayList<>(items);
 next.add(item);
-saveItems(path, next);
+saveItems(context, next);
 ```
 
 ### 已修正的旧注释

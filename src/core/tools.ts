@@ -1,6 +1,7 @@
 import OpenAI from "openai";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { readState, writeState } from "./state.js";
 
 /** 宿主为单次调用确认工具名、参数快照和调用 ID；取消与超时通过 signal 传递。 */
 export type ConfirmTool = (
@@ -157,19 +158,22 @@ export type Command = {
 };
 
 /**
- * 扩展 API：扩展通过同一个入口对象注册工具、命令和事件监听三种能力。
+ * 扩展 API：注册工具、命令和事件监听，并读写按会话保存的扩展状态。
  *
  * - registerTool:    注册一个可被模型调用的工具（签名为 RegisterTool，返回 void）。
  * - registerCommand: 注册一个可被用户以 `/名称` 调用的命令（签名同样返回 void）。
  * - onAgentEnd:      订阅“一次 Agent 运行结束”事件（同样返回 void，不给扩展取消订阅的函数）。
+ * - readState / writeState: 读写指定命名空间的会话状态；扩展负责数据版本和业务校验。
  *
- * 扩展拿到的 API 只有"添加"能力，无法删除、覆盖或遍历已有注册项；
- * 卸载由宿主（mountExtension）统一管理。
+ * 注册接口只有“添加”能力，无法删除、覆盖或遍历已有注册项。
+ * 卸载由宿主统一管理，卸载后所有 API 方法拒绝调用，但保留磁盘状态。
  */
 export type ExtensionAPI = {
   registerTool: RegisterTool;
   registerCommand: (command: Command) => void;
   onAgentEnd: (listener: AgentEndListener) => void;
+  readState: typeof readState;
+  writeState: typeof writeState;
 };
 
 /**
@@ -542,7 +546,8 @@ function once(fn: () => void): () => void {
  *
  * 要点：
  * - 全有或全无：setup 执行中途抛错时，已注册的内容会全部撤销，不会残留"注册了一半"的扩展。
- * - 卸载后失效：扩展若偷偷保存了 api 对象、卸载后再调用注册或订阅方法，会直接抛错。
+ * - 卸载后失效：保存的 api 对象不能继续注册、订阅或读写状态；已持久化的状态不会删除。
+ * - 回滚只撤销注册资源，不能撤销初始化代码已经写入的文件。
  * - 返回的 dispose 可重复调用，只有第一次生效。
  *
  * @param registry 工具、命令和订阅要注册到的目标注册表
@@ -557,7 +562,7 @@ export function mountExtension(
 ): () => void {
   // 本扩展每注册一项（工具、命令或订阅），就把注册表返回的撤销函数存到这里。
   const disposers: Array<() => void> = [];
-  // 扩展是否仍处于装载状态；dispose 后置为 false，之后的注册请求一律拒绝。
+  // 扩展是否仍处于装载状态；dispose 后置为 false，之后的 API 请求一律拒绝。
   let active = true;
 
   /**
@@ -579,9 +584,17 @@ export function mountExtension(
 
   try {
     // 工具、命令和订阅的撤销函数归属于同一个扩展实例。
-    // 交给扩展的每个方法都包了一层：先检查是否已卸载，再把撤销函数收进 disposers；
-    // 方法本身返回 void，扩展拿不到撤销函数，无法自行删除。
+    // 每个方法先检查是否已卸载；注册方法把撤销函数收进 disposers，不交给扩展。
+    // 状态方法每次直接读写磁盘，不缓存数据，也不把持久状态当作卸载时要删除的资源。
     setup({
+      readState(context, namespace) {
+        if (!active) throw new Error("扩展已卸载，不能继续读取状态");
+        return readState(context, namespace);
+      },
+      writeState(context, namespace, value) {
+        if (!active) throw new Error("扩展已卸载，不能继续写入状态");
+        writeState(context, namespace, value);
+      },
       registerTool(tool) {
         if (!active) {
           throw new Error("扩展已卸载，不能继续注册工具");

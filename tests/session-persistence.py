@@ -451,6 +451,77 @@ console.log("通过：新增、提问、完成、重入、编号校验、取消�
         subprocess.run(['node', '--input-type=module', '-e', todo_verification],
                        cwd=project, env=test_env, check=True)
 
+        state_verification = r'''
+import assert from "node:assert/strict";
+import {mkdtempSync,readFileSync,writeFileSync,rmSync,existsSync,mkdirSync,readdirSync} from "node:fs";
+import {tmpdir} from "node:os";
+import {join} from "node:path";
+import {createToolRegistry,mountExtension} from "./dist/core/tools.js";
+const cwd=mkdtempSync(join(tmpdir(),"lcn-state-"));
+const context={cwd,sessionFile:"a.jsonl",signal:new AbortController().signal};
+const registry=createToolRegistry();let api;
+const dispose=mountExtension(registry,value=>{api=value});
+const path=join(cwd,".lcn-agent/notes/a.jsonl.json");
+try {
+ assert.equal(api.readState(context,"notes"),undefined);
+ assert(!existsSync(join(cwd,".lcn-agent")));
+ for(const namespace of ["", "../escape", "/absolute", "a/b", "a\\b", "sessions", "diagnostics", "Notes"]) {
+  assert.throws(()=>api.readState(context,namespace),/命名空间/);
+  assert.throws(()=>api.writeState(context,namespace,{}),/命名空间/);
+ }
+ for(const file of ["", "../escape.jsonl", "a\\b.jsonl", "a.txt"]) {
+  assert.throws(()=>api.readState({...context,sessionFile:file},"notes"),/文件名/);
+  assert.throws(()=>api.writeState({...context,sessionFile:file},"notes",{}),/文件名/);
+ }
+ assert.throws(()=>api.readState({...context,sessionFile:null},"notes"),/先 \/new/);
+ assert.throws(()=>api.writeState({...context,sessionFile:null},"notes",{}),/先 \/new/);
+ assert(!existsSync(join(cwd,".lcn-agent")));
+ api.writeState(context,"notes",{version:1,text:"原状态"});
+ const good=readFileSync(path);
+ assert.equal(api.readState({...context,sessionFile:"b.jsonl"},"notes"),undefined);
+ assert.equal(api.readState(context,"todos"),undefined);
+ api.writeState({...context,sessionFile:"b.jsonl"},"notes",["另一会话"]);
+ api.writeState(context,"todos",null);
+ assert.equal(api.readState(context,"todos"),null);
+ assert.deepEqual(readFileSync(path),good);
+ const value=api.readState(context,"notes");value.text="内存修改";
+ assert.equal(api.readState(context,"notes").text,"原状态");
+ for(const bad of [undefined,1n,(()=>{const x={};x.self=x;return x})()]) {
+  assert.throws(()=>api.writeState(context,"notes",bad));
+  assert.deepEqual(readFileSync(path),good);
+ }
+ const controller=new AbortController();controller.abort();
+ assert.throws(()=>api.readState({...context,signal:controller.signal},"notes"),{name:"AbortError"});
+ assert.throws(()=>api.writeState({...context,signal:controller.signal},"notes",{}),{name:"AbortError"});
+ const during=new AbortController();
+ assert.throws(()=>api.writeState({...context,signal:during.signal},"notes",{toJSON(){during.abort();return {}}}),{name:"AbortError"});
+ assert.deepEqual(readFileSync(path),good);
+ for(const broken of [Buffer.from("{"),Buffer.from([255])]) {
+  writeFileSync(path,broken);assert.throws(()=>api.readState(context,"notes"),/损坏/);
+  assert.deepEqual(readFileSync(path),broken);
+ }
+ rmSync(path);mkdirSync(path);writeFileSync(join(path,"保留"),good);
+ assert.throws(()=>api.readState(context,"notes"));
+ assert.throws(()=>api.writeState(context,"notes",{}));
+ assert.deepEqual(readFileSync(join(path,"保留")),good);
+ assert(!readdirSync(join(cwd,".lcn-agent/notes")).some(n=>n.startsWith(".state-")));
+ rmSync(path,{recursive:true});writeFileSync(path,good);
+ const saved=api;dispose();dispose();
+ assert.throws(()=>saved.readState(context,"notes"),/已卸载/);
+ assert.throws(()=>saved.writeState(context,"notes",{}),/已卸载/);
+ const close=mountExtension(registry,value=>{api=value});
+ assert.deepEqual(api.readState(context,"notes"),{version:1,text:"原状态"});close();
+ let failed;
+ assert.throws(()=>mountExtension(registry,value=>{failed=value;throw Error("初始化失败")}),/初始化失败/);
+ assert.throws(()=>failed.readState(context,"notes"),/已卸载/);
+ assert.throws(()=>failed.writeState(context,"notes",{}),/已卸载/);
+ assert.deepEqual(readFileSync(path),good);
+ console.log("通过：通用状态命名空间与会话隔离、路径保护、序列化失败、取消、损坏保留、替换清理与卸载失效");
+} finally {dispose();rmSync(cwd,{recursive:true,force:true});}
+'''
+        subprocess.run(['node', '--input-type=module', '-e', state_verification],
+                       cwd=project, env=test_env, check=True)
+
         todo_storage_verification = r'''
 import assert from "node:assert/strict";
 import {mkdtempSync,readFileSync,writeFileSync,mkdirSync,rmSync,readdirSync} from "node:fs";
@@ -489,7 +560,7 @@ try {
  // 在提问期间将目标替换为目录，让最终 rename 确定失败。
  await assert.rejects(r.executeCommand("todo_add","",{...context,ui:{notify(){},async ask(){rmSync(file);mkdirSync(file);writeFileSync(join(file,"保留"),good);return "不能保存"}}}));
  assert.deepEqual(readFileSync(join(file,"保留")),good);
- assert(!readdirSync(join(cwd,".lcn-agent/todos")).some(n=>n.startsWith(".todo-")));
+ assert(!readdirSync(join(cwd,".lcn-agent/todos")).some(n=>n.startsWith(".state-")));
  rmSync(file,{recursive:true});writeFileSync(file,good);
  assert.equal(await r.executeCommand("todo_add","第二项",context),"已添加 #2：第二项");
  console.log("通过：重装恢复、完成保存、会话隔离、损坏拒绝且原文保留、取消不写入及替换失败清理");

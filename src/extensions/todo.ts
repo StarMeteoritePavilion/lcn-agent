@@ -1,6 +1,5 @@
-import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
-import type { CommandContext, ExtensionAPI } from "../core/tools.js";
+import type { StateContext } from "../core/state.js";
+import type { ExtensionAPI } from "../core/tools.js";
 
 /**
  * 一条待办事项。
@@ -30,46 +29,20 @@ type Todo = {
  * 与 upper.ts 一样使用 export default，供 loadExtension 通过文件路径动态加载，例如：
  * LCN_AGENT_EXTENSION=dist/extensions/todo.js
  *
- * 状态保存在 .lcn-agent/todos，每次操作重新读取；保存成功后才报告修改完成。
- * @param api 宿主提供的注册能力；命令和工具使用独立名称集合，因此可以同名
+ * 通过宿主状态接口读写 .lcn-agent/todos，沿用原有格式；保存成功后才报告修改完成。
+ * @param api 宿主提供的注册及会话状态读写能力；命令和工具使用独立名称集合，因此可以同名
  */
-export default function registerTodo({ registerCommand, registerTool }: ExtensionAPI): void {
-  // Pick 只要求读取所需的字段，命令与工具上下文均可传入，不依赖交互 UI。
-  function itemsFor(context: Pick<CommandContext, "cwd" | "sessionFile" | "signal">): {
-    path: string;
-    items: Todo[];
-  } {
-    context.signal.throwIfAborted();
-
-    const file = context.sessionFile;
-    if (file === null) {
-      throw new Error("请先 /new 或 /resume 选择会话");
-    }
-    if (!file || basename(file) !== file || !file.endsWith(".jsonl")) {
-      throw new Error("会话文件名不合法");
-    }
-
-    const path = join(context.cwd, ".lcn-agent", "todos", `${file}.json`);
-    let bytes: Buffer;
-
-    try {
-      bytes = readFileSync(path);
-    } catch (error) {
-      // 只有文件不存在才视为尚无待办，其他读取错误必须报告。
-      if (error instanceof Error && "code" in error && error.code === "ENOENT") {
-        return { path, items: [] };
-      }
-      throw error;
-    }
-
-    const invalid = () => new Error(`待办文件损坏或版本不支持：${path}`);
-
-    let data: unknown;
-    try {
-      data = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
-    } catch {
-      throw invalid();
-    }
+export default function registerTodo({
+  registerCommand,
+  registerTool,
+  readState,
+  writeState,
+}: ExtensionAPI): void {
+  // 状态接口负责路径、JSON 和取消检查；待办扩展只校验版本及业务字段。
+  function itemsFor(context: StateContext): Todo[] {
+    const data = readState(context, "todos");
+    if (data === undefined) return [];
+    const invalid = () => new Error(`待办数据损坏或版本不支持：${context.sessionFile}`);
 
     if (
       typeof data !== "object" ||
@@ -100,54 +73,31 @@ export default function registerTodo({ registerCommand, registerTool }: Extensio
       return { id: index + 1, text: value.text, done: value.done };
     });
 
-    return { path, items };
+    return items;
   }
 
-  function saveItems(path: string, items: Todo[]): void {
-    const directory = dirname(path);
-    mkdirSync(directory, { recursive: true });
-
-    const temporary = mkdtempSync(join(directory, ".todo-"));
-    try {
-      const pending = join(temporary, "state.json");
-
-      writeFileSync(pending, JSON.stringify({ version: 1, items }) + "\n", {
-        flag: "wx",
-        mode: 0o600,
-        flush: true,
-      });
-
-      // 同一文件系统内替换，正式文件不会暴露半份 JSON。
-      renameSync(pending, path);
-    } finally {
-      rmSync(temporary, { recursive: true, force: true });
-    }
+  function saveItems(context: StateContext, items: Todo[]): void {
+    writeState(context, "todos", { version: 1, items });
   }
 
   // 命令和工具共用写入；读取时检查取消，保存成功后才返回成功提示。
-  function addItem(
-    text: string,
-    context: Pick<CommandContext, "cwd" | "sessionFile" | "signal">,
-  ): string {
+  function addItem(text: string, context: StateContext): string {
     text = text.trim();
     if (!text) throw new Error("待办内容不能为空");
-    const { path, items } = itemsFor(context);
+    const items = itemsFor(context);
     const item: Todo = { id: items.length + 1, text, done: false };
-    saveItems(path, [...items, item]);
+    saveItems(context, [...items, item]);
     return `已添加 #${item.id}：${item.text}`;
   }
 
   // 编号按字符串精确匹配，重复完成不重写文件。
-  function doneItem(
-    id: string,
-    context: Pick<CommandContext, "cwd" | "sessionFile" | "signal">,
-  ): string {
-    const { path, items } = itemsFor(context);
+  function doneItem(id: string, context: StateContext): string {
+    const items = itemsFor(context);
     const item = items.find((item) => String(item.id) === id.trim());
     if (!item) throw new Error("请提供当前会话中存在的待办编号，例如 /todo_done 1");
     if (item.done) return `#${item.id} 已经完成`;
     saveItems(
-      path,
+      context,
       items.map((entry) => (entry.id === item.id ? { ...entry, done: true } : entry)),
     );
     return `已完成 #${item.id}：${item.text}`;
@@ -165,8 +115,8 @@ export default function registerTodo({ registerCommand, registerTool }: Extensio
 
   // 命令与工具共用读取、校验和展示，避免两份列表逻辑产生差异。
   // 文件不存在时仅返回空列表，不创建文件；损坏时拒绝读取并保留原文件。
-  function listItems(context: Pick<CommandContext, "cwd" | "sessionFile" | "signal">): string {
-    const { items } = itemsFor(context);
+  function listItems(context: StateContext): string {
+    const items = itemsFor(context);
     return items.length
       ? items.map((item) => `${item.done ? "[x]" : "[ ]"} #${item.id} ${item.text}`).join("\n")
       : "当前会话暂无待办";
