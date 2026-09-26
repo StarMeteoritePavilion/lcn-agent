@@ -50,12 +50,18 @@ export type AgentEndListener = (event: AgentEndEvent) => void;
  * - cwd:         当前工作目录。
  * - model:       当前使用的模型名称。
  * - sessionFile: 当前会话文件名；尚未创建会话时为 null。
+ * - signal:      本次命令的取消信号（AbortSignal），用户按 Ctrl+C 时被触发。
  * - ui.notify:   向用户输出一行消息。适合需要输出多行、或边执行边输出的命令。
  */
 export type CommandContext = Readonly<{
   cwd: string;
   model: string;
   sessionFile: string | null;
+  // 由宿主发出取消信号，异步命令负责响应。
+  // “响应”指：把 signal 传给支持取消的 API（如 fetch、timers/promises 的 setTimeout），
+  // 或在耗时步骤之间检查 signal.aborted / 调用 signal.throwIfAborted()。
+  // 宿主无法强行中断正在执行的 JS 代码，不响应信号的命令会一直运行到结束。
+  signal: AbortSignal;
   ui: Readonly<{
     notify: (message: string) => void;
   }>;
@@ -74,11 +80,13 @@ export type Command = {
    * 命令执行函数。
    *
    * @param args 用户在命令名之后输入的原始文本（已去除命令名前缀）
-   * @param context 本次执行的上下文（工作目录、模型、会话文件与输出能力），见 CommandContext
+   * @param context 本次执行的上下文（工作目录、模型、会话文件、取消信号与输出能力），见 CommandContext
    * @returns 返回字符串时，宿主把它输出给用户；
-   *          不返回（void）时宿主不额外输出，适合已通过 context.ui.notify 自行输出的命令
+   *          不返回（void）时宿主不额外输出，适合已通过 context.ui.notify 自行输出的命令。
+   *          既可以同步返回，也可以写成 async 函数返回 Promise，宿主都会 await 等待结果；
+   *          耗时的异步命令应响应 context.signal，以便用户按 Ctrl+C 取消。
    */
-  execute: (args: string, context: CommandContext) => string | void;
+  execute: (args: string, context: CommandContext) => string | void | Promise<string | void>;
 };
 
 /**
@@ -116,7 +124,8 @@ export type RegisterTool = (tool: Tool) => void;
  * 命令侧：
  * - registerCommand: 注册一个用户命令，命令名重复或与宿主保留命令冲突时抛错；返回撤销函数。
  * - executeCommand:  按命令名找到对应命令并执行，用于处理用户输入的 `/命令名` 交互指令；
- *                    宿主需传入本次执行的 CommandContext。
+ *                    宿主需传入本次执行的 CommandContext。始终返回 Promise，
+ *                    因此同步命令和异步命令对宿主而言用法一致（都用 await 获取结果）。
  *
  * 运行结束事件侧：
  * - onAgentEnd:   订阅运行结束事件；返回取消订阅函数。
@@ -134,7 +143,7 @@ export type ToolRegistry = {
   definitions: () => OpenAI.Chat.Completions.ChatCompletionFunctionTool[];
   execute: (name: string, args: unknown) => string;
   registerCommand: (command: Command) => () => void;
-  executeCommand: (name: string, args: string, context: CommandContext) => string | void;
+  executeCommand: (name: string, args: string, context: CommandContext) => Promise<string | void>;
   onAgentEnd: (listener: AgentEndListener) => () => void;
   emitAgentEnd: (event: AgentEndEvent) => string[];
 };
@@ -150,8 +159,8 @@ export type ToolRegistry = {
  *
  * 典型使用流程（命令侧）：
  * 1. 启动时调用 registerCommand 注册扩展命令；
- * 2. 用户在交互模式输入 `/命令名 参数` 时，宿主创建本次的 CommandContext，
- *    调用 executeCommand(命令名, 参数, context) 执行。
+ * 2. 用户在交互模式输入 `/命令名 参数` 时，宿主创建本次的 AbortController 与 CommandContext，
+ *    调用 await executeCommand(命令名, 参数, context) 执行；用户按 Ctrl+C 时宿主触发取消信号。
  *
  * 典型使用流程（运行结束事件）：
  * 1. 扩展调用 onAgentEnd 订阅“一次 Agent 运行结束”的通知；
@@ -280,14 +289,28 @@ export function createToolRegistry(): ToolRegistry {
    * @param name 命令名（不含斜杠前缀），通常来自用户交互输入
    * @param args 命令参数，即用户在命令名之后输入的原始文本
    * @param context 本次执行的上下文，原样传给命令的 execute
-   * @returns 命令返回的字符串（由宿主输出给用户）；命令不返回时为 undefined
-   * @throws {Error} 找不到对应命令时抛出；命令自身抛出的错误也会原样向上传递
+   * @returns Promise，完成后得到命令返回的字符串（由宿主输出给用户）；命令不返回时为 undefined
+   * @throws {Error} 以下情况 Promise 会被拒绝（reject）：
+   *   - 找不到对应命令；
+   *   - 执行前 context.signal 已被取消（抛出的是信号的取消原因，默认为 AbortError）；
+   *   - 命令自身抛错，或异步命令响应取消信号而中止。
    */
-  function executeCommand(name: string, args: string, context: CommandContext): string | void {
+  async function executeCommand(
+    name: string,
+    args: string,
+    context: CommandContext,
+  ): Promise<string | void> {
+    // async 函数总是返回 Promise：
+    // - 命令同步返回值时，会被自动包装成已完成的 Promise；
+    // - 命令返回 Promise 时，直接沿用它的结果；
+    // - 函数内的 throw（包括同步命令抛出的错误）会变成被拒绝的 Promise，由调用方的 await 抛出。
     const command = commands.get(name);
     if (!command) {
       throw new Error(`未知命令: /${name}`);
     }
+    // 已取消时不启动命令；执行中的取消由命令响应信号。
+    // throwIfAborted: 若信号已被触发则立即抛出取消原因（signal.reason），否则什么也不做。
+    context.signal.throwIfAborted();
     return command.execute(args, context);
   }
 
@@ -408,6 +431,7 @@ function once(fn: () => void): () => void {
  *
  * @param registry 工具、命令和订阅要注册到的目标注册表
  * @param setup 扩展的注册函数，接收一个 ExtensionAPI 对象，通过它登记工具、命令和订阅；必须是同步函数
+ *              （“同步”只针对注册过程本身；注册进来的命令执行函数可以是 async）
  * @returns 卸载函数：调用后按注册的逆序撤销该扩展注册的所有内容
  * @throws {Error} setup 抛出的错误会在撤销已注册项后原样向上传递（包括工具/命令重名错误）
  */
@@ -468,6 +492,7 @@ export function mountExtension(
   }
 
   // ponytail: 仅管理同步注册的工具、命令和运行结束订阅；定时器等其他资源接入时再扩展清理协议。
+  // 注意：卸载只会移除注册项，不会取消已在执行中的异步命令；取消由宿主通过 context.signal 负责。
   return dispose;
 }
 

@@ -501,11 +501,13 @@ async function main(): Promise<void> {
     output: process.stdout,
   });
 
+  // 当前正在运行的任务（Agent 请求或扩展命令）的取消控制器；空闲时为 null。
+  // 两类任务共用这一个变量，因此 Ctrl+C 与 stdin 关闭时的取消逻辑对二者都生效。
   let activeAbort: AbortController | null = null;
   let closed = false;
 
   const onSigint = (): void => {
-    // 生成中取消当前请求；空闲时关闭 readline，让主循环自然退出。
+    // 生成中（或命令执行中）取消当前任务；空闲时关闭 readline，让主循环自然退出。
     if (activeAbort) {
       activeAbort.abort();
     } else {
@@ -514,7 +516,7 @@ async function main(): Promise<void> {
   };
 
   const onClose = (): void => {
-    // stdin 被外部关闭时，确保正在进行的模型请求也收到取消信号。
+    // stdin 被外部关闭时，确保正在进行的模型请求或命令也收到取消信号。
     closed = true;
     activeAbort?.abort();
   };
@@ -549,6 +551,7 @@ async function main(): Promise<void> {
   console.log("输入内容后回车，输入 /exit 退出。");
   console.log("/new 新建，/sessions 列出，/resume 完整文件名 恢复，/history 查看历史。");
   console.log("/diagnostics 查看当前诊断；/diagnostics 完整会话文件名 查看指定会话诊断。");
+  // 这里的“生成中”也包括扩展命令执行中：两者都会登记 activeAbort。
   console.log("生成中 Ctrl+C 取消，空闲时 Ctrl+C 退出。\n");
   showPrompt();
 
@@ -603,6 +606,10 @@ async function main(): Promise<void> {
 
       // 宿主命令优先；扩展命令及未知斜杠命令都不发送给模型。
       if (userInput.startsWith("/")) {
+        // 每条命令拥有独立的取消控制器：
+        // 登记为 activeAbort 后，用户按 Ctrl+C 会取消本条命令，而不是退出程序。
+        const commandAbort = new AbortController();
+        activeAbort = commandAbort;
         try {
           const match = /^\/(\S+)(?:\s+([\s\S]*))?$/.exec(userInput);
           if (!match) {
@@ -616,6 +623,7 @@ async function main(): Promise<void> {
             cwd: process.cwd(),
             model,
             sessionFile: session?.file ?? null,
+            signal: commandAbort.signal,
             ui: Object.freeze({
               notify: (message: string): void => {
                 writeOutput(message + "\n");
@@ -623,16 +631,33 @@ async function main(): Promise<void> {
             }),
           });
 
-          const output = toolRegistry.executeCommand(name, args, context);
+          // executeCommand 总是返回 Promise，同步和异步命令都用 await 等待。
+          // 等待期间输入循环暂停，与 runAgent 相同：新输入会缓存到命令结束后再处理。
+          const output = await toolRegistry.executeCommand(name, args, context);
+
+          // 即使命令没有及时响应取消，也不显示迟到的成功结果。
+          // （命令可能忽略 signal 一直运行到结束；此时用户已按过 Ctrl+C，结果应视为作废。）
+          // 这里抛出后会进入下方 catch，统一按“已取消”处理。
+          commandAbort.signal.throwIfAborted();
           // 命令可以直接返回字符串，也可以只通过 context.ui.notify 输出而不返回。
           if (output !== undefined) {
             writeOutput(output + "\n");
           }
         } catch (error) {
-          writeOutput(
-            `命令执行失败：${error instanceof Error ? error.message : String(error)}\n`,
-            true,
-          );
+          // 以信号状态而非错误类型判断是否为取消：
+          // 取消时各 API 抛出的错误各不相同（AbortError、自定义错误等），
+          // 只要信号已触发，就统一提示“已取消”，不把取消误报为执行失败。
+          if (commandAbort.signal.aborted) {
+            writeOutput("命令已取消\n");
+          } else {
+            writeOutput(
+              `命令执行失败：${error instanceof Error ? error.message : String(error)}\n`,
+              true,
+            );
+          }
+        } finally {
+          // 无论成功、失败还是取消，都解除“正在运行”状态，恢复 Ctrl+C 的退出行为。
+          activeAbort = null;
         }
 
         showPrompt();

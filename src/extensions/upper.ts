@@ -1,3 +1,4 @@
+import { setTimeout as delay } from "node:timers/promises";
 import type { ExtensionAPI, Tool } from "../core/tools.js";
 
 // 第 1 部分：给模型看的说明书。
@@ -42,7 +43,8 @@ function execute(args: unknown): string {
  * - 命令 /context：展示当前工作目录、模型和会话文件（演示 CommandContext 的用法）；
  * - 命令 /runs：展示本次装载以来已结束的 Agent 运行次数（演示 onAgentEnd 订阅）；
  * - 工具 upper：供模型调用，把文本转为大写；
- * - 命令 /upper：供用户直接调用，效果同上但不经过模型。
+ * - 命令 /upper：供用户直接调用，效果同上但不经过模型；
+ * - 命令 /wait：等待 3 秒后返回，可按 Ctrl+C 取消（演示异步命令与 context.signal）。
  *
  * 为什么使用 export default：
  * - 外部扩展通过路径动态加载，宿主事先不知道本文件中的函数叫什么。
@@ -104,5 +106,28 @@ export default function registerUpper({
   registerCommand({
     name: "upper",
     execute: (args) => args.toUpperCase(),
+  });
+
+  // 命令 /wait：异步命令示例。
+  // execute 写成 async 函数，返回 Promise；宿主会 await 它；等待期间仍可输入，提交的后续行会排队，结束后才执行。
+  registerCommand({
+    name: "wait",
+    async execute(_args, context) {
+      // 先用 notify 立即提示用户，最终结果再通过 return 返回。
+      context.ui.notify("等待 3 秒，可按 Ctrl+C 取消");
+
+      // delay 是 node:timers/promises 的 setTimeout（导入时重命名为 delay），返回 Promise：
+      // - 参数 1 delay:   等待的毫秒数。
+      // - 参数 2 value:   等待结束后 Promise 的结果值，这里用不到，传 undefined。
+      // - 参数 3 options: { signal } 传入取消信号。用户按 Ctrl+C 时信号被触发，
+      //                   Promise 立即以 AbortError 拒绝，后面的 return 不会执行，
+      //                   宿主捕获后输出“命令已取消”。
+      // 这就是“响应取消信号”：把 signal 交给支持取消的 API，而不是自己硬等到结束。
+      await delay(3000, undefined, {
+        signal: context.signal,
+      });
+
+      return "等待完成";
+    },
   });
 }

@@ -221,7 +221,7 @@ console.log("通过：扩展卸载、三次重载、失败回滚、失效注册�
         external_verification = r'''
 import assert from "node:assert/strict";
 const context = Object.freeze({
-  cwd: process.cwd(), model: "local-test", sessionFile: null,
+  cwd: process.cwd(), model: "local-test", sessionFile: null, signal: new AbortController().signal,
   ui: Object.freeze({ notify: () => {} }),
 });
 import { writeFileSync } from "node:fs";
@@ -233,7 +233,7 @@ const close = mountExtension(registry, registerEcho);
 for (let i = 0; i < 3; i++) {
   const dispose = await loadExtension(registry, "dist/extensions/upper.js");
   assert.equal(registry.execute("upper", { text: "hello" }), "HELLO");
-  assert.equal(registry.executeCommand("upper", "hello  world", context), "HELLO  WORLD");
+  assert.equal(await registry.executeCommand("upper", "hello  world", context), "HELLO  WORLD");
   assert.equal(registry.execute("echo", { text: "hello" }), "hello");
   for (const args of [null, [], {}, {text: 1}]) {
     assert.throws(() => registry.execute("upper", args), /upper 工具参数/);
@@ -241,7 +241,7 @@ for (let i = 0; i < 3; i++) {
   await assert.rejects(loadExtension(registry, "dist/extensions/upper.js"), /命令重名: context/);
   dispose(); dispose();
   assert.throws(() => registry.execute("upper", {}), /未知工具/);
-  assert.throws(() => registry.executeCommand("upper", "", context), /未知命令/);
+  await assert.rejects(() => registry.executeCommand("upper", "", context), /未知命令/);
 }
 for (const [file, source, message] of [
   ["invalid.mjs", "export default 1;", "默认导出注册函数"],
@@ -267,7 +267,7 @@ console.log("通过：外部模块加载、参数校验、重名保护、错误�
         command_verification = r'''
 import assert from "node:assert/strict";
 const context = Object.freeze({
-  cwd: process.cwd(), model: "local-test", sessionFile: null,
+  cwd: process.cwd(), model: "local-test", sessionFile: null, signal: new AbortController().signal,
   ui: Object.freeze({ notify: () => {} }),
 });
 import { createToolRegistry, mountExtension } from "./dist/core/tools.js";
@@ -281,13 +281,13 @@ for (const name of ["", "/bad", "bad name", "Upper", "1bad"]) {
 }
 const old = r.registerCommand(command);
 assert.throws(() => r.registerCommand(command), /命令重名/);
-assert.equal(r.executeCommand("sample", "保留  空格", context), "保留  空格");
+assert.equal(await r.executeCommand("sample", "保留  空格", context), "保留  空格");
 old();
 const fresh = r.registerCommand(command);
 old();
-assert.equal(r.executeCommand("sample", "新注册", context), "新注册");
+assert.equal(await r.executeCommand("sample", "新注册", context), "新注册");
 fresh(); fresh();
-assert.throws(() => r.executeCommand("sample", "", context), /未知命令/);
+await assert.rejects(() => r.executeCommand("sample", "", context), /未知命令/);
 let saved;
 const failure = new Error("注册中断");
 assert.throws(() => mountExtension(r, api => {
@@ -297,21 +297,21 @@ assert.throws(() => mountExtension(r, api => {
   throw failure;
 }), error => error === failure);
 assert.deepEqual(r.definitions(), []);
-assert.throws(() => r.executeCommand("sample", "", context), /未知命令/);
+await assert.rejects(() => r.executeCommand("sample", "", context), /未知命令/);
 assert.throws(() => saved.registerCommand(command), /扩展已卸载/);
 const keep = r.registerCommand(command);
 assert.throws(() => mountExtension(r, api => {
   api.registerCommand({ ...command, name: "partial" });
   api.registerCommand(command);
 }), /命令重名/);
-assert.throws(() => r.executeCommand("partial", "", context), /未知命令/);
-assert.equal(r.executeCommand("sample", "原命令", context), "原命令");
+await assert.rejects(() => r.executeCommand("partial", "", context), /未知命令/);
+assert.equal(await r.executeCommand("sample", "原命令", context), "原命令");
 keep();
 const close = mountExtension(r, api => {
   saved = api;
   api.registerCommand({name: "fail", execute() { throw failure; }});
 });
-assert.throws(() => r.executeCommand("fail", "", context), error => error === failure);
+await assert.rejects(() => r.executeCommand("fail", "", context), error => error === failure);
 close(); close();
 assert.throws(() => saved.registerCommand(command), /扩展已卸载/);
 console.log("通过：命令名称与宿主保护、重名、错误传播、混合注册回滚、失效拒绝及清理隔离");
@@ -322,7 +322,7 @@ console.log("通过：命令名称与宿主保护、重名、错误传播、混�
         event_verification = r'''
 import assert from "node:assert/strict";
 const context = Object.freeze({
-  cwd: process.cwd(), model: "local-test", sessionFile: null,
+  cwd: process.cwd(), model: "local-test", sessionFile: null, signal: new AbortController().signal,
   ui: Object.freeze({ notify: () => {} }),
 });
 import {createToolRegistry, mountExtension, loadExtension} from "./dist/core/tools.js";
@@ -359,16 +359,37 @@ assert.deepEqual(r.emitAgentEnd(event), []); assert.equal(count,2);
 r.emitAgentEnd(event); assert.equal(count,3);stop();added();
 for(let i=0;i<3;i++) {
  const close=await loadExtension(r,"dist/extensions/upper.js");
- assert.equal(r.executeCommand("runs", "", context),"本次装载已结束运行：0");
+ assert.equal(await r.executeCommand("runs", "", context),"本次装载已结束运行：0");
  await assert.rejects(loadExtension(r,"dist/extensions/upper.js"),/命令重名: context/);
  r.emitAgentEnd(event);
- assert.equal(r.executeCommand("runs", "", context),"本次装载已结束运行：1");
+ assert.equal(await r.executeCommand("runs", "", context),"本次装载已结束运行：1");
  close();close();assert.deepEqual(r.emitAgentEnd(event),[]);
- assert.throws(()=>r.executeCommand("runs", "", context),/未知命令/);
+ await assert.rejects(() => r.executeCommand("runs", "", context),/未知命令/);
 }
 console.log("通过：事件顺序、只读快照、异常隔离、分发期间增删、回滚与三次装载计数");
 '''
         subprocess.run(['node', '--input-type=module', '-e', event_verification],
+                       cwd=project, env=test_env, check=True)
+
+        async_verification = r'''
+import assert from "node:assert/strict";
+import {createToolRegistry,loadExtension} from "./dist/core/tools.js";
+const r=createToolRegistry();const close=await loadExtension(r,"dist/extensions/upper.js");
+const controller=new AbortController();
+const context={cwd:process.cwd(),model:"local-test",sessionFile:null,signal:controller.signal,ui:{notify(){}}};
+assert.equal(await r.executeCommand("upper","abc",context),"ABC");
+const pending=r.executeCommand("wait","",context);controller.abort();
+await assert.rejects(pending,{name:"AbortError"});
+let calls=0;
+r.registerCommand({name:"probe",execute(){calls++;return "执行";}});
+await assert.rejects(r.executeCommand("probe","",context),{name:"AbortError"});
+assert.equal(calls,0);
+const failure=new Error("异步失败");
+r.registerCommand({name:"asyncfail",async execute(){throw failure;}});
+await assert.rejects(r.executeCommand("asyncfail","",{...context,signal:new AbortController().signal}),e=>e===failure);
+close();console.log("通过：异步异常、执行中取消、已取消信号阻止执行与同步命令兼容");
+'''
+        subprocess.run(['node', '--input-type=module', '-e', async_verification],
                        cwd=project, env=test_env, check=True)
 
         # 直接验证持久化边界，所有损坏均写在临时目录，比较原始字节不被恢复操作修改。
@@ -646,6 +667,15 @@ import assert from "node:assert/strict";
 import upper from "./dist/extensions/upper.js";
 export default function(api) {
   upper(api);
+  api.registerCommand({ name: "asyncfail", async execute() {
+    await Promise.resolve();
+    throw new Error("异步命令拒绝");
+  }});
+  api.registerCommand({ name: "late", async execute(args, context) {
+    context.ui.notify("忽略信号的实验已开始");
+    await new Promise(resolve => setTimeout(resolve, 300));
+    return "不应显示的迟到结果";
+  }});
   api.registerCommand({ name: "probe", execute(args, context) {
     assert(Object.isFrozen(context));
     assert(Object.isFrozen(context.ui));
@@ -682,6 +712,61 @@ export default function(api) {
         send(child, '/exit'); assert child.wait(timeout=5) == 0
         assert requests.empty(), '上下文命令不得请求模型'
         print('通过：真实入口上下文冻结、通知输出、无会话、连续新建、重启恢复及旧命令兼容')
+
+        # PTY 验证命令取消后仍可操作，并检查运行期间提交的下一条输入串行执行。
+        master, slave = pty.openpty()
+        child = subprocess.Popen(['node', 'dist/index.js'], cwd=project,
+                                 env=env,
+                                 stdin=slave, stdout=slave, stderr=slave)
+        children.append(child)
+        os.close(slave)
+        def command_expect(text):
+            output = b''
+            deadline = time.monotonic() + 8
+            while text.encode() not in output and time.monotonic() < deadline:
+                if select.select([master], [], [], 0.1)[0]:
+                    output += os.read(master, 65536)
+            assert text.encode() in output, repr(output)
+            return output
+        try:
+            command_expect('生成中 Ctrl+C')
+            os.write(master, b'/asyncfail\n')
+            command_expect('命令执行失败：异步命令拒绝')
+            os.write(master, b'/late\n')
+            command_expect('忽略信号的实验已开始')
+            os.write(master, b'\x03')
+            output = command_expect('命令已取消')
+            assert '不应显示的迟到结果'.encode() not in output
+            os.write(master, b'/wait\n')
+            command_expect('等待 3 秒')
+            os.write(master, b'\x03')
+            output = command_expect('命令已取消')
+            assert '等待完成'.encode() not in output
+            os.write(master, b'/upper after\n')
+            command_expect('AFTER')
+            os.write(master, b'/wait\n')
+            command_expect('等待 3 秒')
+            os.write(master, b'/upper queued\n')
+            output = command_expect('QUEUED')
+            assert output.index('等待完成'.encode()) < output.index(b'QUEUED')
+            os.write(master, b'/exit\n')
+            command_expect('终端程序已退出')
+            assert child.wait(timeout=5) == 0
+            assert requests.empty()
+        finally:
+            os.close(master)
+        print('通过：真实终端异步正常完成、Ctrl+C 取消、取消后继续、排队顺序和退出')
+
+        child, lines = launch(env)
+        expect(lines, '生成中 Ctrl+C')
+        send(child, '/wait')
+        expect(lines, '等待 3 秒')
+        child.stdin.close()
+        output = expect(lines, '终端程序已退出')
+        assert '命令已取消' in output and '等待完成' not in output
+        assert child.wait(timeout=5) == 0
+        assert requests.empty()
+        print('通过：异步拒绝后恢复、忽略信号的迟到返回值抑制及输入关闭取消退出')
 
         diagnostic_verification = r'''
 import assert from "node:assert/strict";
