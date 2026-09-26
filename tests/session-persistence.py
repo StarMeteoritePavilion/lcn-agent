@@ -667,6 +667,11 @@ import assert from "node:assert/strict";
 import upper from "./dist/extensions/upper.js";
 export default function(api) {
   upper(api);
+  api.registerCommand({ name: "parallelask", async execute(args, context) {
+    const first = context.ui.ask("第一问：");
+    await assert.rejects(context.ui.ask("不应显示的第二问："), /已有提问/);
+    return `并发保护通过：${await first}`;
+  }});
   api.registerCommand({ name: "asyncfail", async execute() {
     await Promise.resolve();
     throw new Error("异步命令拒绝");
@@ -730,6 +735,26 @@ export default function(api) {
             return output
         try:
             command_expect('生成中 Ctrl+C')
+            before_ask = set((project / '.lcn-agent/sessions').glob('*.jsonl'))
+            for answer in ['中文答案', '', '/exit']:
+                os.write(master, b'/ask\n')
+                command_expect('请输入回答：')
+                os.write(master, (answer + '\n').encode())
+                command_expect('回答：' + answer)
+            os.write(master, b'/parallelask\n')
+            command_expect('第一问：')
+            os.write(master, '一次回答\n'.encode())
+            command_expect('并发保护通过：一次回答')
+            os.write(master, b'/ask\n')
+            command_expect('请输入回答：')
+            os.write(master, b'\x03')
+            command_expect('命令已取消')
+            os.write(master, b'/ask\n')
+            command_expect('请输入回答：')
+            os.write(master, '恢复后的回答\n'.encode())
+            command_expect('回答：恢复后的回答')
+            assert requests.empty(), '提问与回答不得进入模型请求'
+            assert set((project / '.lcn-agent/sessions').glob('*.jsonl')) == before_ask
             os.write(master, b'/asyncfail\n')
             command_expect('命令执行失败：异步命令拒绝')
             os.write(master, b'/late\n')
@@ -756,6 +781,32 @@ export default function(api) {
         finally:
             os.close(master)
         print('通过：真实终端异步正常完成、Ctrl+C 取消、取消后继续、排队顺序和退出')
+
+        # 空编辑行 Ctrl+D 关闭终端输入，等待中的提问必须退出。
+        master, slave = pty.openpty()
+        child = subprocess.Popen(['node', 'dist/index.js'], cwd=project, env=env,
+                                 stdin=slave, stdout=slave, stderr=slave)
+        children.append(child)
+        os.close(slave)
+        try:
+            command_expect('生成中 Ctrl+C')
+            os.write(master, b'/ask\n')
+            command_expect('请输入回答：')
+            os.write(master, b'\x04')
+            command_expect('终端程序已退出')
+            assert child.wait(timeout=5) == 0
+        finally:
+            os.close(master)
+        child, lines = launch(env)
+        expect(lines, '生成中 Ctrl+C')
+        send(child, '/ask')
+        expect(lines, '交互提问需要终端输入和输出')
+        send(child, '/upper after')
+        expect(lines, 'AFTER')
+        send(child, '/exit')
+        assert child.wait(timeout=5) == 0
+        assert requests.empty()
+        print('通过：提问中文/空/斜杠回答、并发拒绝、取消恢复、输入关闭、非终端拒绝及无模型请求')
 
         child, lines = launch(env)
         expect(lines, '生成中 Ctrl+C')

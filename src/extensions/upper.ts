@@ -130,4 +130,12 @@ export default function registerUpper({
       return "等待完成";
     },
   });
+
+  registerCommand({
+    name: "ask",
+    async execute(args, context) {
+      const answer = await context.ui.ask(args || "请输入回答：");
+      return `回答：${answer}`;
+    },
+  });
 }

@@ -64,6 +64,8 @@ export type CommandContext = Readonly<{
   signal: AbortSignal;
   ui: Readonly<{
     notify: (message: string) => void;
+    // 等待用户提交一行回答；取消或无法交互时拒绝 Promise。
+    ask: (question: string) => Promise<string>;
   }>;
 }>;
 

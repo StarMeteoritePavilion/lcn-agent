@@ -505,6 +505,7 @@ async function main(): Promise<void> {
   // 两类任务共用这一个变量，因此 Ctrl+C 与 stdin 关闭时的取消逻辑对二者都生效。
   let activeAbort: AbortController | null = null;
   let closed = false;
+  let asking = false;
 
   const onSigint = (): void => {
     // 生成中（或命令执行中）取消当前任务；空闲时关闭 readline，让主循环自然退出。
@@ -627,6 +628,27 @@ async function main(): Promise<void> {
             ui: Object.freeze({
               notify: (message: string): void => {
                 writeOutput(message + "\n");
+              },
+              ask: async (question: string): Promise<string> => {
+                commandAbort.signal.throwIfAborted();
+
+                if (closed) {
+                  throw new Error("输入已关闭，无法提问");
+                }
+                if (!process.stdin.isTTY || !process.stdout.isTTY) {
+                  throw new Error("交互提问需要终端输入和输出");
+                }
+                if (asking) {
+                  throw new Error("已有提问正在等待回答");
+                }
+                asking = true;
+                try {
+                  return await input.question(`${question} `, {
+                    signal: commandAbort.signal,
+                  });
+                } finally {
+                  asking = false;
+                }
               },
             }),
           });
