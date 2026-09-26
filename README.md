@@ -187,7 +187,8 @@ npx prettier --write "src/**/*.ts"
 lcn-agent/
 ├── src/             # TypeScript 源码
 │   ├── index.ts     # 当前学习阶段入口
-│   ├── core/        # 配置、会话与运行诊断模块
+│   ├── core/        # 配置、会话、诊断及扩展注册模块
+│   ├── extensions/  # 回显、大写、延迟回显与待办扩展
 │   └── stage-xx.ts  # 已完成阶段的入口快照
 ├── dist/            # 编译输出（gitignored）
 ├── docs/            # 开发计划与学习文档

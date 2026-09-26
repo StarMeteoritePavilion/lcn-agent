@@ -1007,31 +1007,36 @@ import myLogger from "./logger.js";  // 叫什么都行
 | 名字 | 必须匹配（或用 `as` 重命名） | 导入方随意命名 |
 | 重构友好 | IDE 全局重命名能追踪 | 每个导入方名字不同，难追踪 |
 
-社区倾向优先用命名导出。默认导出常见于框架约定（React 组件、Next.js 页面等）。
+两种都是标准 ESM 语法，应按模块用途和加载器约定选择，不能仅凭是否使用花括号判断规范性。
 
-### upper.ts 的问题
+### 当前项目为什么保留 upper.ts 的默认导出
 
-同一目录下两个扩展文件风格不一致：
+两个扩展采用不同的装载方式，导出不必强行一致：
 
 ```ts
 // echo.ts — 命名导出
-export function registerEcho(register: RegisterTool): void { ... }
+export function registerEcho({ registerTool: register }: ExtensionAPI): void { ... }
 
 // upper.ts — 默认导出
-export default function registerUpper(register: RegisterTool): void { ... }
+export default function registerUpper({
+  registerTool: register,
+  registerCommand,
+  onAgentEnd,
+}: ExtensionAPI): void { ... }
 ```
 
-`echo.ts` 在 `index.ts` 里的导入是 `import { registerEcho } from "./extensions/echo.js"`。如果 `upper.ts` 保持默认导出，导入就会变成无花括号的 `import registerUpper from "./extensions/upper.js"`，和 echo 不一致。
+`echo.ts` 由 `index.ts` 使用 `import { registerEcho } from "./extensions/echo.js"` 静态导入，
+再交给 `mountExtension()`。`upper.ts` 则由 `loadExtension()` 按文件路径动态导入，
+加载器只读取模块的 `default`，不依赖扩展内部的函数名。
 
-建议去掉 `default`，改成命名导出：
+因此，当前不能只删除 `default`。改为命名导出后，模块提供的是 `extension.registerUpper`，
+现有加载器会报“扩展必须默认导出注册函数”。静态导入默认导出的合法写法是：
 
 ```ts
-export function registerUpper(register: RegisterTool): void {
-  register({ definition, execute });
-}
+import registerUpper from "./extensions/upper.js";
 ```
 
-**总结：** 命名导出用花括号、名字固定、可以多个；默认导出无花括号、名字随意、只能一个。同一目录的扩展文件应保持统一风格，`upper.ts` 应改为命名导出以和 `echo.ts` 一致。
+默认导出同时支持静态导入和当前动态加载约定。当前保留 `upper.ts` 的默认导出，以及内部 `echo.ts` 的命名导出。
 
 ---
 
@@ -1053,7 +1058,7 @@ function registerEcho({ registerTool: register }: ExtensionAPI): void {
 }
 ```
 
-`ExtensionAPI` 的定义：
+`ExtensionAPI` 的相关字段（省略事件订阅）：
 
 ```ts
 type ExtensionAPI = {
@@ -1166,9 +1171,9 @@ next.add(item);
 saveItems(path, next);
 ```
 
-### 代码旁的过时注释
+### 已修正的旧注释
 
-`todo.ts` 中两条注释描述的是旧实现：
+此前 `todo.ts` 曾有两条描述旧实现的注释，当前源码已移除：
 
 - "items 就是 Map 中保存的数组，push 后 Map 里的数据同步更新"：现在没有 Map 和 push，`itemsFor` 每次从文件读，这里生成新数组再写回文件。
 - "直接修改它的属性即可"：实际用的是 `map` + `{ ...entry, done: true }` 生成新对象，没有修改原对象。
