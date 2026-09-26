@@ -61,6 +61,12 @@ class Handler(BaseHTTPRequestHandler):
             delta = {'tool_calls': [{'index': 0, 'id': 'todo_read_1', 'type': 'function',
                                     'function': {'name': 'todo_list', 'arguments': '{}'}}]}
             reason = 'tool_calls'
+        elif last['role'] == 'user' and last['content'] in ('模型新增待办', '模型完成待办'):
+            name = 'todo_add' if last['content'] == '模型新增待办' else 'todo_done'
+            arguments = '{"text":"审批任务"}' if name == 'todo_add' else '{"id":"1"}'
+            delta = {'tool_calls': [{'index': 0, 'id': 'todo_write_1', 'type': 'function',
+                                    'function': {'name': name, 'arguments': arguments}}]}
+            reason = 'tool_calls'
         elif last['role'] == 'user' and last['content'] == '确认工具验证':
             delta = {'tool_calls': [{'index': 0, 'id': 'confirm_1', 'type': 'function',
                                     'function': {'name': 'delay_echo', 'arguments': '{"text":"确认内容"}'}}]}
@@ -558,6 +564,36 @@ assert.equal(calls,1);
         subprocess.run(['node', '--input-type=module', '-e', confirm_verification],
                        cwd=project, env=test_env, check=True)
 
+        todo_write_verification = r'''
+import assert from "node:assert/strict";
+import {mkdtempSync,readFileSync,existsSync,rmSync} from "node:fs";
+import {tmpdir} from "node:os";
+import {join} from "node:path";
+import {createToolRegistry,loadExtension} from "./dist/core/tools.js";
+const cwd=mkdtempSync(join(tmpdir(),"todo-approved-"));
+let permit=false;const approved=[];
+const r=createToolRegistry((name,json,ctx)=>name==="todo_list"||ctx.confirm(name,json,ctx.callId,ctx.signal));
+const ctx={cwd,model:"test",sessionFile:"s.jsonl",callId:"1",signal:new AbortController().signal,confirm:async(n,j)=>{approved.push([n,j]);return permit}};
+const close=await loadExtension(r,"dist/extensions/todo.js");
+const file=join(cwd,".lcn-agent/todos/s.jsonl.json");
+try {
+ await assert.rejects(r.execute("todo_add",{text:"任务"},ctx),/未获授权/);assert(!existsSync(file));
+ permit=true;assert.equal(await r.execute("todo_add",{text:"任务"},ctx),"已添加 #1：任务");
+ const before=readFileSync(file);permit=false;
+ await assert.rejects(r.execute("todo_done",{id:"1"},ctx),/未获授权/);assert.deepEqual(readFileSync(file),before);
+ permit=true;
+ for(const args of [{id:1},{id:"1",extra:1},{id:"01"}]) await assert.rejects(r.execute("todo_done",args,ctx));
+ assert.deepEqual(readFileSync(file),before);
+ assert.equal(await r.execute("todo_done",{id:"1"},ctx),"已完成 #1：任务");
+ assert.equal(await r.execute("todo_list",{},ctx),"[x] #1 任务");
+ const controller=new AbortController();controller.abort();const saved=readFileSync(file);
+ await assert.rejects(r.execute("todo_add",{text:"取消"},{...ctx,signal:controller.signal}),{name:"AbortError"});assert.deepEqual(readFileSync(file),saved);
+ console.log("通过：审批允许/拒绝、参数校验、取消不写入及命令工具共用存储");
+} finally {close();rmSync(cwd,{recursive:true,force:true});}
+'''
+        subprocess.run(['node', '--input-type=module', '-e', todo_write_verification],
+                       cwd=project, env=test_env, check=True)
+
         # 直接验证持久化边界，所有损坏均写在临时目录，比较原始字节不被恢复操作修改。
         verification = r'''
 import assert from "node:assert/strict";
@@ -1004,7 +1040,7 @@ export default function(api) {
         history = requests.get(timeout=5)
         assert history[-1] == {'role':'tool', 'tool_call_id':'todo_read_1',
                                'content':'[x] #1 阅读会话模块\n[ ] #2 吃饭'}
-        assert [tool['function']['name'] for tool in tool_definitions.get(timeout=5)] == ['echo', 'todo_list']
+        assert [tool['function']['name'] for tool in tool_definitions.get(timeout=5)] == ['echo', 'todo_list', 'todo_add', 'todo_done']
         assert todo_path.read_bytes() == original_todo
         assert requests.empty()
         print('通过：模型发现待办工具、列表正确回填且待办文件字节不变')
@@ -1162,6 +1198,51 @@ export default function(api) {
         assert '未获授权' in history[-1]['content'] and confirmed_count() == 1
         assert requests.empty()
         print('通过：真实终端确认允许/拒绝/默认拒绝、取消、真实超时及非交互拒绝均无额外执行')
+
+        # 真实宿主确认待办写入：拒绝/取消比较文件字节，同意检查实际状态和模型回填。
+        master, slave = pty.openpty()
+        child = subprocess.Popen(['node', 'dist/index.js'], cwd=project, env=todo_env,
+                                 stdin=slave, stdout=slave, stderr=slave)
+        children.append(child); os.close(slave)
+        try:
+            command_expect('生成中 Ctrl+C')
+            before = set((project / '.lcn-agent/sessions').glob('*.jsonl'))
+            os.write(master, b'/new\n'); command_expect('会话：')
+            file = (set((project / '.lcn-agent/sessions').glob('*.jsonl')) - before).pop()
+            todo_path = project / '.lcn-agent/todos' / (file.name + '.json')
+            for question, answer, expected in [
+                ('模型新增待办', 'n', '执行失败：工具未获授权: todo_add'),
+                ('模型新增待办', 'y', '已添加 #1：审批任务'),
+                ('模型完成待办', 'n', '执行失败：工具未获授权: todo_done'),
+                ('模型完成待办', 'y', '已完成 #1：审批任务'),
+            ]:
+                original = todo_path.read_bytes() if todo_path.exists() else None
+                os.write(master, (question + '\n').encode()); command_expect('[y/N]')
+                os.write(master, (answer + '\n').encode()); command_expect('完成，共 2 轮')
+                requests.get(timeout=5); history = requests.get(timeout=5)
+                assert history[-1] == {'role':'tool','tool_call_id':'todo_write_1','content':expected}
+                if answer == 'n':
+                    assert (todo_path.read_bytes() if todo_path.exists() else None) == original
+                else:
+                    items = json.loads(todo_path.read_text())['items']
+                    assert items == [{'id':1,'text':'审批任务','done':question == '模型完成待办'}]
+            original = todo_path.read_bytes()
+            os.write(master, '模型新增待办\n'.encode()); command_expect('[y/N]')
+            os.write(master, b'\x03'); command_expect('请求已取消')
+            requests.get(timeout=5); assert requests.empty()
+            assert todo_path.read_bytes() == original
+            os.write(master, b'/exit\n'); command_expect('终端程序已退出')
+            assert child.wait(timeout=5) == 0
+        finally:
+            os.close(master)
+        before = {p.name: p.read_bytes() for p in (project / '.lcn-agent/todos').glob('*.json')}
+        result = subprocess.run(['node', 'dist/index.js', '模型新增待办'], cwd=project,
+                                env=todo_env, capture_output=True, text=True, timeout=5)
+        assert result.returncode == 0 and '工具未获授权: todo_add' in result.stdout
+        requests.get(timeout=5); requests.get(timeout=5)
+        assert {p.name:p.read_bytes() for p in (project / '.lcn-agent/todos').glob('*.json')} == before
+        assert requests.empty()
+        print('通过：待办新增/完成逐次审批、拒绝与取消文件不变、结果回填及非交互拒绝')
 
         diagnostic_verification = r'''
 import assert from "node:assert/strict";

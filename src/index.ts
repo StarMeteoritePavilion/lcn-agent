@@ -21,18 +21,18 @@ import {
 let client: OpenAI;
 let model: string;
 
-// 自动允许的可信学习工具名单；delay_echo 单独逐次确认，其他名称默认拒绝。
+// 自动允许的可信学习工具名单；delay_echo 和待办写入工具逐次确认，其他名称默认拒绝。
 // 仅用于当前可信学习扩展；名称名单不能证明外部实现没有副作用。
 // （名单只检查名字：若外部扩展注册了一个同名工具，它同样会被放行，
 //   因此名单不能替代对扩展代码本身的审查。）
-// 名单里只有只读或无副作用的工具：todo_list 只读取待办；会修改待办的操作只以命令形式提供给用户。
+// 名单里只有只读或无副作用的工具：todo_list 只读取待办；todo_add、todo_done 不在自动允许名单中，由下方策略逐次确认。
 const allowedTools = new Set(["echo", "upper", "todo_list"]);
 
 // 注册表由入口持有；扩展在启动时登记，Agent 循环统一查找和执行。
 // 宿主控制自动允许与逐次确认，扩展注册本身不代表获得授权。
 const toolRegistry = createToolRegistry((name, argumentsJson, context) => {
   if (allowedTools.has(name)) return true;
-  if (name === "delay_echo") {
+  if (name === "delay_echo" || name === "todo_add" || name === "todo_done") {
     return context.confirm(name, argumentsJson, context.callId, context.signal);
   }
   return false;
