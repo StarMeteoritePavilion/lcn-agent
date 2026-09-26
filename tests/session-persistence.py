@@ -57,6 +57,13 @@ class Handler(BaseHTTPRequestHandler):
             if last['content'] == '工具参数错误':
                 delta['tool_calls'][0]['function']['arguments'] = '{坏JSON'
             reason = 'tool_calls'
+        elif last['role'] == 'user' and last['content'] == '工具超时验证':
+            delta = {'tool_calls': [
+                {'index': 0, 'id': 'slow_1', 'type': 'function',
+                 'function': {'name': 'slow_probe', 'arguments': '{}'}},
+                {'index': 1, 'id': 'skipped_2', 'type': 'function',
+                 'function': {'name': 'echo', 'arguments': '{"text":"不应执行"}'}}]}
+            reason = 'tool_calls'
         elif last['role'] == 'user' and last['content'] == '外部工具验证':
             delta = {'tool_calls': [{'index': 0, 'id': 'upper_1', 'type': 'function',
                                     'function': {'name': 'upper', 'arguments': '{"text":"hello"}'}}]}
@@ -97,6 +104,8 @@ try:
 
         registry_verification = r'''
 import assert from "node:assert/strict";
+const toolContext = Object.freeze({cwd:process.cwd(), model:"local-test", sessionFile:"test.jsonl",
+ callId:"test_call", signal:new AbortController().signal});
 import { createToolRegistry } from "./dist/core/tools.js";
 import { registerEcho } from "./dist/extensions/echo.js";
 
@@ -104,15 +113,15 @@ const registry = createToolRegistry();
 assert.deepEqual(registry.definitions(), []);
 registerEcho({ registerTool: registry.register, registerCommand: registry.registerCommand });
 assert.deepEqual(registry.definitions().map((tool) => tool.function.name), ["echo"]);
-assert.equal(registry.execute("echo", { text: "中文回显" }), "中文回显");
-assert.equal(registry.execute("echo", { text: "" }), "");
+assert.equal(await registry.execute("echo", { text: "中文回显" }, toolContext), "中文回显");
+assert.equal(await registry.execute("echo", { text: "" }, toolContext), "");
 for (const args of [null, [], "文本", 1, true, {}, { text: 1 }]) {
-  assert.throws(() => registry.execute("echo", args), /echo 工具参数/);
+  await assert.rejects(() => registry.execute("echo", args, toolContext), /echo 工具参数/);
 }
-assert.throws(() => registry.execute("Echo", { text: "值" }), /未知工具: Echo/);
-assert.throws(() => registry.execute("toString", {}), /未知工具: toString/);
+await assert.rejects(() => registry.execute("Echo", { text: "值" }, toolContext), /未知工具: Echo/);
+await assert.rejects(() => registry.execute("toString", {}, toolContext), /未知工具: toString/);
 assert.throws(() => registerEcho({ registerTool: registry.register, registerCommand: registry.registerCommand }), /工具重名: echo/);
-assert.equal(registry.execute("echo", { text: "原工具仍可用" }), "原工具仍可用");
+assert.equal(await registry.execute("echo", { text: "原工具仍可用" }, toolContext), "原工具仍可用");
 
 // 实验工具只用于验证新增注册，无需修改核心路由。
 let calls = 0;
@@ -128,7 +137,7 @@ registry.register({
 });
 assert.equal(calls, 0);
 assert.deepEqual(registry.definitions().map((tool) => tool.function.name), ["echo", "lesson_probe"]);
-assert.throws(() => registry.execute("lesson_probe", {}), /实验执行异常/);
+await assert.rejects(() => registry.execute("lesson_probe", {}, toolContext), /实验执行异常/);
 assert.equal(calls, 1);
 assert.deepEqual(createToolRegistry().definitions(), []);
 console.log("通过：定义发现、参数校验、未知工具、重名保护、新工具注册、异常传播与实例隔离");
@@ -137,6 +146,8 @@ console.log("通过：定义发现、参数校验、未知工具、重名保护�
 
         lifecycle_verification = r'''
 import assert from "node:assert/strict";
+const toolContext = Object.freeze({cwd:process.cwd(), model:"local-test", sessionFile:"test.jsonl",
+ callId:"test_call", signal:new AbortController().signal});
 import { createToolRegistry, mountExtension } from "./dist/core/tools.js";
 import { registerEcho } from "./dist/extensions/echo.js";
 
@@ -155,12 +166,12 @@ assert.deepEqual(names(), ["keep", "echo"]);
 unload();
 unload();
 assert.deepEqual(names(), ["keep"]);
-assert.throws(() => registry.execute("echo", {}), /未知工具/);
+await assert.rejects(() => registry.execute("echo", {}, toolContext), /未知工具/);
 
 // 旧清理函数不能删除新实例中重新注册的同名工具。
 const reload = mountExtension(registry, registerEcho);
 unload();
-assert.equal(registry.execute("echo", { text: "新实例" }), "新实例");
+assert.equal(await registry.execute("echo", { text: "新实例" }, toolContext), "新实例");
 reload();
 for (let i = 0; i < 3; i++) {
   const dispose = mountExtension(registry, registerEcho);
@@ -188,7 +199,7 @@ assert.throws(
   /工具重名: keep/,
 );
 assert.deepEqual(names(), ["keep"]);
-assert.equal(registry.execute("keep", {}), "keep");
+assert.equal(await registry.execute("keep", {}, toolContext), "keep");
 
 let savedApi;
 const close = mountExtension(registry, (api) => {
@@ -200,7 +211,7 @@ const remove = registry.register(tool("again"));
 remove();
 const removeNew = registry.register(tool("again"));
 remove();
-assert.equal(registry.execute("again", {}), "again");
+assert.equal(await registry.execute("again", {}, toolContext), "again");
 removeNew();
 keep();
 assert.deepEqual(names(), []);
@@ -210,7 +221,7 @@ const oldDispose = registry.register(shared);
 oldDispose();
 const newDispose = registry.register(shared);
 oldDispose();
-assert.equal(registry.execute("shared", {}), "shared");
+assert.equal(await registry.execute("shared", {}, toolContext), "shared");
 newDispose();
 newDispose();
 assert.deepEqual(names(), []);
@@ -220,6 +231,8 @@ console.log("通过：扩展卸载、三次重载、失败回滚、失效注册�
 
         external_verification = r'''
 import assert from "node:assert/strict";
+const toolContext = Object.freeze({cwd:process.cwd(), model:"local-test", sessionFile:"test.jsonl",
+ callId:"test_call", signal:new AbortController().signal});
 const context = Object.freeze({
   cwd: process.cwd(), model: "local-test", sessionFile: null, signal: new AbortController().signal,
   ui: Object.freeze({ notify: () => {} }),
@@ -232,15 +245,15 @@ const registry = createToolRegistry();
 const close = mountExtension(registry, registerEcho);
 for (let i = 0; i < 3; i++) {
   const dispose = await loadExtension(registry, "dist/extensions/upper.js");
-  assert.equal(registry.execute("upper", { text: "hello" }), "HELLO");
+  assert.equal(await registry.execute("upper", { text: "hello" }, toolContext), "HELLO");
   assert.equal(await registry.executeCommand("upper", "hello  world", context), "HELLO  WORLD");
-  assert.equal(registry.execute("echo", { text: "hello" }), "hello");
+  assert.equal(await registry.execute("echo", { text: "hello" }, toolContext), "hello");
   for (const args of [null, [], {}, {text: 1}]) {
-    assert.throws(() => registry.execute("upper", args), /upper 工具参数/);
+    await assert.rejects(() => registry.execute("upper", args, toolContext), /upper 工具参数/);
   }
   await assert.rejects(loadExtension(registry, "dist/extensions/upper.js"), /命令重名: context/);
   dispose(); dispose();
-  assert.throws(() => registry.execute("upper", {}), /未知工具/);
+  await assert.rejects(() => registry.execute("upper", {}, toolContext), /未知工具/);
   await assert.rejects(() => registry.executeCommand("upper", "", context), /未知命令/);
 }
 for (const [file, source, message] of [
@@ -670,13 +683,14 @@ console.log("通过：保存恢复、损坏定位、原文件保护、工具配�
         # 使用主实现的真实 30 秒超时，不修改生产常量。
         result = subprocess.run(['node', 'dist/index.js', '等待超时'], cwd=project, env=test_env,
                                 capture_output=True, text=True, timeout=40)
-        assert '请求已取消' in result.stdout
+        assert '请求超时' in result.stdout and '请求已取消' not in result.stdout, result.stdout
         requests.get(timeout=5)
         timed_out = [json.loads(line) for file in (project / '.lcn-agent/diagnostics').glob('*/*.jsonl')
                      for line in file.read_text().splitlines()]
         assert any(record['type'] == 'end' and record['outcome'] == 'timeout'
                    and record['reason'] == '请求超时' and record['elapsedMs'] >= 29000 for record in timed_out)
-        print('通过：真实 30 秒模型超时与独立超时原因', flush=True)
+        assert any(record['type'] == 'finish' and record['reason'] == 'timeout' for record in timed_out)
+        print('通过：真实 30 秒超时、明确界面提示及 timeout 运行结束原因', flush=True)
 
         # 将真实编译产物放到项目目录外，验证入口的路径选择和完整工具回填。
         with tempfile.TemporaryDirectory(prefix='lcn-外部 # ') as external:
@@ -946,6 +960,42 @@ export default function(api) {
             os.close(master)
         assert requests.empty(), '待办命令不得请求模型'
         print('通过：待办真实入口会话隔离、切回恢复、重启持久化、PTY 提问与取消不占编号')
+
+        # 使用真实的每轮 30 秒预算，覆盖工具等待中的超时分类与后续调用配对。
+        slow = project / 'slow-probe.mjs'
+        slow.write_text('''
+import {setTimeout as delay} from "node:timers/promises";
+export default function(api) {
+  api.registerTool({
+    definition: {type:"function",function:{name:"slow_probe",parameters:{type:"object"}}},
+    async execute(args, context) {
+      await delay(35000, undefined, {signal:context.signal});
+      return "不应返回";
+    }
+  });
+}
+''')
+        before = set((project / '.lcn-agent/sessions').glob('*.jsonl'))
+        result = subprocess.run(['node', 'dist/index.js', '工具超时验证'], cwd=project,
+                                env={**test_env, 'LCN_AGENT_EXTENSION': str(slow)},
+                                capture_output=True, text=True, timeout=40)
+        assert '请求超时：本轮超过 30 秒预算' in result.stdout, result.stdout
+        assert '请求已取消' not in result.stdout
+        requests.get(timeout=5)
+        assert requests.empty(), '工具超时后不能继续请求模型'
+        file = (set((project / '.lcn-agent/sessions').glob('*.jsonl')) - before).pop()
+        messages = [json.loads(line)['message'] for line in file.read_text().splitlines()[1:]]
+        assert messages[-2]['tool_call_id'] == 'slow_1'
+        assert '本轮超时' in messages[-2]['content']
+        assert messages[-1] == {'role':'tool', 'tool_call_id':'skipped_2', 'content':'未执行：本轮超时'}
+        runs = diagnosis_records(file.name)
+        assert runs[0][-1]['type'] == 'finish' and runs[0][-1]['reason'] == 'timeout'
+        child, lines = launch()
+        expect(lines, '生成中 Ctrl+C')
+        send(child, '/resume ' + file.name); expect(lines, '已恢复：')
+        send(child, '/diagnostics'); expect(lines, '运行结束：timeout')
+        send(child, '/exit'); assert child.wait(timeout=5) == 0
+        print('通过：真实 30 秒工具超时、未执行结果配对、停止后续请求及恢复诊断')
 
         diagnostic_verification = r'''
 import assert from "node:assert/strict";

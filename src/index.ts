@@ -81,7 +81,7 @@ type RuntimeEvent =
 type EventHandler = (event: RuntimeEvent) => void;
 
 type UiStatus =
-  "idle" | "thinking" | "tool" | "completed" | "cancelled" | "truncated" | "loop_limit" | "error";
+  "idle" | "thinking" | "tool" | "completed" | "cancelled" | "timeout" | "truncated" | "loop_limit" | "error";
 
 type MarkdownState = {
   pendingLine: string;
@@ -198,11 +198,13 @@ function createUiRenderer(
         state.tool = null;
         if (event.reason === "completed") state.status = "completed";
         else if (event.reason === "cancelled") state.status = "cancelled";
+        else if (event.reason === "timeout") state.status = "timeout";
         else if (event.reason === "truncated") state.status = "truncated";
         else if (event.reason === "loop_limit") state.status = "loop_limit";
         else state.status = "error";
         if (event.reason === "completed") append(`\n完成，共 ${event.round} 轮\n`);
         if (event.reason === "cancelled") append("\n请求已取消\n");
+        if (event.reason === "timeout") append("\n请求超时：本轮超过 30 秒预算\n");
         if (event.reason === "truncated") append("\n响应因长度截断，不执行工具\n");
         if (event.reason === "loop_limit") append(`\n达到最大轮次限制: ${event.round}\n`);
         break;
@@ -354,6 +356,9 @@ async function runAgent(
       // 每轮拥有自己的超时信号，同时接受用户 Ctrl+C 的取消信号。
       onEvent({ type: "turn_start", round });
 
+      // AbortSignal.timeout: 创建一个在指定毫秒后自动触发的信号。
+      // AbortSignal.any:     合并多个信号，其中任意一个触发，合并后的信号就触发。
+      // 本轮的模型请求与本轮所有工具调用都使用这个 signal，共享同一个 30 秒预算。
       const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
       const signal = AbortSignal.any([userAbort.signal, timeout]);
 
@@ -379,6 +384,13 @@ async function runAgent(
                   ? error.name
                   : "模型请求异常";
         diagnostics.end(operation, outcome, reason);
+        // 在本轮仍可访问 timeout 时分类，避免 SDK 中止异常混淆两种原因。
+        // （SDK 无论是用户取消还是超时都抛出 APIUserAbortError；外层 catch 已拿不到本轮的 timeout，
+        //   只能一律当作 cancelled，所以要在这里就地区分并结束运行。）
+        if (outcome === "cancelled" || outcome === "timeout") {
+          onEvent({ type: "agent_end", reason: outcome, round });
+          return;
+        }
         throw error;
       }
       const outcome = userAbort.signal.aborted
@@ -399,7 +411,8 @@ async function runAgent(
 
       if (signal.aborted) {
         // 请求结束后再次检查，避免超时或 Ctrl+C 后继续执行工具。
-        onEvent({ type: "agent_end", reason: "cancelled", round });
+        // 用户取消优先：两个信号都已触发时，按用户取消报告。
+        onEvent({ type: "agent_end", reason: userAbort.signal.aborted ? "cancelled" : "timeout", round });
         return;
       }
 
@@ -442,32 +455,77 @@ async function runAgent(
         // 开始记录先落盘，再执行工具；进程中断时仍能识别结果未知的调用。
         const operation = diagnostics.start("tool", tc.name, round, tc.id);
         onEvent({ type: "tool_start", name: tc.name, arguments: tc.arguments });
+
         let output: string;
         let success = true;
         let reason = "工具执行完成";
+        let outcome: "success" | "error" | "cancelled" | "timeout" = "success";
+        // 记录“开始处理本调用前信号是否已触发”：
+        // 已触发说明前面的工具执行期间就被取消或超时了，本调用根本不会执行，
+        // 回填给模型的结果应是“未执行”，而不是“执行中断”。
+        const skipped = signal.aborted;
+
         try {
+          // 已取消或超时时直接进入 catch，不解析参数、不执行工具。
+          signal.throwIfAborted();
+
           // 核心解析 JSON，工具入口校验参数，失败仍由这里统一回填。
           const parsed: unknown = JSON.parse(tc.arguments);
-          output = toolRegistry.execute(tc.name, parsed);
+          output = await toolRegistry.execute(
+            tc.name,
+            parsed,
+            // 为本次调用创建 ToolContext；Object.freeze 防止工具在运行时改写它。
+            // signal 用的是本轮信号（用户取消 + 本轮超时），与模型请求共享同一个 30 秒预算。
+            Object.freeze({
+              cwd: process.cwd(),
+              model,
+              sessionFile: session.file,
+              callId: tc.id,
+              signal,
+            }),
+          );
         } catch (error) {
           success = false;
-          reason =
-            error instanceof SyntaxError
-              ? "工具参数不是合法 JSON"
-              : error instanceof Error
-                ? error.message
-                : "工具执行异常";
-          output = `执行失败：${reason}`;
+          // 与命令一样按信号状态分类：只要信号已触发，就视为取消或超时，
+          // 而不关心工具具体抛出了什么错误（AbortError 或其他）。
+          outcome = userAbort.signal.aborted ? "cancelled" : timeout.aborted ? "timeout" : "error";
+
+          if (outcome !== "error") {
+            // 取消 / 超时：区分“根本没执行”和“执行到一半被中断”。
+            // 后者需要提醒模型：工具可能已经产生了部分副作用（如写了一半的文件），系统不会自动撤销。
+            reason = outcome === "cancelled" ? "用户取消" : "本轮超时";
+            output = skipped
+              ? `未执行：${reason}`
+              : `工具调用中断：${reason}；已发生的副作用不保证撤销`;
+          } else {
+            reason =
+              error instanceof SyntaxError
+                ? "工具参数不是合法 JSON"
+                : error instanceof Error
+                  ? error.message
+                  : "工具执行异常";
+            output = `执行失败：${reason}`;
+          }
         }
-        // 写诊断的异常不能落入工具异常 catch，避免误判或重复记录。
-        diagnostics.end(operation, success ? "success" : "error", reason);
+
+        // 取消后仍补齐本批调用的结果；存储异常不能当作工具错误吞掉。
+        // （会话要求每个 tool_call 都有对应的 tool 结果消息，否则会话无法恢复；
+        //   因此即使已取消，循环也会继续走完，为剩余调用逐个写入“未执行”结果。
+        //   diagnostics.end 与 saveMessage 放在 try/catch 之外，它们的写入异常会直接向上抛出。）
+        diagnostics.end(operation, outcome, reason);
         onEvent({ type: "tool_end", name: tc.name, output, success });
         saveMessage(session, {
-          // 无论工具成功或失败，都把结果回填给下一轮模型请求。
+          // 无论工具成功、失败还是被取消，都把结果回填给下一轮模型请求。
           role: "tool",
           tool_call_id: tc.id,
           content: output,
         });
+      }
+
+      // 已经补齐调用配对，此时停止，不再启动下一轮模型请求。
+      if (signal.aborted) {
+        onEvent({ type: "agent_end", reason: userAbort.signal.aborted ? "cancelled" : "timeout", round });
+        return;
       }
     }
 
@@ -477,6 +535,7 @@ async function runAgent(
       throw error;
     }
     if (error instanceof OpenAI.APIUserAbortError) {
+      // 兜底：正常情况下取消与超时已在上方就地处理，这里拿不到本轮 timeout，只能按取消报告。
       onEvent({ type: "agent_end", reason: "cancelled", round });
       return;
     }

@@ -3,6 +3,30 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 /**
+ * 工具执行时的上下文：宿主在每次执行工具调用时创建，提供只读的运行信息与取消信号。
+ *
+ * 与 CommandContext 的区别：
+ * - 工具只会在 Agent 运行中被调用，此时一定已有会话，所以 sessionFile 不会是 null；
+ * - 工具由模型触发，用户不在“对话框前”等待回答，因此没有 ui（不能 notify / ask）；
+ * - 多了 callId，用于区分同一轮中的多次工具调用。
+ *
+ * - cwd:         当前工作目录。
+ * - model:       当前使用的模型名称。
+ * - sessionFile: 当前会话文件名。
+ * - callId:      本次工具调用的 ID，即模型返回的 tool_call.id；与写入会话的 tool 消息一一对应。
+ * - signal:      本轮的取消信号：用户按 Ctrl+C 或本轮超时时被触发。
+ */
+export type ToolContext = Readonly<{
+  cwd: string;
+  model: string;
+  sessionFile: string;
+  callId: string;
+  // 与 CommandContext.signal 相同，由工具自行响应（说明见下方 CommandContext）。
+  // 注意它是“本轮”的信号：模型请求与本轮所有工具调用共享同一个超时预算。
+  signal: AbortSignal;
+}>;
+
+/**
  * 一个可供模型调用的工具。
  *
  * 由两部分组成：
@@ -18,7 +42,13 @@ export type Tool = {
   // 参数来自模型，必须在执行具体操作前完成运行时校验。
   // 类型写成 unknown 而非具体结构，就是为了强制实现方先校验再使用：
   // 模型可能漏传字段、传错类型，甚至编造不存在的参数。
-  execute: (args: unknown) => string;
+  //
+  // context 是本次调用的上下文（见 ToolContext）；用不到时可以不声明这个参数，
+  // 例如 echo 的 execute(args) —— 参数更少的函数可以赋值给参数更多的函数类型。
+  //
+  // 返回值既可以是字符串，也可以是 Promise<string>（写成 async 函数），宿主都会 await。
+  // 耗时的异步工具应响应 context.signal，以便用户取消或超时时尽快停止。
+  execute: (args: unknown, context: ToolContext) => string | Promise<string>;
 };
 
 /**
@@ -26,13 +56,13 @@ export type Tool = {
  *
  * 与 Agent 循环已有的运行结束事件保持一致。
  * - type:   固定为 "agent_end"，用于在事件联合类型中区分事件种类。
- * - reason: 结束原因 —— completed 正常完成、cancelled 用户取消、loop_limit 达到最大轮次、
+ * - reason: 结束原因 —— completed 正常完成、cancelled 用户取消、timeout 本轮超时、loop_limit 达到最大轮次、
  *           truncated 输出被截断、error 运行出错。
  * - round:  结束时所处的轮次。
  */
 export type AgentEndEventFields = {
   type: "agent_end";
-  reason: "completed" | "cancelled" | "loop_limit" | "truncated" | "error";
+  reason: "completed" | "cancelled" | "timeout" | "loop_limit" | "truncated" | "error";
   round: number;
 };
 
@@ -124,7 +154,8 @@ export type RegisterTool = (tool: Tool) => void;
  * 工具侧：
  * - register:    注册一个新工具，工具名重复时抛错；返回一个"撤销注册"函数，调用后删除该工具。
  * - definitions: 获取所有已注册工具的 definition 列表，用于随请求一起发给模型（即请求参数 `tools`）。
- * - execute:     按工具名找到对应工具并执行，用于处理模型返回的 tool_calls。
+ * - execute:     按工具名找到对应工具并执行，用于处理模型返回的 tool_calls；
+ *                宿主需传入本次调用的 ToolContext。与 executeCommand 一样始终返回 Promise。
  *
  * 命令侧：
  * - registerCommand: 注册一个用户命令，命令名重复或与宿主保留命令冲突时抛错；返回撤销函数。
@@ -146,7 +177,7 @@ export type RegisterTool = (tool: Tool) => void;
 export type ToolRegistry = {
   register: (tool: Tool) => () => void;
   definitions: () => OpenAI.Chat.Completions.ChatCompletionFunctionTool[];
-  execute: (name: string, args: unknown) => string;
+  execute: (name: string, args: unknown, context: ToolContext) => Promise<string>;
   registerCommand: (command: Command) => () => void;
   executeCommand: (name: string, args: string, context: CommandContext) => Promise<string | void>;
   onAgentEnd: (listener: AgentEndListener) => () => void;
@@ -159,7 +190,8 @@ export type ToolRegistry = {
  * 典型使用流程（工具侧）：
  * 1. 启动时调用 register 注册所有工具；
  * 2. 每次请求模型时，把 definitions() 的结果作为 `tools` 参数传入，告诉模型有哪些工具可用；
- * 3. 模型回复中若包含 tool_calls，对每个调用执行 execute(call.function.name, 解析后的参数)，
+ * 3. 模型回复中若包含 tool_calls，宿主为每个调用创建 ToolContext，
+ *    执行 await execute(call.function.name, 解析后的参数, context)，
  *    再把返回的字符串作为 role = "tool" 的消息回传给模型。
  *
  * 典型使用流程（命令侧）：
@@ -242,18 +274,23 @@ export function createToolRegistry(): ToolRegistry {
    * @param name 工具名，通常来自模型返回的 tool_call.function.name
    * @param args 工具参数，通常是对 tool_call.function.arguments（JSON 字符串）解析后的结果；
    *             未经校验，由具体工具的 execute 自行校验
-   * @returns 工具执行结果字符串，作为 tool 消息的 content 回传给模型
-   * @throws {Error} 找不到对应工具时抛出（模型可能“幻觉”出一个不存在的工具名）；
-   *                 工具自身执行抛出的错误也会原样向上传递
+   * @param context 本次调用的上下文，原样传给工具的 execute
+   * @returns Promise，完成后得到工具执行结果字符串，作为 tool 消息的 content 回传给模型
+   * @throws {Error} 以下情况 Promise 会被拒绝（reject）：
+   *   - 找不到对应工具（模型可能“幻觉”出一个不存在的工具名）；
+   *   - 执行前 context.signal 已被触发（用户取消或本轮超时）；
+   *   - 工具自身抛错，或异步工具响应取消信号而中止。
    */
-  function execute(name: string, args: unknown): string {
+  async function execute(name: string, args: unknown, context: ToolContext): Promise<string> {
+    // 写成 async 函数的原因同 executeCommand：同步和异步工具对宿主而言都返回 Promise。
     // get: 按键取值，不存在时返回 undefined。
     const tool = tools.get(name);
     if (!tool) {
       throw new Error(`未知工具: ${name}`);
     }
-    // ponytail: 本节点仅支持同步工具；接入异步工具时再贯通 await 与取消信号。
-    return tool.execute(args);
+    // 已取消或超时时不启动工具；执行中的取消由工具响应信号（throwIfAborted 说明见 executeCommand）。
+    context.signal.throwIfAborted();
+    return tool.execute(args, context);
   }
 
   // ── 命令 ──
@@ -436,7 +473,7 @@ function once(fn: () => void): () => void {
  *
  * @param registry 工具、命令和订阅要注册到的目标注册表
  * @param setup 扩展的注册函数，接收一个 ExtensionAPI 对象，通过它登记工具、命令和订阅；必须是同步函数
- *              （“同步”只针对注册过程本身；注册进来的命令执行函数可以是 async）
+ *              （“同步”只针对注册过程本身；注册进来的工具和命令的执行函数都可以是 async）
  * @returns 卸载函数：调用后按注册的逆序撤销该扩展注册的所有内容
  * @throws {Error} setup 抛出的错误会在撤销已注册项后原样向上传递（包括工具/命令重名错误）
  */
@@ -497,7 +534,7 @@ export function mountExtension(
   }
 
   // ponytail: 仅管理同步注册的工具、命令和运行结束订阅；定时器等其他资源接入时再扩展清理协议。
-  // 注意：卸载只会移除注册项，不会取消已在执行中的异步命令；取消由宿主通过 context.signal 负责。
+  // 注意：卸载只会移除注册项，不会取消已在执行中的异步工具或命令；取消由宿主通过 context.signal 负责。
   return dispose;
 }
 
