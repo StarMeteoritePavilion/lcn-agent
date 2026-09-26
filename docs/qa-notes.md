@@ -17,6 +17,7 @@
 - [10 字面量类型 widening 与 as const](#2026-09-19-10-字面量类型-widening-与-as-const)
 - [12 JavaScript falsy 值与空字符串判断](#2026-09-20-12-javascript-falsy-值与空字符串判断)
 - [17 解构赋值中的冒号重命名](#2026-09-25-17-解构赋值中的冒号重命名)
+- [18 数组展开语法与不可变追加](#2026-09-26-18-数组展开语法与不可变追加)
 
 ### ESM 模块
 - [16 export function 与 export default function 的区别](#2026-09-25-16-export-function-与-export-default-function-的区别)
@@ -1090,3 +1091,86 @@ function registerEcho({ registerTool }: ExtensionAPI): void {
 选择重命名成 `register`，是因为函数内部只关心"注册"这个动作，用短名字更简洁。
 
 **总结：** `{ registerTool: register }` 是从参数对象里取出 `registerTool` 属性，在函数内部叫 `register`。冒号在解构里是重命名，不是类型标注。
+
+---
+
+## 2026-09-26-18 数组展开语法与不可变追加
+
+**问题：** `src/extensions/todo.ts` 中 `saveItems(path, [...items, item]);` 是什么写法？
+
+**答案：**
+
+这是**数组展开语法（spread syntax）**：用原数组的元素加上新元素，创建一个新数组，原数组不变。
+
+### 拆解
+
+```ts
+saveItems(path, [...items, item]);
+//              ^^^^^^^^^^^^^^^^
+//              新数组 = items 的全部元素 + item
+```
+
+`...items` 把数组摊开成一个个元素，放进新的 `[]` 里：
+
+```ts
+const items = [a, b];
+const next = [...items, c];
+
+next;   // [a, b, c]  新数组
+items;  // [a, b]     原数组没变
+```
+
+等价于：
+
+```ts
+const next = items.slice();  // 复制一份
+next.push(item);             // 在副本上追加
+saveItems(path, next);
+```
+
+### 和 push 的区别
+
+| 写法 | 结果 | 原数组 |
+|------|------|--------|
+| `items.push(item)` | 返回新长度（数字） | 被修改 |
+| `[...items, item]` | 返回新数组 | 不变 |
+
+不能写成 `saveItems(path, items.push(item))`，那样传进去的是一个数字。
+
+### 其他用法
+
+```ts
+[item, ...items]   // 加到开头
+[...a, ...b]       // 合并两个数组
+[...items]         // 浅拷贝
+```
+
+同文件的 `{ ...entry, done: true }` 是同一语法用在对象上：复制 `entry` 的所有属性，再把 `done` 覆盖成 `true`。
+
+### 浅拷贝
+
+新数组是新的，但里面的元素还是原来那些对象：
+
+```ts
+const next = [...items, item];
+next[0] === items[0];  // true，同一个对象
+```
+
+改 `next[0].text` 会影响 `items[0]`。要改元素，得像 `{ ...entry, done: true }` 那样生成新对象。
+
+### 类比 Java
+
+```java
+List<Todo> next = new ArrayList<>(items);
+next.add(item);
+saveItems(path, next);
+```
+
+### 代码旁的过时注释
+
+`todo.ts` 中两条注释描述的是旧实现：
+
+- "items 就是 Map 中保存的数组，push 后 Map 里的数据同步更新"：现在没有 Map 和 push，`itemsFor` 每次从文件读，这里生成新数组再写回文件。
+- "直接修改它的属性即可"：实际用的是 `map` + `{ ...entry, done: true }` 生成新对象，没有修改原对象。
+
+**总结：** `[...items, item]` 用 spread 语法创建"原数组元素 + 新元素"的新数组，不修改 `items`。它是浅拷贝，元素对象仍然共享；要改元素需再用对象展开生成新对象。

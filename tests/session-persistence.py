@@ -400,7 +400,7 @@ const r=createToolRegistry();let close=await loadExtension(r,"dist/extensions/to
 const controller=new AbortController();
 const ctx={cwd:process.cwd(),model:"test",sessionFile:null,signal:controller.signal,ui:{notify(){},async ask(){return "提问新增"}}};
 await assert.rejects(r.executeCommand("todo_add","任务",ctx),/先 \/new/);
-const a={...ctx,sessionFile:"a"},b={...ctx,sessionFile:"b"};
+const a={...ctx,sessionFile:"a.jsonl"},b={...ctx,sessionFile:"b.jsonl"};
 assert.equal(await r.executeCommand("todo_add","任务一",a),"已添加 #1：任务一");
 assert.equal(await r.executeCommand("todo_add","",a),"已添加 #2：提问新增");
 assert.equal(await r.executeCommand("todo_list","",b),"当前会话暂无待办");
@@ -414,10 +414,57 @@ assert.equal(await r.executeCommand("todo_list","",{...a,signal:new AbortControl
 close();
 await assert.rejects(r.executeCommand("todo_list","",a),/未知命令/);
 close=mountExtension(r,todo);
-assert.equal(await r.executeCommand("todo_list","",{...a,signal:new AbortController().signal}),"当前会话暂无待办");close();
+assert.equal(await r.executeCommand("todo_list","",{...a,signal:new AbortController().signal}),before);close();
 console.log("通过：新增、提问、完成、重入、编号校验、取消不写入、会话隔离、卸载及内外共用入口");
 '''
         subprocess.run(['node', '--input-type=module', '-e', todo_verification],
+                       cwd=project, env=test_env, check=True)
+
+        todo_storage_verification = r'''
+import assert from "node:assert/strict";
+import {mkdtempSync,readFileSync,writeFileSync,mkdirSync,rmSync,readdirSync} from "node:fs";
+import {tmpdir} from "node:os";
+import {join} from "node:path";
+import {createToolRegistry,loadExtension} from "./dist/core/tools.js";
+const cwd=mkdtempSync(join(tmpdir(),"lcn-todo-data-"));
+const context={cwd,sessionFile:"a.jsonl",model:"test",signal:new AbortController().signal,ui:{notify(){},async ask(){return "提问"}}};
+let r=createToolRegistry();let close=await loadExtension(r,"dist/extensions/todo.js");
+const file=join(cwd,".lcn-agent/todos/a.jsonl.json");
+try {
+ await r.executeCommand("todo_add","第一项",context);
+ await r.executeCommand("todo_done","1",context);
+ close();r=createToolRegistry();close=await loadExtension(r,"dist/extensions/todo.js");
+ assert.equal(await r.executeCommand("todo_list","",context),"[x] #1 第一项");
+ assert.equal(await r.executeCommand("todo_list","",{...context,sessionFile:"b.jsonl"}),"当前会话暂无待办");
+ const good=readFileSync(file);
+ for (const name of ["../outside.jsonl", "", "a.txt"]) {
+  await assert.rejects(r.executeCommand("todo_add","拒绝",{...context,sessionFile:name}),/文件名不合法/);
+ }
+ for (const item of [null, {id:1,text:" ",done:false}, {id:1,text:"值",done:"false"}, {id:1,text:3,done:false}]) {
+  const broken=Buffer.from(JSON.stringify({version:1,items:[item]}));writeFileSync(file,broken);
+  await assert.rejects(r.executeCommand("todo_done","1",context),/损坏/);
+  assert.deepEqual(readFileSync(file),broken);
+ }
+ writeFileSync(file,good);
+ for (const broken of [Buffer.from("{"),Buffer.from([255]),Buffer.from('{"version":2,"items":[]}'),Buffer.from('{"version":1,"items":[{"id":2,"text":"值","done":false}]}')]) {
+  writeFileSync(file,broken);
+  for(const command of ["todo_list","todo_add","todo_done"]) await assert.rejects(r.executeCommand(command,"1",context),/损坏/);
+  assert.deepEqual(readFileSync(file),broken);
+ }
+ writeFileSync(file,good);
+ const controller=new AbortController();
+ await assert.rejects(r.executeCommand("todo_add","",{...context,signal:controller.signal,ui:{notify(){},async ask(){controller.abort();return "迟到"}}}),{name:"AbortError"});
+ assert.deepEqual(readFileSync(file),good);
+ // 在提问期间将目标替换为目录，让最终 rename 确定失败。
+ await assert.rejects(r.executeCommand("todo_add","",{...context,ui:{notify(){},async ask(){rmSync(file);mkdirSync(file);writeFileSync(join(file,"保留"),good);return "不能保存"}}}));
+ assert.deepEqual(readFileSync(join(file,"保留")),good);
+ assert(!readdirSync(join(cwd,".lcn-agent/todos")).some(n=>n.startsWith(".todo-")));
+ rmSync(file,{recursive:true});writeFileSync(file,good);
+ assert.equal(await r.executeCommand("todo_add","第二项",context),"已添加 #2：第二项");
+ console.log("通过：重装恢复、完成保存、会话隔离、损坏拒绝且原文保留、取消不写入及替换失败清理");
+} finally {close();rmSync(cwd,{recursive:true,force:true});}
+'''
+        subprocess.run(['node', '--input-type=module', '-e', todo_storage_verification],
                        cwd=project, env=test_env, check=True)
 
         # 直接验证持久化边界，所有损坏均写在临时目录，比较原始字节不被恢复操作修改。
@@ -847,7 +894,7 @@ export default function(api) {
         assert requests.empty()
         print('通过：异步拒绝后恢复、忽略信号的迟到返回值抑制及输入关闭取消退出')
 
-        # 从当前源码编译的真实待办扩展检查会话切换与重启后的内存边界。
+        # 从当前源码编译的真实待办扩展检查会话切换与重启后的持久化状态。
         todo_env = {**test_env, 'LCN_AGENT_EXTENSION': './dist/extensions/todo.js'}
         child, lines = launch(todo_env)
         expect(lines, '生成中 Ctrl+C')
@@ -872,7 +919,9 @@ export default function(api) {
         child, lines = launch(todo_env)
         expect(lines, '生成中 Ctrl+C')
         send(child, '/resume ' + first); expect(lines, '已恢复：')
-        send(child, '/todo_list'); expect(lines, '当前会话暂无待办')
+        send(child, '/todo_list')
+        output = expect(lines, '[ ] #2 吃饭')
+        assert '[x] #1 阅读会话模块' in output
         send(child, '/exit'); assert child.wait(timeout=5) == 0
 
         master, slave = pty.openpty()
@@ -896,7 +945,7 @@ export default function(api) {
         finally:
             os.close(master)
         assert requests.empty(), '待办命令不得请求模型'
-        print('通过：待办真实入口会话隔离、切回恢复、重启不持久化、PTY 提问与取消不占编号')
+        print('通过：待办真实入口会话隔离、切回恢复、重启持久化、PTY 提问与取消不占编号')
 
         diagnostic_verification = r'''
 import assert from "node:assert/strict";
