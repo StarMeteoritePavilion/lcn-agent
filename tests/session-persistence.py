@@ -402,6 +402,42 @@ console.log("通过：事件顺序、只读快照、异常隔离、分发期间�
         subprocess.run(['node', '--input-type=module', '-e', event_verification],
                        cwd=project, env=test_env, check=True)
 
+        workflow_verification = r'''
+import assert from "node:assert/strict";
+import {createToolRegistry,loadExtension,mountExtension} from "./dist/core/tools.js";
+import workflow from "./dist/extensions/workflow.js";
+const r=createToolRegistry(()=>true);
+const context={cwd:process.cwd(),sessionFile:null,signal:new AbortController().signal,ui:{notify(){},async ask(){return "组合回答"}}};
+const event={type:"agent_end",reason:"completed",round:1};
+// 捕获真实注册的监听器并计数，确认卸载后旧闭包不再被通知。
+const subscribe=r.onAgentEnd;let notifications=0;
+r.onAgentEnd=listener=>subscribe(event=>{notifications++;listener(event)});
+const commands=["context","runs","upper","wait","ask","todo_add","todo_list","todo_done"];
+for(let i=0;i<3;i++) {
+ const close=await loadExtension(r,"dist/extensions/workflow.js");
+ assert.deepEqual(r.definitions().map(t=>t.function.name),["upper","todo_list","todo_add","todo_done"]);
+ assert.equal(await r.executeCommand("ask","",context),"回答：组合回答");
+ assert.equal(await r.executeCommand("upper","hello",context),"HELLO");
+ await assert.rejects(r.executeCommand("todo_list","",context),/先 \/new/);
+ r.emitAgentEnd(event);assert.equal(notifications,i+1);
+ assert.equal(await r.executeCommand("runs","",context),"本次装载已结束运行：1");
+ close();close();assert.deepEqual(r.definitions(),[]);
+ r.emitAgentEnd(event);assert.equal(notifications,i+1);
+ for(const name of commands) await assert.rejects(r.executeCommand(name,"",context),/未知命令/);
+}
+// 让待办注册中途冲突，检查此前 upper 及待办已注册部分全部回滚，原有命令不被删除。
+const keep=r.registerCommand({name:"todo_list",execute:()=>"原命令"});
+await assert.rejects(loadExtension(r,"dist/extensions/workflow.js"),/命令重名: todo_list/);
+assert.deepEqual(r.definitions(),[]);
+assert.equal(await r.executeCommand("todo_list","",context),"原命令");
+for(const name of commands.filter(n=>n!=="todo_list")) await assert.rejects(r.executeCommand(name,"",context),/未知命令/);
+r.emitAgentEnd(event);assert.equal(notifications,3);keep();
+const close=mountExtension(r,workflow);assert.equal(await r.executeCommand("ask","",context),"回答：组合回答");close();
+console.log("通过：组合扩展内外装载、三次装卸、命令工具清理、事件无残留及中途冲突回滚");
+'''
+        subprocess.run(['node', '--input-type=module', '-e', workflow_verification],
+                       cwd=project, env=test_env, check=True)
+
         async_verification = r'''
 import assert from "node:assert/strict";
 import {createToolRegistry,loadExtension} from "./dist/core/tools.js";
@@ -1055,6 +1091,52 @@ export default function(api) {
         finally:
             os.close(master)
         print('通过：真实终端异步正常完成、Ctrl+C 取消、取消后继续、排队顺序和退出')
+
+        # 同一个真实终端交替使用两个扩展，验证回答路由、取消恢复及重启持久化。
+        workflow_env = {**test_env, 'LCN_AGENT_EXTENSION': './dist/extensions/workflow.js'}
+        master, slave = pty.openpty()
+        child = subprocess.Popen(['node', 'dist/index.js'], cwd=project, env=workflow_env,
+                                 stdin=slave, stdout=slave, stderr=slave)
+        children.append(child); os.close(slave)
+        try:
+            command_expect('生成中 Ctrl+C')
+            before = set((project / '.lcn-agent/sessions').glob('*.jsonl'))
+            os.write(master, b'/ask\n'); command_expect('请输入回答：')
+            os.write(master, '组合回答\n'.encode()); command_expect('回答：组合回答')
+            assert set((project / '.lcn-agent/sessions').glob('*.jsonl')) == before
+            os.write(master, b'/new\n'); command_expect('会话：')
+            file = (set((project / '.lcn-agent/sessions').glob('*.jsonl')) - before).pop()
+            os.write(master, b'/todo_add\n'); command_expect('请输入待办内容：')
+            os.write(master, '组合任务\n'.encode()); command_expect('已添加 #1：组合任务')
+            todo_path = project / '.lcn-agent/todos' / (file.name + '.json')
+            saved = todo_path.read_bytes()
+            os.write(master, b'/ask\n'); command_expect('请输入回答：')
+            os.write(master, b'\x03'); command_expect('命令已取消')
+            os.write(master, b'/todo_list\n'); command_expect('[ ] #1 组合任务')
+            os.write(master, b'/todo_add\n'); command_expect('请输入待办内容：')
+            os.write(master, b'\x03'); command_expect('命令已取消')
+            assert todo_path.read_bytes() == saved
+            os.write(master, b'/ask\n'); command_expect('请输入回答：')
+            os.write(master, '取消后回答\n'.encode()); command_expect('回答：取消后回答')
+            os.write(master, b'/upper hello\n'); command_expect('HELLO')
+            os.write(master, b'/todo_done 1\n'); command_expect('已完成 #1：组合任务')
+            os.write(master, b'/new\n'); command_expect('会话：')
+            os.write(master, b'/todo_list\n'); command_expect('当前会话暂无待办')
+            os.write(master, b'/exit\n'); command_expect('终端程序已退出')
+            assert child.wait(timeout=5) == 0
+            assert requests.empty(), '组合命令及回答不得请求模型'
+            assert len(file.read_text().splitlines()) == 1, '提问回答不写入对话历史'
+        finally:
+            os.close(master)
+        child, lines = launch(workflow_env)
+        expect(lines, '生成中 Ctrl+C')
+        send(child, '/resume ' + file.name); expect(lines, '已恢复：')
+        send(child, '/todo_list'); expect(lines, '[x] #1 组合任务')
+        send(child, '/ask'); expect(lines, '交互提问需要终端输入和输出')
+        send(child, '/upper after'); expect(lines, 'AFTER')
+        send(child, '/exit'); assert child.wait(timeout=5) == 0
+        assert requests.empty()
+        print('通过：组合入口 PTY 提问、交叉取消恢复、无模型请求、会话隔离、重启恢复及非终端拒绝')
 
         # 空编辑行 Ctrl+D 关闭终端输入，等待中的提问必须退出。
         master, slave = pty.openpty()
