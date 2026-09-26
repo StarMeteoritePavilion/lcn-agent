@@ -1,3 +1,4 @@
+import type { ConfirmTool } from "./core/tools.js";
 import OpenAI from "openai";
 import { clearScreenDown, cursorTo, moveCursor } from "node:readline";
 import { AgentEndEvent, createToolRegistry, loadExtension, mountExtension } from "./core/tools.js";
@@ -20,17 +21,22 @@ import {
 let client: OpenAI;
 let model: string;
 
-// 允许模型执行的工具名单（白名单）：不在名单里的工具即使已注册，被调用时也会被拒绝。
+// 自动允许的可信学习工具名单；delay_echo 单独逐次确认，其他名称默认拒绝。
 // 仅用于当前可信学习扩展；名称名单不能证明外部实现没有副作用。
 // （名单只检查名字：若外部扩展注册了一个同名工具，它同样会被放行，
 //   因此名单不能替代对扩展代码本身的审查。）
 // 名单里只有只读或无副作用的工具：todo_list 只读取待办；会修改待办的操作只以命令形式提供给用户。
-const allowedTools = new Set(["echo", "upper", "delay_echo", "todo_list"]);
+const allowedTools = new Set(["echo", "upper", "todo_list"]);
 
 // 注册表由入口持有；扩展在启动时登记，Agent 循环统一查找和执行。
-// 传入的权限策略按工具名查白名单（策略的约定见 core/tools.ts 的 ToolPermission）。
-// 这里只用到第 1 个参数 name，因此省略了第 2 个参数 context。
-const toolRegistry = createToolRegistry((name) => allowedTools.has(name));
+// 宿主控制自动允许与逐次确认，扩展注册本身不代表获得授权。
+const toolRegistry = createToolRegistry((name, argumentsJson, context) => {
+  if (allowedTools.has(name)) return true;
+  if (name === "delay_echo") {
+    return context.confirm(name, argumentsJson, context.callId, context.signal);
+  }
+  return false;
+});
 
 // RuntimeEvent 是核心与展示层之间的唯一运行时通信边界。
 
@@ -345,6 +351,7 @@ async function runAgent(
   userAbort: AbortController,
   onEvent: EventHandler,
   session: Session,
+  confirmTool: ConfirmTool = async () => false,
 ): Promise<void> {
   saveMessage(session, { role: "user", content: userInput });
   const messages = session.messages;
@@ -492,7 +499,7 @@ async function runAgent(
 
           // 核心解析 JSON，工具入口校验参数，失败仍由这里统一回填。
           const parsed: unknown = JSON.parse(tc.arguments);
-          // execute 内部会先按白名单做权限判定，通过后才真正执行工具。
+          // execute 内部先完成宿主权限判定（自动允许或逐次确认），通过后才执行工具。
           output = await toolRegistry.execute(
             tc.name,
             parsed,
@@ -505,6 +512,7 @@ async function runAgent(
               sessionFile: session.file,
               callId: tc.id,
               signal,
+              confirm: confirmTool,
             }),
           );
         } catch (error) {
@@ -609,6 +617,30 @@ async function main(): Promise<void> {
     // stdin 被外部关闭时，确保正在进行的模型请求或命令也收到取消信号。
     closed = true;
     activeAbort?.abort();
+  };
+
+  // 命令提问与工具确认共用 readline，回答不进入普通输入队列。
+  async function askInput(question: string, signal: AbortSignal): Promise<string> {
+    signal.throwIfAborted();
+    if (closed) throw new Error("输入已关闭，无法提问");
+    if (!process.stdin.isTTY || !process.stdout.isTTY) throw new Error("交互提问需要终端输入和输出");
+    if (asking) throw new Error("已有提问正在等待回答");
+    asking = true;
+    try {
+      return await input.question(`${question} `, { signal });
+    } finally {
+      asking = false;
+    }
+  }
+
+  const confirmTool: ConfirmTool = async (name, argumentsJson, callId, signal) => {
+    // 非终端默认拒绝；只有对本次问题输入小写 y 才允许。
+    if (!process.stdin.isTTY || !process.stdout.isTTY) return false;
+    const answer = await askInput(
+      `允许工具 ${JSON.stringify(name)}，调用 ${JSON.stringify(callId)}，参数 ${argumentsJson}？[y/N]`,
+      signal,
+    );
+    return answer.trim() === "y";
   };
 
   const showPrompt = (): void => {
@@ -718,27 +750,7 @@ async function main(): Promise<void> {
               notify: (message: string): void => {
                 writeOutput(message + "\n");
               },
-              ask: async (question: string): Promise<string> => {
-                commandAbort.signal.throwIfAborted();
-
-                if (closed) {
-                  throw new Error("输入已关闭，无法提问");
-                }
-                if (!process.stdin.isTTY || !process.stdout.isTTY) {
-                  throw new Error("交互提问需要终端输入和输出");
-                }
-                if (asking) {
-                  throw new Error("已有提问正在等待回答");
-                }
-                asking = true;
-                try {
-                  return await input.question(`${question} `, {
-                    signal: commandAbort.signal,
-                  });
-                } finally {
-                  asking = false;
-                }
-              },
+              ask: (question: string) => askInput(question, commandAbort.signal),
             }),
           });
 
@@ -787,7 +799,7 @@ async function main(): Promise<void> {
 
       try {
         // await 会暂停当前输入循环，但 readline 仍会缓存用户已提交的后续行。
-        await runAgent(userInput, userAbort, createUiRenderer(writeOutput), session);
+        await runAgent(userInput, userAbort, createUiRenderer(writeOutput), session, confirmTool);
       } finally {
         // 无论完成、失败还是取消，都必须解除“正在运行”状态。
         activeAbort = null;

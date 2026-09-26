@@ -61,6 +61,10 @@ class Handler(BaseHTTPRequestHandler):
             delta = {'tool_calls': [{'index': 0, 'id': 'todo_read_1', 'type': 'function',
                                     'function': {'name': 'todo_list', 'arguments': '{}'}}]}
             reason = 'tool_calls'
+        elif last['role'] == 'user' and last['content'] == '确认工具验证':
+            delta = {'tool_calls': [{'index': 0, 'id': 'confirm_1', 'type': 'function',
+                                    'function': {'name': 'delay_echo', 'arguments': '{"text":"确认内容"}'}}]}
+            reason = 'tool_calls'
         elif last['role'] == 'user' and last['content'] == '权限拒绝验证':
             delta = {'tool_calls': [{'index': 0, 'id': 'denied_1', 'type': 'function',
                                     'function': {'name': 'denied_probe', 'arguments': '{}'}}]}
@@ -68,7 +72,7 @@ class Handler(BaseHTTPRequestHandler):
         elif last['role'] == 'user' and last['content'] == '工具超时验证':
             delta = {'tool_calls': [
                 {'index': 0, 'id': 'slow_1', 'type': 'function',
-                 'function': {'name': 'delay_echo', 'arguments': '{}'}},
+                 'function': {'name': 'upper', 'arguments': '{}'}},
                 {'index': 1, 'id': 'skipped_2', 'type': 'function',
                  'function': {'name': 'echo', 'arguments': '{"text":"不应执行"}'}}]}
             reason = 'tool_calls'
@@ -533,6 +537,27 @@ console.log("通过：默认拒绝、允许执行、同步及异步判定异常�
         subprocess.run(['node', '--input-type=module', '-e', permission_verification],
                        cwd=project, env=test_env, check=True)
 
+        confirm_verification = r'''
+import assert from "node:assert/strict";
+import {createToolRegistry} from "./dist/core/tools.js";
+let calls=0;const original={text:"审批值"};let approved;
+const r=createToolRegistry(async(name,json,context)=>{
+ approved=json;original.text="改写值";return context.confirm(name,json,context.callId,context.signal);
+});r.register({definition:{type:"function",function:{name:"probe"}},execute(args){calls++;return args.text}});
+const ctx={cwd:process.cwd(),model:"test",sessionFile:"test.jsonl",callId:"1",signal:new AbortController().signal,confirm:async()=>true};
+assert.equal(await r.execute("probe",original,ctx),"审批值");assert.equal(approved,'{"text":"审批值"}');assert.equal(calls,1);
+await assert.rejects(r.execute("probe",{}, {...ctx,confirm:async()=>false}),/未获授权/);assert.equal(calls,1);
+console.log("通过：确认与最终参数绑定、异步等待期间原对象修改不影响执行、拒绝不执行");
+
+const aborted = new AbortController();
+await assert.rejects(r.execute("probe",{}, {...ctx,signal:aborted.signal,confirm:async()=>{aborted.abort();return true;}}),{name:"AbortError"});
+assert.equal(calls,1);
+await assert.rejects(r.execute("probe",{}, {...ctx,confirm:async()=>{throw Error("确认失败");}}),/权限判定失败/);
+assert.equal(calls,1);
+'''
+        subprocess.run(['node', '--input-type=module', '-e', confirm_verification],
+                       cwd=project, env=test_env, check=True)
+
         # 直接验证持久化边界，所有损坏均写在临时目录，比较原始字节不被恢复操作修改。
         verification = r'''
 import assert from "node:assert/strict";
@@ -867,9 +892,9 @@ export default function(api) {
                                  stdin=slave, stdout=slave, stderr=slave)
         children.append(child)
         os.close(slave)
-        def command_expect(text):
+        def command_expect(text, timeout=8):
             output = b''
-            deadline = time.monotonic() + 8
+            deadline = time.monotonic() + timeout
             while text.encode() not in output and time.monotonic() < deadline:
                 if select.select([master], [], [], 0.1)[0]:
                     output += os.read(master, 65536)
@@ -1033,7 +1058,7 @@ export default function(api) {
 import {setTimeout as delay} from "node:timers/promises";
 export default function(api) {
   api.registerTool({
-    definition: {type:"function",function:{name:"delay_echo",parameters:{type:"object"}}},
+    definition: {type:"function",function:{name:"upper",parameters:{type:"object"}}},
     async execute(args, context) {
       await delay(35000, undefined, {signal:context.signal});
       return "不应返回";
@@ -1082,6 +1107,61 @@ export default function(api) {
         assert not (project / '不应创建').exists()
         assert requests.empty()
         print('通过：真实入口权限拒绝、工具副作用未发生及拒绝结果配对回填')
+
+        # 包装真实 delay 扩展记录执行次数，直接证明拒绝和取消时没有进入执行函数。
+        confirmed = project / 'confirm-probe.mjs'
+        confirmed.write_text('''
+import registerDelay from "./dist/extensions/delay.js";
+import {appendFileSync} from "node:fs";
+export default function(api) {
+  registerDelay({...api, registerTool(tool) {
+    api.registerTool({...tool, async execute(args, context) {
+      appendFileSync("confirmed-calls", "执行\\n");
+      return tool.execute(args, context);
+    }});
+  }});
+}
+''')
+        confirm_env = {**test_env, 'LCN_AGENT_EXTENSION': str(confirmed)}
+        def confirmed_count():
+            marker = project / 'confirmed-calls'
+            return len(marker.read_text().splitlines()) if marker.exists() else 0
+        master, slave = pty.openpty()
+        child = subprocess.Popen(['node', 'dist/index.js'], cwd=project, env=confirm_env,
+                                 stdin=slave, stdout=slave, stderr=slave)
+        children.append(child); os.close(slave)
+        try:
+            command_expect('生成中 Ctrl+C')
+            for answer in ['y', 'n', '', 'Y']:
+                os.write(master, '确认工具验证\n'.encode())
+                output = command_expect('[y/N]')
+                assert b'delay_echo' in output and b'confirm_1' in output
+                assert '确认内容'.encode() in output
+                os.write(master, (answer + '\n').encode())
+                command_expect('完成，共 2 轮')
+                requests.get(timeout=5)
+                history = requests.get(timeout=5)
+                expected = '确认内容' if answer == 'y' else '执行失败：工具未获授权: delay_echo'
+                assert history[-1]['content'] == expected
+                assert history[-1]['tool_call_id'] == 'confirm_1'
+                assert confirmed_count() == 1
+            os.write(master, '确认工具验证\n'.encode()); command_expect('[y/N]')
+            os.write(master, b'\x03'); command_expect('请求已取消')
+            requests.get(timeout=5); assert requests.empty() and confirmed_count() == 1
+            os.write(master, '确认工具验证\n'.encode()); command_expect('[y/N]')
+            command_expect('请求超时：本轮超过 30 秒预算', timeout=35)
+            requests.get(timeout=5); assert requests.empty() and confirmed_count() == 1
+            os.write(master, b'/exit\n'); command_expect('终端程序已退出')
+            assert child.wait(timeout=5) == 0
+        finally:
+            os.close(master)
+        result = subprocess.run(['node', 'dist/index.js', '确认工具验证'], cwd=project,
+                                env=confirm_env, capture_output=True, text=True, timeout=5)
+        assert result.returncode == 0 and '工具未获授权: delay_echo' in result.stdout
+        requests.get(timeout=5); history = requests.get(timeout=5)
+        assert '未获授权' in history[-1]['content'] and confirmed_count() == 1
+        assert requests.empty()
+        print('通过：真实终端确认允许/拒绝/默认拒绝、取消、真实超时及非交互拒绝均无额外执行')
 
         diagnostic_verification = r'''
 import assert from "node:assert/strict";

@@ -2,12 +2,20 @@ import OpenAI from "openai";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
+/** 宿主为单次调用确认工具名、参数快照和调用 ID；取消与超时通过 signal 传递。 */
+export type ConfirmTool = (
+  name: string,
+  argumentsJson: string,
+  callId: string,
+  signal: AbortSignal,
+) => Promise<boolean>;
+
 /**
  * 工具执行时的上下文：宿主在每次执行工具调用时创建，提供只读的运行信息与取消信号。
  *
  * 与 CommandContext 的区别：
  * - 工具只会在 Agent 运行中被调用，此时一定已有会话，所以 sessionFile 不会是 null；
- * - 工具由模型触发，用户不在“对话框前”等待回答，因此没有 ui（不能 notify / ask）；
+ * - 工具由模型触发，用户不在“对话框前”等待回答，因此没有通用 ui；仅提供宿主控制的 confirm 授权回调；
  * - 多了 callId，用于区分同一轮中的多次工具调用。
  *
  * - cwd:         当前工作目录。
@@ -17,6 +25,7 @@ import { pathToFileURL } from "node:url";
  * - signal:      本轮的取消信号：用户按 Ctrl+C 或本轮超时时被触发。
  */
 export type ToolContext = Readonly<{
+  confirm: ConfirmTool;
   cwd: string;
   model: string;
   sessionFile: string;
@@ -29,20 +38,25 @@ export type ToolContext = Readonly<{
 /**
  * 工具权限策略：在每次执行工具前被调用，决定这次调用是否允许执行。
  *
- * 策略由宿主提供；当前按工具名称判定，不提供参数级授权。
- * （即只能表达“允许 echo、禁止 xxx”，不能表达“允许读 a 文件、禁止读 b 文件”。）
+ * 策略由宿主提供，可自动允许、拒绝或请求用户逐次确认。
+ * 宿主提供不可变的 JSON 参数快照；最终执行重新解析同一快照，确认期间参数不会漂移。
  *
  * 为什么需要它：工具由模型决定何时调用、传什么参数。扩展注册了工具，
  * 不代表宿主愿意让模型随意调用它——尤其是会写文件、发请求等有副作用的工具。
  * 权限策略把“能不能执行”的决定权留在宿主手里，而不是交给模型或扩展。
  *
  * @param name 本次要执行的工具名
+ * @param argumentsJson 本次待执行的 JSON 参数快照，用于明确展示批准的内容
  * @param context 本次调用的上下文（见 ToolContext）；可用于按会话、按调用做判断，
  *                或把 context.signal 传给异步判定（例如等待用户确认）以支持取消
  * @returns 严格等于 true 才允许执行；false、其他值，或 Promise 最终不是 true 都会被拒绝。
  *          可以同步返回，也可以写成 async 函数（例如需要询问用户时）
  */
-export type ToolPermission = (name: string, context: ToolContext) => boolean | Promise<boolean>;
+export type ToolPermission = (
+  name: string,
+  argumentsJson: string,
+  context: ToolContext,
+) => boolean | Promise<boolean>;
 
 /**
  * 一个可供模型调用的工具。
@@ -323,10 +337,13 @@ export function createToolRegistry(permit: ToolPermission = () => false): ToolRe
     // 已取消或超时时不做权限判定、也不启动工具（throwIfAborted 说明见 executeCommand）。
     context.signal.throwIfAborted();
 
+    // 参数来自核心解析后的 JSON。审批及最终执行共用字符串快照，避免等待期间原对象被改写。
+    const argumentsJson = JSON.stringify(args);
+    if (argumentsJson === undefined) throw new Error("工具参数必须是 JSON 值");
     let allowed: boolean;
     try {
       // await 同时兼容同步和异步策略：对普通值 await 会直接得到该值。
-      allowed = await permit(name, context);
+      allowed = await permit(name, argumentsJson, context);
     } catch {
       // 取消优先；其他策略异常阻止执行，不透传任意异常正文。
       // - 取消优先：若策略是因为响应取消信号而抛错，就按取消处理（抛出取消原因），
@@ -347,7 +364,7 @@ export function createToolRegistry(permit: ToolPermission = () => false): ToolRe
       throw new Error(`工具未获授权: ${name}`);
     }
 
-    return tool.execute(args, context);
+    return tool.execute(JSON.parse(argumentsJson), context);
   }
 
   // ── 命令 ──
