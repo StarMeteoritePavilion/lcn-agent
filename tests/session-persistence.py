@@ -61,10 +61,14 @@ class Handler(BaseHTTPRequestHandler):
             delta = {'tool_calls': [{'index': 0, 'id': 'todo_read_1', 'type': 'function',
                                     'function': {'name': 'todo_list', 'arguments': '{}'}}]}
             reason = 'tool_calls'
+        elif last['role'] == 'user' and last['content'] == '权限拒绝验证':
+            delta = {'tool_calls': [{'index': 0, 'id': 'denied_1', 'type': 'function',
+                                    'function': {'name': 'denied_probe', 'arguments': '{}'}}]}
+            reason = 'tool_calls'
         elif last['role'] == 'user' and last['content'] == '工具超时验证':
             delta = {'tool_calls': [
                 {'index': 0, 'id': 'slow_1', 'type': 'function',
-                 'function': {'name': 'slow_probe', 'arguments': '{}'}},
+                 'function': {'name': 'delay_echo', 'arguments': '{}'}},
                 {'index': 1, 'id': 'skipped_2', 'type': 'function',
                  'function': {'name': 'echo', 'arguments': '{"text":"不应执行"}'}}]}
             reason = 'tool_calls'
@@ -113,7 +117,7 @@ const toolContext = Object.freeze({cwd:process.cwd(), model:"local-test", sessio
 import { createToolRegistry } from "./dist/core/tools.js";
 import { registerEcho } from "./dist/extensions/echo.js";
 
-const registry = createToolRegistry();
+const registry = createToolRegistry(() => true);
 assert.deepEqual(registry.definitions(), []);
 registerEcho({ registerTool: registry.register, registerCommand: registry.registerCommand });
 assert.deepEqual(registry.definitions().map((tool) => tool.function.name), ["echo"]);
@@ -143,7 +147,7 @@ assert.equal(calls, 0);
 assert.deepEqual(registry.definitions().map((tool) => tool.function.name), ["echo", "lesson_probe"]);
 await assert.rejects(() => registry.execute("lesson_probe", {}, toolContext), /实验执行异常/);
 assert.equal(calls, 1);
-assert.deepEqual(createToolRegistry().definitions(), []);
+assert.deepEqual(createToolRegistry(() => true).definitions(), []);
 console.log("通过：定义发现、参数校验、未知工具、重名保护、新工具注册、异常传播与实例隔离");
 '''
         subprocess.run(['node', '--input-type=module', '-e', registry_verification], cwd=project, env=test_env, check=True)
@@ -155,7 +159,7 @@ const toolContext = Object.freeze({cwd:process.cwd(), model:"local-test", sessio
 import { createToolRegistry, mountExtension } from "./dist/core/tools.js";
 import { registerEcho } from "./dist/extensions/echo.js";
 
-const registry = createToolRegistry();
+const registry = createToolRegistry(() => true);
 const tool = (name) => ({
   definition: {
     type: "function",
@@ -245,7 +249,7 @@ import { writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { createToolRegistry, mountExtension, loadExtension } from "./dist/core/tools.js";
 import { registerEcho } from "./dist/extensions/echo.js";
-const registry = createToolRegistry();
+const registry = createToolRegistry(() => true);
 const close = mountExtension(registry, registerEcho);
 for (let i = 0; i < 3; i++) {
   const dispose = await loadExtension(registry, "dist/extensions/upper.js");
@@ -288,7 +292,7 @@ const context = Object.freeze({
   ui: Object.freeze({ notify: () => {} }),
 });
 import { createToolRegistry, mountExtension } from "./dist/core/tools.js";
-const r = createToolRegistry();
+const r = createToolRegistry(() => true);
 const command = { name: "sample", execute: text => text };
 for (const name of ["exit", "new", "sessions", "history", "diagnostics", "resume"]) {
   assert.throws(() => r.registerCommand({ ...command, name }), /宿主命令不可覆盖/);
@@ -343,7 +347,7 @@ const context = Object.freeze({
   ui: Object.freeze({ notify: () => {} }),
 });
 import {createToolRegistry, mountExtension, loadExtension} from "./dist/core/tools.js";
-const r = createToolRegistry();
+const r = createToolRegistry(() => true);
 const event = {type:"agent_end", reason:"completed", round:1};
 const order = [];
 const a = mountExtension(r, api => api.onAgentEnd(() => order.push(1)));
@@ -391,7 +395,7 @@ console.log("通过：事件顺序、只读快照、异常隔离、分发期间�
         async_verification = r'''
 import assert from "node:assert/strict";
 import {createToolRegistry,loadExtension} from "./dist/core/tools.js";
-const r=createToolRegistry();const close=await loadExtension(r,"dist/extensions/upper.js");
+const r=createToolRegistry(() => true);const close=await loadExtension(r,"dist/extensions/upper.js");
 const controller=new AbortController();
 const context={cwd:process.cwd(),model:"local-test",sessionFile:null,signal:controller.signal,ui:{notify(){}}};
 assert.equal(await r.executeCommand("upper","abc",context),"ABC");
@@ -413,7 +417,7 @@ close();console.log("通过：异步异常、执行中取消、已取消信号�
 import assert from "node:assert/strict";
 import {createToolRegistry,loadExtension,mountExtension} from "./dist/core/tools.js";
 import todo from "./dist/extensions/todo.js";
-const r=createToolRegistry();let close=await loadExtension(r,"dist/extensions/todo.js");
+const r=createToolRegistry(() => true);let close=await loadExtension(r,"dist/extensions/todo.js");
 const controller=new AbortController();
 const ctx={cwd:process.cwd(),model:"test",sessionFile:null,signal:controller.signal,ui:{notify(){},async ask(){return "提问新增"}}};
 await assert.rejects(r.executeCommand("todo_add","任务",ctx),/先 \/new/);
@@ -445,12 +449,12 @@ import {join} from "node:path";
 import {createToolRegistry,loadExtension} from "./dist/core/tools.js";
 const cwd=mkdtempSync(join(tmpdir(),"lcn-todo-data-"));
 const context={cwd,sessionFile:"a.jsonl",model:"test",signal:new AbortController().signal,ui:{notify(){},async ask(){return "提问"}}};
-let r=createToolRegistry();let close=await loadExtension(r,"dist/extensions/todo.js");
+let r=createToolRegistry(() => true);let close=await loadExtension(r,"dist/extensions/todo.js");
 const file=join(cwd,".lcn-agent/todos/a.jsonl.json");
 try {
  await r.executeCommand("todo_add","第一项",context);
  await r.executeCommand("todo_done","1",context);
- close();r=createToolRegistry();close=await loadExtension(r,"dist/extensions/todo.js");
+ close();r=createToolRegistry(() => true);close=await loadExtension(r,"dist/extensions/todo.js");
  assert.equal(await r.executeCommand("todo_list","",context),"[x] #1 第一项");
  assert.equal(await r.executeCommand("todo_list","",{...context,sessionFile:"b.jsonl"}),"当前会话暂无待办");
  const good=readFileSync(file);
@@ -490,7 +494,7 @@ import {mkdtempSync,readFileSync,writeFileSync,rmSync,existsSync} from "node:fs"
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {createToolRegistry,loadExtension} from "./dist/core/tools.js";
-const cwd=mkdtempSync(join(tmpdir(),"todo-read-data-"));const r=createToolRegistry();
+const cwd=mkdtempSync(join(tmpdir(),"todo-read-data-"));const r=createToolRegistry(() => true);
 const close=await loadExtension(r,"dist/extensions/todo.js");
 const ctx={cwd,sessionFile:"a.jsonl",signal:new AbortController().signal,model:"test",callId:"call",ui:{notify(){},async ask(){return "任务"}}};
 try {
@@ -510,6 +514,23 @@ try {
 } finally {close();rmSync(cwd,{recursive:true,force:true});}
 '''
         subprocess.run(['node', '--input-type=module', '-e', todo_read_verification],
+                       cwd=project, env=test_env, check=True)
+
+        permission_verification = r'''
+import assert from "node:assert/strict";
+import {createToolRegistry} from "./dist/core/tools.js";
+let calls=0;const tool={definition:{type:"function",function:{name:"probe"}},execute(){calls++;return "成功"}};
+const base={cwd:process.cwd(),model:"test",sessionFile:"test.jsonl",callId:"call",signal:new AbortController().signal};
+for(const [policy,message] of [[undefined,/未获授权/],[()=>false,/未获授权/],[()=>{throw Error("私密正文")},/判定失败/],[async()=>{throw Error("私密正文")},/判定失败/],[()=>"true",/未获授权/]]) {
+ const r=policy?createToolRegistry(policy):createToolRegistry();r.register(tool);
+ await assert.rejects(r.execute("probe",{},base),message);assert.equal(calls,0);
+}
+const allow=createToolRegistry(async()=>true);allow.register(tool);assert.equal(await allow.execute("probe",{},base),"成功");assert.equal(calls,1);
+const controller=new AbortController();const cancel=createToolRegistry(async()=>{controller.abort();return true});cancel.register(tool);
+await assert.rejects(cancel.execute("probe",{},{...base,signal:controller.signal}),{name:"AbortError"});assert.equal(calls,1);
+console.log("通过：默认拒绝、允许执行、同步及异步判定异常、非布尔拒绝、判定期间取消且无副作用");
+'''
+        subprocess.run(['node', '--input-type=module', '-e', permission_verification],
                        cwd=project, env=test_env, check=True)
 
         # 直接验证持久化边界，所有损坏均写在临时目录，比较原始字节不被恢复操作修改。
@@ -1012,7 +1033,7 @@ export default function(api) {
 import {setTimeout as delay} from "node:timers/promises";
 export default function(api) {
   api.registerTool({
-    definition: {type:"function",function:{name:"slow_probe",parameters:{type:"object"}}},
+    definition: {type:"function",function:{name:"delay_echo",parameters:{type:"object"}}},
     async execute(args, context) {
       await delay(35000, undefined, {signal:context.signal});
       return "不应返回";
@@ -1041,6 +1062,26 @@ export default function(api) {
         send(child, '/diagnostics'); expect(lines, '运行结束：timeout')
         send(child, '/exit'); assert child.wait(timeout=5) == 0
         print('通过：真实 30 秒工具超时、未执行结果配对、停止后续请求及恢复诊断')
+
+        denied = project / 'denied-probe.mjs'
+        denied.write_text('''
+import {writeFileSync} from "node:fs";
+export default function(api) {
+  api.registerTool({definition:{type:"function",function:{name:"denied_probe"}},
+    execute(){writeFileSync("不应创建", "已执行");return "不应执行";}});
+}
+''')
+        result = subprocess.run(['node', 'dist/index.js', '权限拒绝验证'], cwd=project,
+                                env={**test_env, 'LCN_AGENT_EXTENSION': str(denied)},
+                                capture_output=True, text=True, timeout=5)
+        assert result.returncode == 0 and '工具未获授权: denied_probe' in result.stdout
+        requests.get(timeout=5)
+        history = requests.get(timeout=5)
+        assert history[-1] == {'role':'tool','tool_call_id':'denied_1',
+                               'content':'执行失败：工具未获授权: denied_probe'}
+        assert not (project / '不应创建').exists()
+        assert requests.empty()
+        print('通过：真实入口权限拒绝、工具副作用未发生及拒绝结果配对回填')
 
         diagnostic_verification = r'''
 import assert from "node:assert/strict";

@@ -20,8 +20,17 @@ import {
 let client: OpenAI;
 let model: string;
 
+// 允许模型执行的工具名单（白名单）：不在名单里的工具即使已注册，被调用时也会被拒绝。
+// 仅用于当前可信学习扩展；名称名单不能证明外部实现没有副作用。
+// （名单只检查名字：若外部扩展注册了一个同名工具，它同样会被放行，
+//   因此名单不能替代对扩展代码本身的审查。）
+// 名单里只有只读或无副作用的工具：todo_list 只读取待办；会修改待办的操作只以命令形式提供给用户。
+const allowedTools = new Set(["echo", "upper", "delay_echo", "todo_list"]);
+
 // 注册表由入口持有；扩展在启动时登记，Agent 循环统一查找和执行。
-const toolRegistry = createToolRegistry();
+// 传入的权限策略按工具名查白名单（策略的约定见 core/tools.ts 的 ToolPermission）。
+// 这里只用到第 1 个参数 name，因此省略了第 2 个参数 context。
+const toolRegistry = createToolRegistry((name) => allowedTools.has(name));
 
 // RuntimeEvent 是核心与展示层之间的唯一运行时通信边界。
 
@@ -81,7 +90,15 @@ type RuntimeEvent =
 type EventHandler = (event: RuntimeEvent) => void;
 
 type UiStatus =
-  "idle" | "thinking" | "tool" | "completed" | "cancelled" | "timeout" | "truncated" | "loop_limit" | "error";
+  | "idle"
+  | "thinking"
+  | "tool"
+  | "completed"
+  | "cancelled"
+  | "timeout"
+  | "truncated"
+  | "loop_limit"
+  | "error";
 
 type MarkdownState = {
   pendingLine: string;
@@ -412,7 +429,11 @@ async function runAgent(
       if (signal.aborted) {
         // 请求结束后再次检查，避免超时或 Ctrl+C 后继续执行工具。
         // 用户取消优先：两个信号都已触发时，按用户取消报告。
-        onEvent({ type: "agent_end", reason: userAbort.signal.aborted ? "cancelled" : "timeout", round });
+        onEvent({
+          type: "agent_end",
+          reason: userAbort.signal.aborted ? "cancelled" : "timeout",
+          round,
+        });
         return;
       }
 
@@ -471,10 +492,12 @@ async function runAgent(
 
           // 核心解析 JSON，工具入口校验参数，失败仍由这里统一回填。
           const parsed: unknown = JSON.parse(tc.arguments);
+          // execute 内部会先按白名单做权限判定，通过后才真正执行工具。
           output = await toolRegistry.execute(
             tc.name,
             parsed,
             // 为本次调用创建 ToolContext；Object.freeze 防止工具在运行时改写它。
+            // 同一个 context 也会传给权限策略。
             // signal 用的是本轮信号（用户取消 + 本轮超时），与模型请求共享同一个 30 秒预算。
             Object.freeze({
               cwd: process.cwd(),
@@ -498,6 +521,9 @@ async function runAgent(
               ? `未执行：${reason}`
               : `工具调用中断：${reason}；已发生的副作用不保证撤销`;
           } else {
+            // 普通失败：参数 JSON 非法、未知工具、未获授权、权限判定失败或工具自身报错。
+            // 例如调用了白名单外的工具，output 为“执行失败：工具未获授权: xxx”，
+            // 模型在下一轮读到这条结果，就知道该工具不能用，可以改用其他方式回答。
             reason =
               error instanceof SyntaxError
                 ? "工具参数不是合法 JSON"
@@ -524,7 +550,11 @@ async function runAgent(
 
       // 已经补齐调用配对，此时停止，不再启动下一轮模型请求。
       if (signal.aborted) {
-        onEvent({ type: "agent_end", reason: userAbort.signal.aborted ? "cancelled" : "timeout", round });
+        onEvent({
+          type: "agent_end",
+          reason: userAbort.signal.aborted ? "cancelled" : "timeout",
+          round,
+        });
         return;
       }
     }

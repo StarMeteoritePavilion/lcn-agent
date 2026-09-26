@@ -27,6 +27,24 @@ export type ToolContext = Readonly<{
 }>;
 
 /**
+ * 工具权限策略：在每次执行工具前被调用，决定这次调用是否允许执行。
+ *
+ * 策略由宿主提供；当前按工具名称判定，不提供参数级授权。
+ * （即只能表达“允许 echo、禁止 xxx”，不能表达“允许读 a 文件、禁止读 b 文件”。）
+ *
+ * 为什么需要它：工具由模型决定何时调用、传什么参数。扩展注册了工具，
+ * 不代表宿主愿意让模型随意调用它——尤其是会写文件、发请求等有副作用的工具。
+ * 权限策略把“能不能执行”的决定权留在宿主手里，而不是交给模型或扩展。
+ *
+ * @param name 本次要执行的工具名
+ * @param context 本次调用的上下文（见 ToolContext）；可用于按会话、按调用做判断，
+ *                或把 context.signal 传给异步判定（例如等待用户确认）以支持取消
+ * @returns 严格等于 true 才允许执行；false、其他值，或 Promise 最终不是 true 都会被拒绝。
+ *          可以同步返回，也可以写成 async 函数（例如需要询问用户时）
+ */
+export type ToolPermission = (name: string, context: ToolContext) => boolean | Promise<boolean>;
+
+/**
  * 一个可供模型调用的工具。
  *
  * 由两部分组成：
@@ -155,7 +173,8 @@ export type RegisterTool = (tool: Tool) => void;
  * - register:    注册一个新工具，工具名重复时抛错；返回一个"撤销注册"函数，调用后删除该工具。
  * - definitions: 获取所有已注册工具的 definition 列表，用于随请求一起发给模型（即请求参数 `tools`）。
  * - execute:     按工具名找到对应工具并执行，用于处理模型返回的 tool_calls；
- *                宿主需传入本次调用的 ToolContext。与 executeCommand 一样始终返回 Promise。
+ *                宿主需传入本次调用的 ToolContext。执行前会先经过权限策略判定，未获授权则拒绝。
+ *                与 executeCommand 一样始终返回 Promise。
  *
  * 命令侧：
  * - registerCommand: 注册一个用户命令，命令名重复或与宿主保留命令冲突时抛错；返回撤销函数。
@@ -193,6 +212,12 @@ export type ToolRegistry = {
  * 3. 模型回复中若包含 tool_calls，宿主为每个调用创建 ToolContext，
  *    执行 await execute(call.function.name, 解析后的参数, context)，
  *    再把返回的字符串作为 role = "tool" 的消息回传给模型。
+ *    execute 内部会先调用创建注册表时传入的 permit 判定是否允许执行。
+ *
+ * 注意“注册”与“授权”是两回事：
+ * - 注册（register）决定工具是否存在：注册后 definitions() 会把它发给模型，模型就可能调用它；
+ * - 授权（permit）决定调用时能否真正执行：未授权的工具被调用时，execute 抛出“工具未获授权”，
+ *   宿主把这条错误作为工具结果回填，模型就知道这次调用没有执行。
  *
  * 典型使用流程（命令侧）：
  * 1. 启动时调用 registerCommand 注册扩展命令；
@@ -208,9 +233,12 @@ export type ToolRegistry = {
  * - 中间按“工具 / 命令 / 运行结束事件”三组定义具名函数；
  * - 结尾把 7 个函数组装成对象返回。外部只能通过这 7 个函数操作数据，拿不到 Map / Set 本身。
  *
+ * @param permit 工具权限策略（见 ToolPermission），每次执行工具前调用。
+ *               默认值 `() => false` 拒绝一切工具：不传策略时，任何工具都不会被执行。
+ *               这叫“默认拒绝”——忘记配置权限时宁可工具用不了，也不能让模型随意执行。
  * @returns 新的 ToolRegistry 对象，初始不包含任何工具、命令和监听器
  */
-export function createToolRegistry(): ToolRegistry {
+export function createToolRegistry(permit: ToolPermission = () => false): ToolRegistry {
   // ── 内部数据：只在本函数内可见 ──
 
   // Map<工具名, 工具>：以 definition.function.name 为键。
@@ -271,14 +299,18 @@ export function createToolRegistry(): ToolRegistry {
   /**
    * 按名称执行工具。
    *
+   * 执行顺序：查找工具 → 检查取消 → 权限判定 → 再次检查取消 → 执行工具。
+   * 任何一步不通过都会抛错，后面的步骤不再进行。
+   *
    * @param name 工具名，通常来自模型返回的 tool_call.function.name
    * @param args 工具参数，通常是对 tool_call.function.arguments（JSON 字符串）解析后的结果；
    *             未经校验，由具体工具的 execute 自行校验
-   * @param context 本次调用的上下文，原样传给工具的 execute
+   * @param context 本次调用的上下文，传给权限策略 permit 和工具的 execute
    * @returns Promise，完成后得到工具执行结果字符串，作为 tool 消息的 content 回传给模型
    * @throws {Error} 以下情况 Promise 会被拒绝（reject）：
    *   - 找不到对应工具（模型可能“幻觉”出一个不存在的工具名）；
-   *   - 执行前 context.signal 已被触发（用户取消或本轮超时）；
+   *   - 执行前或权限判定后 context.signal 已被触发（用户取消或本轮超时）；
+   *   - 权限策略自身抛错（“工具权限判定失败”）或未返回 true（“工具未获授权”）；
    *   - 工具自身抛错，或异步工具响应取消信号而中止。
    */
   async function execute(name: string, args: unknown, context: ToolContext): Promise<string> {
@@ -288,8 +320,33 @@ export function createToolRegistry(): ToolRegistry {
     if (!tool) {
       throw new Error(`未知工具: ${name}`);
     }
-    // 已取消或超时时不启动工具；执行中的取消由工具响应信号（throwIfAborted 说明见 executeCommand）。
+    // 已取消或超时时不做权限判定、也不启动工具（throwIfAborted 说明见 executeCommand）。
     context.signal.throwIfAborted();
+
+    let allowed: boolean;
+    try {
+      // await 同时兼容同步和异步策略：对普通值 await 会直接得到该值。
+      allowed = await permit(name, context);
+    } catch {
+      // 取消优先；其他策略异常阻止执行，不透传任意异常正文。
+      // - 取消优先：若策略是因为响应取消信号而抛错，就按取消处理（抛出取消原因），
+      //   宿主会据此显示“用户取消 / 本轮超时”，而不是误报为权限问题；
+      // - 策略出错时“失败即拒绝”：判定不出结果就不执行，不能当作允许；
+      // - 不透传原始错误正文：策略的异常信息可能包含内部细节，只返回统一提示给模型。
+      context.signal.throwIfAborted();
+      throw new Error(`工具权限判定失败: ${name}`);
+    }
+
+    // 等待判定期间可能发生取消，执行前必须再次检查。
+    // （例如策略需要询问用户，用户在确认期间按了 Ctrl+C。）
+    context.signal.throwIfAborted();
+
+    // 用 !== true 而非 !allowed：只有明确返回 true 才放行。
+    // 策略若因 bug 返回了 "yes"、1 等“真值”，也一律拒绝，避免误放行。
+    if (allowed !== true) {
+      throw new Error(`工具未获授权: ${name}`);
+    }
+
     return tool.execute(args, context);
   }
 
