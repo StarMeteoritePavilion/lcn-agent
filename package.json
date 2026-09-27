@@ -7,7 +7,7 @@
     "build": "tsc",
     "start": "tsc && node dist/index.js",
     "check": "tsc --noEmit",
-    "test": "python3 tests/session-persistence.py"
+    "test": "npm run build && node tests/skills.mjs"
   },
   "keywords": [],
   "author": "",
@@ -32,6 +32,7 @@
   "dependencies": {
     "ajv": "^8.20.0",
     "openai": "^7.18.0",
-    "smol-toml": "^1.8.0"
+    "smol-toml": "^1.8.0",
+    "yaml": "^2.9.1"
   }
 }

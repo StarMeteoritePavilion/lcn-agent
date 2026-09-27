@@ -89,12 +89,19 @@ function searchWorkspaceFile(path: string, query: string, context: ToolContext):
  * 顺序：拒绝绝对路径 → 规范化工作区 → 解析前检查 `..` →
  * realpath 后再检查（挡住符号链接逃逸）→ 打开、限大小、读入、按 UTF-8 解码。
  *
- * @param path 模型给出的相对路径，原样使用（不用 trim 改文件名）
- * @param context 本次工具调用的上下文，使用 cwd 定位工作区、用 signal 响应取消
+ * 导出给 skills.ts 复用同一套路径沙箱和 64 KiB 上限。
+ *
+ * @param path 相对工作区的路径，原样使用（不用 trim 改文件名）
+ * @param context 只要 cwd 和 signal。
+ *                Pick<ToolContext, "cwd" | "signal"> 从 ToolContext 抽出这两个字段，
+ *                发现 Skills 时不必凑齐 confirm / callId 等工具专用字段。
  * @returns 文件的 UTF-8 文本
  * @throws {Error} 路径越界、不是普通文件、超过 64 KiB、不是合法 UTF-8，或已取消
  */
-function readWorkspaceFile(path: string, context: ToolContext): string {
+export function readWorkspaceFile(
+  path: string,
+  context: Pick<ToolContext, "cwd" | "signal">,
+): string {
   context.signal.throwIfAborted();
   // 绝对路径能直接指向工作区外，也绕过“相对工作区”的约定，一律拒绝。
   if (isAbsolute(path)) {

@@ -18,6 +18,8 @@
 - [12 JavaScript falsy 值与空字符串判断](#2026-09-20-12-javascript-falsy-值与空字符串判断)
 - [17 解构赋值中的冒号重命名](#2026-09-25-17-解构赋值中的冒号重命名)
 - [18 数组展开语法与不可变追加](#2026-09-26-18-数组展开语法与不可变追加)
+- [21 Pick 与 Omit 工具类型](#2026-09-27-21-pick-与-omit-工具类型)
+- [22 ReturnType 与 typeof 函数](#2026-09-27-22-returntype-与-typeof-函数)
 
 ### ESM 模块
 - [16 export function 与 export default function 的区别](#2026-09-25-16-export-function-与-export-default-function-的区别)
@@ -25,6 +27,7 @@
 ### Node.js 运行时
 - [13 readline.on/off 信号监听与 SIGINT 处理](#2026-09-20-13-readlineonoff-信号监听与-sigint-处理)
 - [19 路径边界检查 checkInside](#2026-09-27-19-路径边界检查-checkinside)
+- [20 Ajv 与工具参数 Schema 校验](#2026-09-27-20-ajv-与工具参数-schema-校验)
 
 ### Agent 与会话
 - [15 运行诊断与中断状态](#2026-09-25-15-运行诊断与中断状态)
@@ -1235,3 +1238,93 @@ path.startsWith("..")     // ❌ 误杀合法文件名 "..foo"
 Java 的 `Path.startsWith` 按路径段比较，不是字符串前缀。这段 TS 是在没有该 API 时，用 `relative` 的结果手写同等检查。函数假定传入的是已 `resolve` 的绝对路径；防 symlink 逃逸通常还要在外面配合 `realpathSync`。
 
 **总结：** `relative` 算出从工作区走到目标的路；这条路如果是绝对路径、或第一段是 `..`，就说明目标在工作区外，拒绝读取。必须按路径段判断，不能用字符串 `startsWith`。
+
+---
+
+## 2026-09-27-20 Ajv 与工具参数 Schema 校验
+
+**问题：** Ajv 这个框架有什么作用？
+
+**答案：**
+
+Ajv（Another JSON Schema Validator）按 JSON Schema 在运行时检查一份 JSON 是否合法。本仓库用它校验模型传来的工具参数。TypeScript 类型编译后会擦除，`JSON.parse` 也不验结构。
+
+```ts
+const validate = ajv.compile(schema);  // 注册时编译一次
+validate({ text: "hi" });              // true
+validate({ text: 1 });                 // false
+```
+
+执行顺序：查找工具 → 取消检查 → Ajv 校验 → 权限审批 → 再取消检查 → 执行。结构不对直接失败，不弹审批、不跑工具；失败只给统一提示，不把 `errors` 回给模型。
+
+本仓库关掉改写：`strict: true`，`coerceTypes` / `useDefaults` / `removeAdditional` 均为 false，避免审批看到的参数和真正执行的那份被校验器改掉。业务约束仍由工具自己检查。
+
+**总结：** Ajv 在运行时按 JSON Schema 验工具参数；本仓库只验、不改，验完再走权限。
+
+---
+
+## 2026-09-27-21 Pick 与 Omit 工具类型
+
+**问题：** `readWorkspaceFile` 参数写成 `Pick<ToolContext, "cwd" | "signal">` 是什么语法？`Omit` 呢？
+
+**答案：**
+
+`Pick` 是 TypeScript 内置工具类型：从已有对象类型里只抽出指定字段，组成更窄的类型。
+
+```ts
+context: Pick<ToolContext, "cwd" | "signal">
+//       ^^^^  ^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^
+//       工具  源类型       要留下的字段名（字符串联合）
+```
+
+`ToolContext` 含 `confirm`、`cwd`、`model`、`sessionFile`、`callId`、`signal`。`Pick` 之后等价于：
+
+```ts
+{ cwd: string; signal: AbortSignal }
+```
+
+源类型是 `Readonly<{...}>` 时，抽出来的字段仍只读。
+
+`readWorkspaceFile` 只用工作目录和取消信号。标成完整 `ToolContext` 会强迫调用方凑齐全部字段。`Pick` 后传入 `{ cwd, signal }` 即可；完整上下文也能传入，多出来的字段按结构类型兼容。
+
+`Omit` 方向相反：去掉指定字段，留下其余：
+
+```ts
+Pick<ToolContext, "cwd" | "signal">
+Omit<ToolContext, "confirm" | "model" | "sessionFile" | "callId">
+```
+
+字段少用 `Pick`，只想排除几个时用 `Omit`。Java 没有同等语法，最接近是手写一个只含所需方法的小接口。
+
+**总结：** `Pick<T, K>` 只要列出的字段，`Omit<T, K>` 去掉列出的字段。这里用 Pick 声明“只要 cwd 和 signal”，不必构造完整工具上下文。从函数抽返回类型见 [22](#2026-09-27-22-returntype-与-typeof-函数)。
+
+---
+
+## 2026-09-27-22 ReturnType 与 typeof 函数
+
+**问题：** `let skills: ReturnType<typeof createSkills>` 里的 `ReturnType` 是什么语法？
+
+**答案：**
+
+`ReturnType` 是 TypeScript 内置工具类型，抽出某个**函数类型**的返回值类型。
+
+```ts
+let skills: ReturnType<typeof createSkills>;
+//          ^^^^^^^^^^  ^^^^^^ ^^^^^^^^^^^^
+//          工具类型     取函数的类型   函数名
+```
+
+`typeof createSkills` 拿到函数的类型（不是调用它）。`ReturnType<...>` 再取出返回值类型。`createSkills` 没有手写返回类型，TS 从 `return { ... }` 推断；`ReturnType` 让 `skills` 跟这份推断同步，不必手抄接口。
+
+`ReturnType` 要的是类型，所以必须写 `typeof`：
+
+```ts
+ReturnType<typeof createSkills>  // ✅
+ReturnType<createSkills>         // ❌ 值不能当类型参数
+```
+
+类型位置的 `typeof` 表示“这个值的类型”，和运行时 `typeof x === "object"` 不是一回事。
+
+同族还有 `Parameters<typeof createSkills>`（参数元组）。字段抽取见 [21](#2026-09-27-21-pick-与-omit-工具类型)。入口里配置通过才初始化，所以不能写成 `const skills = createSkills(cwd)`，只能先用返回类型标注再赋值。
+
+**总结：** `ReturnType<typeof fn>` 就是 `fn` 返回值的类型；这里让 `skills` 与 `createSkills` 的返回形状保持同步。

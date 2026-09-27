@@ -7,6 +7,7 @@ import registerWorkflow from "./extensions/workflow.js";
 import { createInterface } from "node:readline/promises";
 import { loadConfig } from "./core/config.js";
 import { createDiagnostics, DiagnosticWriteError, showDiagnostics } from "./core/diagnostics.js";
+import { createSkills } from "./extensions/skills.js";
 
 import {
   createSession,
@@ -22,9 +23,13 @@ import {
 let client: OpenAI;
 let model: string;
 
+// 配置校验通过后才创建；ReturnType<typeof createSkills> 抽出该函数的返回类型，
+// 不必手抄 { register, prompt }，返回形状变了这里会一起变。
+let skills: ReturnType<typeof createSkills>;
+
 // 自动允许的可信学习工具名单；不在名单里的名称默认拒绝。
-// delay_echo、待办写入、文件工具（含 preview_edit / apply_edit）、run_command 和 plan_set
-// 不自动允许，由下方策略逐次确认。
+// delay_echo、待办写入、文件工具（含 preview_edit / apply_edit）、run_command、
+// plan_set 和 skill_activate 不自动允许，由下方策略逐次确认。
 // 仅用于当前可信学习扩展；名称名单不能证明外部实现没有副作用。
 // （名单只检查名字：若外部扩展注册了一个同名工具，它同样会被放行，
 //   因此名单不能替代对扩展代码本身的审查。）
@@ -33,8 +38,8 @@ const allowedTools = new Set(["echo", "upper", "todo_list", "plan_show"]);
 
 // 规划模式允许发给模型、并允许走到后面审批的工具名单。
 // 这是宿主维护的名单，不接受扩展自报“只读”作为依据。
-// 只含不改磁盘的能力：读文件/搜索/列目录/预览编辑可以，apply_edit、run_command、
-// plan_set、todo_add / todo_done、delay_echo 都不在名单里。
+// 允许读文件/搜索/列目录/预览编辑，以及把 Skill 正文注入会话（skill_activate）。
+// apply_edit、run_command、plan_set、todo_add / todo_done、delay_echo 都不在名单里。
 const planningTools = new Set([
   "echo",
   "upper",
@@ -44,6 +49,7 @@ const planningTools = new Set([
   "search_file",
   "list_files",
   "preview_edit",
+  "skill_activate",
 ]);
 
 // 模式属于当前进程，不随会话保存；启动时沿用现有执行模式。
@@ -53,7 +59,17 @@ let mode: "plan" | "execute" = "execute";
 
 // 规划模式下允许的扩展命令。直接输入的 `/命令` 不经过工具审批，
 // 若不限制，用户（或模型让用户去跑）就能用 /todo_add 绕过 plan 工具黑名单。
-const planningCommands = new Set(["context", "runs", "upper", "wait", "ask", "todo_list", "plan"]);
+const planningCommands = new Set([
+  "context",
+  "runs",
+  "upper",
+  "wait",
+  "ask",
+  "todo_list",
+  "plan",
+  "skills",
+  "skill",
+]);
 
 // 注册表由入口持有；扩展在启动时登记，Agent 循环统一查找和执行。
 // 宿主控制自动允许与逐次确认，扩展注册本身不代表获得授权。
@@ -77,7 +93,8 @@ const toolRegistry = createToolRegistry((name, argumentsJson, context) => {
     name === "preview_edit" ||
     name === "apply_edit" ||
     name === "run_command" ||
-    name === "plan_set"
+    name === "plan_set" ||
+    name === "skill_activate"
   ) {
     // argumentsJson 是宿主冻结的参数快照，确认时展示的就是即将执行的内容。
     // 把 signal 传给 confirm，用户在确认期间按 Ctrl+C 或超时时，提问会中止。
@@ -323,11 +340,20 @@ async function streamChat(
   messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[],
   signal: AbortSignal,
   onEvent: EventHandler,
+  sessionFile: string,
 ): Promise<SteamChatResult> {
+  // 每次请求现拼 Skills 系统说明，不写入会话文件。
+  // 没有可展示的目录且本会话未激活任何 Skill 时，instruction 为空，不加 system 消息。
+  const instruction = skills.prompt({
+    cwd: process.cwd(),
+    sessionFile,
+    signal,
+  });
+
   const stream = await client.chat.completions.create(
     {
       model,
-      messages,
+      messages: instruction ? [{ role: "system", content: instruction }, ...messages] : messages,
       // 规划模式不把写入类工具发给模型，减少它主动去调这些名字。
       // 权限入口仍会拦截：模型若硬编造 apply_edit 等名字，也会得到“未获授权”。
       tools: toolRegistry
@@ -468,7 +494,7 @@ async function runAgent(
       const operation = diagnostics.start("model", model, round);
       let steamChatResult: SteamChatResult;
       try {
-        steamChatResult = await streamChat(messages, signal, onEvent);
+        steamChatResult = await streamChat(messages, signal, onEvent, session.file);
       } catch (error) {
         const outcome = userAbort.signal.aborted
           ? "cancelled"
@@ -940,11 +966,13 @@ let disposeExtension: (() => void) | undefined;
 let disposeExternal: (() => void) | undefined;
 
 try {
-  // 默认能力共用装载与清理：初始化失败统一回滚。
-  // 无需环境变量即可使用 echo、提问/待办/计划（workflow）、受限文件能力，以及经确认的前台命令。
+  // 先发现 Skills，再和 echo / workflow 一起装进同一份注册表；初始化失败统一回滚。
+  skills = createSkills(process.cwd());
+
   disposeExtension = mountExtension(toolRegistry, (api) => {
     registerEcho(api);
     registerWorkflow(api);
+    skills.register(api);
   });
   // 外部扩展（可选）：由环境变量 LCN_AGENT_EXTENSION 指定文件路径，运行时动态加载，
   // 例如 LCN_AGENT_EXTENSION=dist/extensions/delay.js；重复加载默认扩展会明确报重名。
