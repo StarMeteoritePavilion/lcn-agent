@@ -71,6 +71,10 @@ class Handler(BaseHTTPRequestHandler):
             delta = {'tool_calls': [{'index': 0, 'id': 'confirm_1', 'type': 'function',
                                     'function': {'name': 'delay_echo', 'arguments': '{"text":"确认内容"}'}}]}
             reason = 'tool_calls'
+        elif last['role'] == 'user' and last['content'] == 'Schema参数错误验证':
+            delta = {'tool_calls': [{'index': 0, 'id': 'schema_1', 'type': 'function',
+                                    'function': {'name': 'read_file', 'arguments': '{"path":123}'}}]}
+            reason = 'tool_calls'
         elif last['role'] == 'user' and last['content'] == '读取文件验证':
             delta = {'tool_calls': [{'index': 0, 'id': 'read_1', 'type': 'function',
                                     'function': {'name': 'read_file', 'arguments': '{"path":"read-fixture.txt"}'}}]}
@@ -179,6 +183,53 @@ assert.deepEqual(registry.definitions().map((tool) => tool.function.name), ["ech
 await assert.rejects(() => registry.execute("lesson_probe", {}, toolContext), /实验执行异常/);
 assert.equal(calls, 1);
 assert.deepEqual(createToolRegistry(() => true).definitions(), []);
+
+// 校验失败必须先于审批，且不能执行工具或修改调用方的参数。
+let schemaPermits=0;let schemaExecutions=0;
+const schemaRegistry=createToolRegistry(()=>{schemaPermits++;return true;});
+const schemaDefinition={type:"function",function:{name:"schema_probe",parameters:{
+ type:"object",properties:{text:{type:"string",default:"默认值"}},required:["text"],additionalProperties:false,
+}}};
+const unregisterSchema=schemaRegistry.register({definition:schemaDefinition,execute(args){schemaExecutions++;return args.text;}});
+// 两条外部引用都不能改变注册时编译的规则或发给模型的定义。
+schemaDefinition.function.parameters.properties.text.type="number";
+schemaRegistry.definitions()[0].function.parameters.properties.text.type="number";
+assert.equal(schemaRegistry.definitions()[0].function.parameters.properties.text.type,"string");
+for(const args of [null,[],"文本",{}, {text:123},{text:"正常",extra:true}]) {
+ const original=structuredClone(args);
+ await assert.rejects(schemaRegistry.execute("schema_probe",args,toolContext),/schema_probe 工具参数不符合 Schema/);
+ assert.deepEqual(args,original);
+}
+assert.equal(schemaPermits,0);assert.equal(schemaExecutions,0);
+assert.equal(await schemaRegistry.execute("schema_probe",{text:"正常"},toolContext),"正常");
+assert.equal(schemaPermits,1);assert.equal(schemaExecutions,1);
+// 即使参数无效，已取消的请求仍应先报告取消，不进入审批。
+const schemaAbort=new AbortController();schemaAbort.abort();
+await assert.rejects(schemaRegistry.execute("schema_probe",{}, {...toolContext,signal:schemaAbort.signal}),{name:"AbortError"});
+assert.equal(schemaPermits,1);assert.equal(schemaExecutions,1);
+
+// 编译错误及异步 Schema 都不能留下半注册工具；错误保留原始原因。
+for(const parameters of [{type:"object",unknownKeyword:true},{type:"不存在"},{type:"object",$async:true}]) {
+ assert.throws(()=>schemaRegistry.register({
+  definition:{type:"function",function:{name:"bad_schema",parameters}},
+  execute(){throw Error("不应执行");},
+ }),error=>/工具参数 Schema 无效: bad_schema/.test(error.message)&&error.cause instanceof Error);
+ assert.deepEqual(schemaRegistry.definitions().map(tool=>tool.function.name),["schema_probe"]);
+}
+unregisterSchema();
+// 卸载后同名注册应使用新 Schema，不能误用旧校验函数。
+schemaRegistry.register({definition:{type:"function",function:{name:"schema_probe",parameters:{
+ type:"object",properties:{text:{type:"number"}},required:["text"],additionalProperties:false,
+}}},execute(args){return String(args.text);}});
+await assert.rejects(schemaRegistry.execute("schema_probe",{text:"旧类型"},toolContext),/参数不符合 Schema/);
+assert.equal(await schemaRegistry.execute("schema_probe",{text:123},toolContext),"123");
+unregisterSchema();assert.equal(schemaRegistry.definitions().length,1);
+// 未声明参数 Schema 的旧扩展按普通对象处理，并将同一规则发送给模型。
+schemaRegistry.register({definition:{type:"function",function:{name:"no_schema"}},execute(){return "兼容";}});
+assert.deepEqual(schemaRegistry.definitions()[1].function.parameters,{type:"object"});
+assert.equal(await schemaRegistry.execute("no_schema",{},toolContext),"兼容");
+await assert.rejects(schemaRegistry.execute("no_schema",[],toolContext),/参数不符合 Schema/);
+console.log("通过：Schema 校验先于审批、无参数改写、定义隔离、取消优先、编译失败、异步拒绝及重注册");
 console.log("通过：定义发现、参数校验、未知工具、重名保护、新工具注册、异常传播与实例隔离");
 '''
         subprocess.run(['node', '--input-type=module', '-e', registry_verification], cwd=project, env=test_env, check=True)
@@ -886,7 +937,7 @@ try {
  const file=join(cwd,".lcn-agent/todos/a.jsonl.json");const before=readFileSync(file);
  assert.equal(await r.execute("todo_list",{},ctx),"[x] #1 阅读");
  assert.equal(await r.execute("todo_list",{},ctx),await r.executeCommand("todo_list","",ctx));
- for (const args of [null,[],"",{sessionFile:"b.jsonl"}]) await assert.rejects(r.execute("todo_list",args,ctx),/空对象/);
+ for (const args of [null,[],"",{sessionFile:"b.jsonl"}]) await assert.rejects(r.execute("todo_list",args,ctx),/todo_list 工具参数不符合 Schema/);
  assert.deepEqual(readFileSync(file),before);
  assert.equal(await r.execute("todo_list",{},{...ctx,sessionFile:"b.jsonl"}),"当前会话暂无待办");
  writeFileSync(file,"{");await assert.rejects(r.execute("todo_list",{},ctx),/损坏/);assert.equal(readFileSync(file,"utf8"),"{");
@@ -1421,6 +1472,16 @@ export default function(api) {
         children.append(child); os.close(slave)
         try:
             command_expect('生成中 Ctrl+C')
+            # 模型参数结构错误：无需人工回答，直接回填失败并继续模型循环。
+            os.write(master, 'Schema参数错误验证\n'.encode())
+            output = command_expect('完成，共 2 轮')
+            assert b'[y/N]' not in output, 'Schema 错误不得弹出审批'
+            requests.get(timeout=5); history = requests.get(timeout=5)
+            assert history[-1] == {'role':'tool','tool_call_id':'schema_1',
+                                  'content':'执行失败：read_file 工具参数不符合 Schema'}
+            assert (project / 'read-fixture.txt').read_text() == '文件读取验收内容'
+            assert requests.empty()
+            print('通过：真实终端 Schema 错误不触发审批、工具结果准确配对并继续模型循环')
             for answer in ['n', 'y']:
                 os.write(master, '读取文件验证\n'.encode())
                 output = command_expect('[y/N]')

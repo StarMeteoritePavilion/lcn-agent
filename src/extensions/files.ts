@@ -430,7 +430,7 @@ export default function registerFiles({ registerTool }: ExtensionAPI): void {
     },
     execute(args, context) {
       // 参数来自模型，必须先校验（原因见 core/tools.ts 的 Tool.execute）。
-      // additionalProperties: false 只是给模型看的 Schema，运行时仍可能多传字段。
+      // 宿主已按 additionalProperties: false 拒绝额外字段；这里继续收窄类型并检查业务约束。
       if (
         typeof args !== "object" ||
         args === null ||
@@ -513,7 +513,7 @@ export default function registerFiles({ registerTool }: ExtensionAPI): void {
     },
     execute(args, context) {
       // 参数来自模型，必须先校验（原因见 core/tools.ts 的 Tool.execute）。
-      // additionalProperties: false 只是给模型看的 Schema，运行时仍可能多传字段。
+      // 宿主已按 additionalProperties: false 拒绝额外字段；这里继续收窄类型并检查业务约束。
       if (
         typeof args !== "object" ||
         args === null ||

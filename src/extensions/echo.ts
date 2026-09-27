@@ -21,8 +21,8 @@ const definition: Tool["definition"] = {
 /**
  * 第 2 部分：真正执行的逻辑。
  *
- * Schema 只描述参数；JSON.parse 和 TypeScript 类型都不会替我们验证它，
- * 参数来自模型，可能缺字段或类型不对，所以先校验再使用。
+ * 宿主先按 Schema 校验参数；JSON.parse 和 TypeScript 类型本身不提供运行时校验。
+ * 此处保留类型检查，使本函数独立收窄 unknown 后再使用参数。
  *
  * 不声明第 2 个参数 context：echo 不读文件、不等待，用不到 cwd / signal。
  * 参数更少的函数可以赋给 Tool.execute（见 core/tools.ts）。

@@ -1,6 +1,7 @@
 import OpenAI from "openai";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { Ajv, type ValidateFunction } from "ajv";
 import { readState, writeState } from "./state.js";
 
 /** 宿主为单次调用确认工具名、参数快照和调用 ID；取消与超时通过 signal 传递。 */
@@ -72,9 +73,10 @@ export type Tool = {
   // { type: "function", function: { name, description?, parameters? } }。
   // 其中 function.name 是工具的唯一标识，注册表以它作为查找键。
   definition: OpenAI.Chat.Completions.ChatCompletionFunctionTool;
-  // 参数来自模型，必须在执行具体操作前完成运行时校验。
+  // 参数来自模型。注册表会先按 definition 里的 JSON Schema 做结构校验，
+  // 通过后仍须由工具检查业务约束（例如非空、禁止换行、路径必须相对工作区）。
   // 类型写成 unknown 而非具体结构，就是为了强制实现方先校验再使用：
-  // 模型可能漏传字段、传错类型，甚至编造不存在的参数。
+  // Schema 只能约束形状，不能替工具理解“这个字符串算不算合法路径”。
   //
   // context 是本次调用的上下文（见 ToolContext）；用不到时可以不声明这个参数，
   // 例如 echo 的 execute(args) —— 参数更少的函数可以赋值给参数更多的函数类型。
@@ -194,8 +196,8 @@ export type RegisterTool = (tool: Tool) => void;
  * - register:    注册一个新工具，工具名重复时抛错；返回一个"撤销注册"函数，调用后删除该工具。
  * - definitions: 获取所有已注册工具的 definition 列表，用于随请求一起发给模型（即请求参数 `tools`）。
  * - execute:     按工具名找到对应工具并执行，用于处理模型返回的 tool_calls；
- *                宿主需传入本次调用的 ToolContext。执行前会先经过权限策略判定，未获授权则拒绝。
- *                与 executeCommand 一样始终返回 Promise。
+ *                宿主需传入本次调用的 ToolContext。执行前先按 Schema 校验参数，
+ *                再经过权限策略判定，未获授权则拒绝。与 executeCommand 一样始终返回 Promise。
  *
  * 命令侧：
  * - registerCommand: 注册一个用户命令，命令名重复或与宿主保留命令冲突时抛错；返回撤销函数。
@@ -233,7 +235,7 @@ export type ToolRegistry = {
  * 3. 模型回复中若包含 tool_calls，宿主为每个调用创建 ToolContext，
  *    执行 await execute(call.function.name, 解析后的参数, context)，
  *    再把返回的字符串作为 role = "tool" 的消息回传给模型。
- *    execute 内部会先调用创建注册表时传入的 permit 判定是否允许执行。
+ *    execute 内部先按 Schema 校验参数，再调用 permit 判定是否允许执行。
  *
  * 注意“注册”与“授权”是两回事：
  * - 注册（register）决定工具是否存在：注册后 definitions() 会把它发给模型，模型就可能调用它；
@@ -254,7 +256,7 @@ export type ToolRegistry = {
  * - 中间按“工具 / 命令 / 运行结束事件”三组定义具名函数；
  * - 结尾把 7 个函数组装成对象返回。外部只能通过这 7 个函数操作数据，拿不到 Map / Set 本身。
  *
- * @param permit 工具权限策略（见 ToolPermission），每次执行工具前调用。
+ * @param permit 工具权限策略（见 ToolPermission），Schema 校验通过后、真正执行前调用。
  *               默认值 `() => false` 拒绝一切工具：不传策略时，任何工具都不会被执行。
  *               这叫“默认拒绝”——忘记配置权限时宁可工具用不了，也不能让模型随意执行。
  * @returns 新的 ToolRegistry 对象，初始不包含任何工具、命令和监听器
@@ -262,9 +264,31 @@ export type ToolRegistry = {
 export function createToolRegistry(permit: ToolPermission = () => false): ToolRegistry {
   // ── 内部数据：只在本函数内可见 ──
 
-  // Map<工具名, 工具>：以 definition.function.name 为键。
+  // Schema 在注册时编译一次，每次调用复用校验函数。
+  // 禁止转换类型、填默认值或删除字段，避免批准的参数被静默修改。
+  const ajv = new Ajv({
+    // strict: 遇到不认识的 Schema 关键字直接报错，而不是悄悄忽略。
+    strict: true,
+    // coerceTypes: 禁止把 `"1"` 转成数字 1 这类隐式转换。
+    coerceTypes: false,
+    // useDefaults: 禁止把 Schema 里的 default 写进参数对象。
+    useDefaults: false,
+    // removeAdditional: 禁止删掉 additionalProperties 之外的字段。
+    removeAdditional: false,
+    // addUsedSchema: 不把编译结果放进全局缓存，避免不同工具的 $id 互相污染。
+    addUsedSchema: false,
+  });
+
+  // Map<工具名, { tool, validate }>：以 definition.function.name 为键。
   // 选用 Map 而非普通对象：键查找语义明确，且不会与 Object 原型上的属性名（如 "toString"）冲突。
-  const tools = new Map<string, Tool>();
+  // validate 是该工具 Schema 编译后的校验函数，与说明书成对保存。
+  const tools = new Map<
+    string,
+    {
+      tool: Tool;
+      validate: ValidateFunction;
+    }
+  >();
 
   // Map<命令名, 命令>：以 command.name 为键，存储所有已注册的扩展命令。
   const commands = new Map<string, Command>();
@@ -283,6 +307,7 @@ export function createToolRegistry(permit: ToolPermission = () => false): ToolRe
    * @returns 撤销注册函数：调用后从注册表删除该工具；重复调用无副作用
    * @throws {Error} 已存在同名工具时抛出。同名覆盖会让模型看到的说明书与实际执行的逻辑对不上，
    *                 因此直接拒绝，而不是静默替换。
+   * @throws {Error} 参数 Schema 无法编译（含异步 Schema）时抛出；此时尚未写入注册表
    */
   function register(tool: Tool): () => void {
     const name = tool.definition.function.name;
@@ -292,8 +317,33 @@ export function createToolRegistry(permit: ToolPermission = () => false): ToolRe
       throw new Error(`工具重名: ${name}`);
     }
 
-    // set: 以工具名为键写入 Map。
-    tools.set(name, tool);
+    // structuredClone: 深拷贝。保存独立定义，避免扩展在注册后修改 Schema，
+    // 造成发给模型的说明书与注册表里用来校验的那份不一致。
+    const definition = structuredClone(tool.definition);
+
+    // 未声明参数结构时，按普通对象处理；字段仍由工具自行约束。
+    const schema = definition.function.parameters ?? { type: "object" };
+    definition.function.parameters = schema;
+
+    let validate: ValidateFunction;
+    try {
+      // 当前入口只支持同步 Schema 校验，不支持异步校验协议。
+      if (schema.$async !== undefined) {
+        throw new Error("暂不支持异步 Schema");
+      }
+      // compile: 把 JSON Schema 编译成可反复调用的校验函数。失败会抛错。
+      validate = ajv.compile(schema);
+    } catch (cause) {
+      // 编译失败时尚未加入注册表；保留原因，方便定位扩展定义错误。
+      // `{ cause }` 是 ES2022 的错误链：外层是统一提示，原异常挂在 cause 上。
+      throw new Error(`工具参数 Schema 无效: ${name}`, { cause });
+    }
+
+    // 说明书（已克隆）和 execute（仍指向扩展提供的函数）与校验函数一起入库。
+    tools.set(name, {
+      tool: { definition, execute: tool.execute },
+      validate,
+    });
 
     // 状态属于本次注册；即使重新注册同一个对象，旧撤销函数也不能误删它。
     // once 保证撤销函数只在第一次调用时生效（见文件末尾的 once）。
@@ -312,24 +362,26 @@ export function createToolRegistry(permit: ToolPermission = () => false): ToolRe
    */
   function definitions(): OpenAI.Chat.Completions.ChatCompletionFunctionTool[] {
     // Array.from 从可迭代对象创建新数组：
-    // - 参数 1 iterable: tools.values()，按插入顺序遍历所有 Tool。
-    // - 参数 2 mapFn:    对每个元素做映射，这里只取出 definition 部分。
-    return Array.from(tools.values(), (tool) => tool.definition);
+    // - 参数 1 iterable: tools.values()，按插入顺序遍历所有条目。
+    // - 参数 2 mapFn:    取出 definition 再 structuredClone，
+    //                    调用方改返回值不会改到注册表里那份 Schema。
+    return Array.from(tools.values(), ({ tool }) => structuredClone(tool.definition));
   }
 
   /**
    * 按名称执行工具。
    *
-   * 执行顺序：查找工具 → 检查取消 → 权限判定 → 再次检查取消 → 执行工具。
+   * 执行顺序：查找工具 → 检查取消 → 参数快照与 Schema 校验 → 权限判定 → 再次检查取消 → 执行工具。
    * 任何一步不通过都会抛错，后面的步骤不再进行。
    *
    * @param name 工具名，通常来自模型返回的 tool_call.function.name
    * @param args 工具参数，通常是对 tool_call.function.arguments（JSON 字符串）解析后的结果；
-   *             未经校验，由具体工具的 execute 自行校验
+   *             由宿主先按 Schema 校验，具体工具继续检查业务约束
    * @param context 本次调用的上下文，传给权限策略 permit 和工具的 execute
    * @returns Promise，完成后得到工具执行结果字符串，作为 tool 消息的 content 回传给模型
    * @throws {Error} 以下情况 Promise 会被拒绝（reject）：
    *   - 找不到对应工具（模型可能“幻觉”出一个不存在的工具名）；
+   *   - args 不能 JSON.stringify，或不符合该工具在注册时编译的 Schema；
    *   - 执行前或权限判定后 context.signal 已被触发（用户取消或本轮超时）；
    *   - 权限策略自身抛错（“工具权限判定失败”）或未返回 true（“工具未获授权”）；
    *   - 工具自身抛错，或异步工具响应取消信号而中止。
@@ -337,16 +389,29 @@ export function createToolRegistry(permit: ToolPermission = () => false): ToolRe
   async function execute(name: string, args: unknown, context: ToolContext): Promise<string> {
     // 写成 async 函数的原因同 executeCommand：同步和异步工具对宿主而言都返回 Promise。
     // get: 按键取值，不存在时返回 undefined。
-    const tool = tools.get(name);
-    if (!tool) {
+    const entry = tools.get(name);
+    if (!entry) {
       throw new Error(`未知工具: ${name}`);
     }
-    // 已取消或超时时不做权限判定、也不启动工具（throwIfAborted 说明见 executeCommand）。
+    const { tool, validate } = entry;
+    // 已取消或超时时不做 Schema 校验、权限判定，也不启动工具
+    // （throwIfAborted 说明见 executeCommand）。
     context.signal.throwIfAborted();
 
     // 参数来自核心解析后的 JSON。审批及最终执行共用字符串快照，避免等待期间原对象被改写。
     const argumentsJson = JSON.stringify(args);
-    if (argumentsJson === undefined) throw new Error("工具参数必须是 JSON 值");
+    if (argumentsJson === undefined) {
+      throw new Error("工具参数必须是 JSON 值");
+    }
+
+    // 校验与审批、执行使用同一份 JSON 快照。
+    // 不符合结构时直接失败，不调用权限策略，也不执行工具。
+    // 失败只返回统一提示，不把 Ajv 的 errors 细节传给模型。
+    const snapshot: unknown = JSON.parse(argumentsJson);
+    if (!validate(snapshot)) {
+      throw new Error(`${name} 工具参数不符合 Schema`);
+    }
+
     let allowed: boolean;
     try {
       // await 同时兼容同步和异步策略：对普通值 await 会直接得到该值。
@@ -371,6 +436,7 @@ export function createToolRegistry(permit: ToolPermission = () => false): ToolRe
       throw new Error(`工具未获授权: ${name}`);
     }
 
+    // 再 parse 一次同一份快照交给工具：批准时展示的、校验过的、执行时用的是同一份 JSON。
     return tool.execute(JSON.parse(argumentsJson), context);
   }
 
@@ -629,7 +695,9 @@ export function mountExtension(
     try {
       dispose();
     } catch (cleanupError) {
-      throw new AggregateError([error, cleanupError], "扩展初始化失败，且资源清理失败", { cause: error });
+      throw new AggregateError([error, cleanupError], "扩展初始化失败，且资源清理失败", {
+        cause: error,
+      });
     }
     throw error;
   }
