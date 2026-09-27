@@ -243,6 +243,8 @@ lcn-agent/
 
 ## 文档
 
+- [当前交接](docs/agent-handoff.md) - 新 Agent 接手入口、当前验证证据与下一步
+
 - [开发学习计划](docs/agent-development-learning-plan.md) - 完整的 10 阶段开发路线与验收标准
 - [Agent 协作引导](docs/agent-coordination-guide.md) - AI Agent 接手工作的规则与约定
 - [学习问答笔记](docs/qa-notes.md) - TypeScript 学习过程中的问答记录
