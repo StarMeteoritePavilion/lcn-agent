@@ -78,7 +78,7 @@ ESM（ECMAScript Modules）是 JavaScript 官方的模块系统，由 ES2015（E
 }
 ```
 
-**总结：** ESM 是 JS 官方模块标准，静态 import/export，支持 tree-shaking；CJS 是 Node.js 原有的动态 require，两者可共存但混用需注意兼容性。
+**总结：** ESM 是 JS 官方模块标准，静态 import/export，支持 tree-shaking；CJS 是 Node.js 原有的动态 require，两者可共存但混用需注意兼容性。命名导出与默认导出见 [16](#2026-09-25-16-export-function-与-export-default-function-的区别)。
 
 ---
 
@@ -406,7 +406,7 @@ const registry: Record<string, ToolFn> = {
 | `{ "my-name": echo }` | `"my-name"` | 非合法标识符需加引号 |
 | `{ [variable]: echo }` | 变量的值 | 动态计算 key |
 
-**总结：** 属性简写以变量名为 key；显式写 `key: value` 或用 `[expr]` 计算属性名可以自定义任意 key。
+**总结：** 属性简写以变量名为 key；显式写 `key: value` 或用 `[expr]` 计算属性名可以自定义任意 key。解构里冒号是重命名，见 [17](#2026-09-25-17-解构赋值中的冒号重命名)；数组/对象展开见 [18](#2026-09-26-18-数组展开语法与不可变追加)。
 
 ---
 
@@ -524,7 +524,7 @@ const b = parse("string");  // 编译器知道 b 是 string
 | `asserts value is Type` | `void`（失败抛异常） | 调用后直接收窄 | 前置校验，不满足就中断 |
 | 函数重载 | 任意类型 | 根据参数类型推断返回类型 | 不同输入返回不同类型 |
 
-**总结：** 类型谓词 `value is Type` 限定 boolean 返回值，在 true 分支自动收窄；`asserts` 适用于 void 前置校验；函数重载适用于不同输入返回不同类型。三者互补，覆盖不同的类型收窄场景。
+**总结：** 类型谓词 `value is Type` 限定 boolean 返回值，在 true 分支自动收窄；`asserts` 适用于 void 前置校验；函数重载适用于不同输入返回不同类型。三者互补，覆盖不同的类型收窄场景。与 widening 方向相反，见 [10](#2026-09-19-10-字面量类型-widening-与-as-const)。
 
 ---
 
@@ -604,7 +604,7 @@ TS 社区正在远离原生 `enum`，因为它是 TypeScript 少数会生成运�
 
 当前 `type Scenario = "text" | "normal" | ...` 就是最地道的写法。只用于分支判断，不需要更重的方案。等将来需要挂字段时，升级为 `const + as const`，类型从 `keyof typeof` 自动推导，不用手动维护两份。
 
-**总结：** 字符串联合类型是 TS 中最常用的"枚举"替代方案，纯分支判断场景下比 enum、const 对象、class 都更简洁。按需升级即可。
+**总结：** 字符串联合类型是 TS 中最常用的"枚举"替代方案，纯分支判断场景下比 enum、const 对象、class 都更简洁。按需升级即可。`const + as const` 的机制见 [10](#2026-09-19-10-字面量类型-widening-与-as-const)。
 
 ---
 
@@ -766,7 +766,7 @@ const ECHO_TOOL = { type: "function", function: { ... } } satisfies ChatCompleti
 
 给 SDK 用，③ 或 ④ 更干净：目标类型已知，根本不会 widening。
 
-**总结：** widening 是 TS 在可变位置把字面量放宽成 `string`/`number`/`boolean`。对象属性默认按 `let` 推断，所以 `type: "function"` 会变成 `string`，对不上 SDK 判别联合要求的字面量。`as const`、类型标注、`satisfies` 都是在阻止这次拓宽；阶段 0 没踩这个坑，是因为上下文类型已经把字面量钉死了。
+**总结：** widening 是 TS 在可变位置把字面量放宽成 `string`/`number`/`boolean`。对象属性默认按 `let` 推断，所以 `type: "function"` 会变成 `string`，对不上 SDK 判别联合要求的字面量。`as const`、类型标注、`satisfies` 都是在阻止这次拓宽；阶段 0 没踩这个坑，是因为上下文类型已经把字面量钉死了。收窄见 [07](#2026-09-18-07-类型谓词与类型收窄机制)；`as const` 作枚举替代见 [08](#2026-09-18-08-typescript-枚举写法与字符串联合类型的选择)。
 
 ---
 
@@ -880,7 +880,7 @@ try {
 
 消息历史是下次模型请求的上下文；运行事件负责通知界面或记录诊断。
 会话持有消息数组，`runAgent()` 追加用户输入、完整 assistant 回答、工具调用和结果。
-`text_delta` 只是片段，不作为完整回答恢复；用量、耗时等属于后续诊断记录。
+`text_delta` 只是片段，不作为完整回答恢复；用量、耗时等属于后续[诊断记录](#2026-09-25-15-运行诊断与中断状态)。
 
 工具交互顺序是 user → assistant 的 tool_calls → 对应 ID 的 tool 结果 → assistant 最终回答。
 恢复只读取这些消息，不调用 `executeTool()`。缺少工具结果表示执行结果未知，不能假定失败并重试。
@@ -917,7 +917,7 @@ try {
 
 **问题：** 会话已经保存消息，为什么还需要诊断记录？
 
-完整消息回答“下次给模型什么上下文”；诊断记录回答“哪个操作执行过、耗时多久、怎样结束”。
+[完整消息](#2026-09-25-14-消息历史与-jsonl-会话恢复)回答“下次给模型什么上下文”；诊断记录回答“哪个操作执行过、耗时多久、怎样结束”。
 诊断不会发送给模型，也不应把文本增量重复写入日志。以下设计已接入主实现，2026-09-25 通过当前源码的本地模拟验收。
 
 **当前实现：** 每次提问生成独立运行文件，放在 `.lcn-agent/diagnostics/<完整会话文件名>/` 下，
@@ -1037,7 +1037,7 @@ export default function registerUpper({
 import registerUpper from "./extensions/upper.js";
 ```
 
-默认导出同时支持静态导入和当前动态加载约定。当前保留 `upper.ts` 的默认导出，以及内部 `echo.ts` 的命名导出。
+默认导出同时支持静态导入和当前动态加载约定。当前保留 `upper.ts` 的默认导出，以及内部 `echo.ts` 的命名导出。模块系统见 [01](#2026-09-17-01-esm-是什么)。
 
 ---
 
@@ -1096,7 +1096,7 @@ function registerEcho({ registerTool }: ExtensionAPI): void {
 
 选择重命名成 `register`，是因为函数内部只关心"注册"这个动作，用短名字更简洁。
 
-**总结：** `{ registerTool: register }` 是从参数对象里取出 `registerTool` 属性，在函数内部叫 `register`。冒号在解构里是重命名，不是类型标注。
+**总结：** `{ registerTool: register }` 是从参数对象里取出 `registerTool` 属性，在函数内部叫 `register`。冒号在解构里是重命名，不是类型标注。对象字面量里冒号是指定 key，见 [06](#2026-09-18-06-对象字面量属性简写与自定义-key)。
 
 ---
 
@@ -1179,7 +1179,7 @@ saveItems(context, next);
 - "items 就是 Map 中保存的数组，push 后 Map 里的数据同步更新"：现在没有 Map 和 push，`itemsFor` 每次从文件读，这里生成新数组再写回文件。
 - "直接修改它的属性即可"：实际用的是 `map` + `{ ...entry, done: true }` 生成新对象，没有修改原对象。
 
-**总结：** `[...items, item]` 用 spread 语法创建"原数组元素 + 新元素"的新数组，不修改 `items`。它是浅拷贝，元素对象仍然共享；要改元素需再用对象展开生成新对象。
+**总结：** `[...items, item]` 用 spread 语法创建"原数组元素 + 新元素"的新数组，不修改 `items`。它是浅拷贝，元素对象仍然共享；要改元素需再用对象展开生成新对象。对象属性简写见 [06](#2026-09-18-06-对象字面量属性简写与自定义-key)。
 
 ---
 
