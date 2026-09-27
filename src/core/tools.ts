@@ -294,7 +294,18 @@ export function createToolRegistry(permit: ToolPermission = () => false): ToolRe
   const commands = new Map<string, Command>();
   // 宿主保留命令集合：这些命令名由宿主（index.ts）直接处理，扩展不可覆盖。
   // 含 /mode：规划/执行模式只能由用户切换，扩展不能注册同名命令来抢入口。
-  const reserved = new Set(["exit", "new", "sessions", "history", "diagnostics", "resume", "mode"]);
+  // 含 /prompts、/prompt：列模板和展开模板由宿主处理，展开结果当作用户消息送给模型。
+  const reserved = new Set([
+    "exit",
+    "new",
+    "sessions",
+    "history",
+    "diagnostics",
+    "resume",
+    "mode",
+    "prompts",
+    "prompt",
+  ]);
 
   // 运行结束事件的订阅者集合。Set 会保持插入顺序，因此通知顺序即订阅顺序。
   const listeners = new Set<AgentEndListener>();

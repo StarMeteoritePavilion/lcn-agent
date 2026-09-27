@@ -8,6 +8,7 @@ import { createInterface } from "node:readline/promises";
 import { loadConfig } from "./core/config.js";
 import { createDiagnostics, DiagnosticWriteError, showDiagnostics } from "./core/diagnostics.js";
 import { createSkills } from "./extensions/skills.js";
+import { expandPrompt, listPrompts } from "./core/prompts.js";
 
 import {
   createSession,
@@ -57,8 +58,9 @@ const planningTools = new Set([
 // /new、/resume 或重启都不会改它：切到 plan 后换会话仍是 plan，退出再进则回到 execute。
 let mode: "plan" | "execute" = "execute";
 
-// 规划模式下允许的扩展命令。直接输入的 `/命令` 不经过工具审批，
-// 若不限制，用户（或模型让用户去跑）就能用 /todo_add 绕过 plan 工具黑名单。
+  // 规划模式下允许的扩展命令。直接输入的 `/命令` 不经过工具审批，
+  // 若不限制，用户（或模型让用户去跑）就能用 /todo_add 绕过 plan 工具黑名单。
+  // /skills、/skill 允许列出或激活 Skill 正文；写入类命令仍禁止。
 const planningCommands = new Set([
   "context",
   "runs",
@@ -104,19 +106,23 @@ const toolRegistry = createToolRegistry((name, argumentsJson, context) => {
 });
 
 // RuntimeEvent 是核心与展示层之间的唯一运行时通信边界。
+// 核心循环只发出事件，不直接写终端；createUiRenderer 消费事件并决定怎么显示。
 
+/** 模型流里尚未执行的一次工具调用：id 与会话 tool 消息配对，arguments 是 JSON 字符串。 */
 type PendingToolCall = {
   id: string;
   name: string;
   arguments: string;
 };
 
+/** 提供商报告的 token 用量；缺省时为 null，不伪造数字。 */
 type Usage = {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
 };
 
+/** 一次流式模型请求结束后收集到的完整结果。 */
 type SteamChatResult = {
   content: string;
   toolCalls: PendingToolCall[];
@@ -124,6 +130,14 @@ type SteamChatResult = {
   usage: Usage | null;
 };
 
+/**
+ * 运行时事件联合类型。用 type 字段区分种类：
+ * - text_delta / model_end：模型文本增量与本轮结束原因
+ * - tool_start / tool_end：工具开始与结果
+ * - turn_start / usage：轮次标题与用量
+ * - agent_end：整次 Agent 运行结束（字段见 tools.ts 的 AgentEndEvent）
+ * - error：需要展示的错误文本
+ */
 type RuntimeEvent =
   | {
       type: "text_delta";
@@ -160,6 +174,7 @@ type RuntimeEvent =
 
 type EventHandler = (event: RuntimeEvent) => void;
 
+/** 展示层根据最近一次 agent_end / error 记录的状态，仅用于渲染，不参与决策。 */
 type UiStatus =
   | "idle"
   | "thinking"
@@ -184,11 +199,16 @@ type UiState = {
   markdown: MarkdownState;
 };
 
+// \u001b 是 ESC。这些序列只影响终端显示，不会写入会话文件。
 const ANSI_RESET = "\u001b[0m";
 const ANSI_BOLD = "\u001b[1m";
 const ANSI_CYAN = "\u001b[36m";
 const ANSI_YELLOW = "\u001b[33m";
 
+/**
+ * 把一行 Markdown 转成带少量 ANSI 的终端文本。
+ * 围栏、标题、列表只在完整行上处理，避免流式半标记被提前染色。
+ */
 function renderMarkdownLine(line: string, markdown: MarkdownState): string {
   // 流式分块可能把 Markdown 标记拆开，因此只在完整行上处理格式。
   if (line.trimStart().startsWith("```")) {
@@ -211,6 +231,7 @@ function renderMarkdownLine(line: string, markdown: MarkdownState): string {
     .replace(/`([^`]+)`/g, `${ANSI_YELLOW}$1${ANSI_RESET}`);
 }
 
+/** 把增量文本按换行切开，完整行立刻渲染，最后半行留在 pendingLine。 */
 function renderMarkdownDelta(state: UiState, text: string, write: (text: string) => void): void {
   // 缓存最后一个不完整行，避免半个标题或代码标记被提前渲染。
   state.markdown.pendingLine += text;
@@ -224,6 +245,7 @@ function renderMarkdownDelta(state: UiState, text: string, write: (text: string)
   }
 }
 
+/** 把尚未成行的尾巴也渲染出来，并清空 pendingLine。 */
 function flushMarkdown(state: UiState, write: (text: string) => void): void {
   // 模型取消、报错或结束时都要冲刷缓存，避免丢失最后一段文字。
   if (!state.markdown.pendingLine) return;
@@ -231,6 +253,12 @@ function flushMarkdown(state: UiState, write: (text: string) => void): void {
   state.markdown.pendingLine = "";
 }
 
+/**
+ * 创建展示层：把 RuntimeEvent 变成终端输出。
+ *
+ * @param write 写终端的回调；默认错误走 stderr，其余走 stdout
+ * @returns 供核心循环调用的事件处理函数
+ */
 function createUiRenderer(
   write: (text: string, isError: boolean) => void = (text, isError) =>
     (isError ? process.stderr : process.stdout).write(text),
@@ -332,10 +360,17 @@ function createUiRenderer(
   };
 }
 
-// 读取一次模型流：收集完整响应，同时把文本增量和模型结束事件立即上报。
-
 const REQUEST_TIMEOUT_MS = 30_000;
 
+/**
+ * 读取一次模型流：收集完整响应，同时把文本增量和模型结束事件立即上报。
+ *
+ * @param messages 当前会话消息（不含 Skills 系统说明；本函数按需临时拼接）
+ * @param signal 本轮取消/超时信号，传给 SDK
+ * @param onEvent 展示层回调
+ * @param sessionFile 当前会话文件名，用于读取本会话已激活的 Skills
+ * @returns 本轮的文本、工具调用、结束原因和用量
+ */
 async function streamChat(
   messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[],
   signal: AbortSignal,
@@ -350,6 +385,8 @@ async function streamChat(
     signal,
   });
 
+  // 参数 1 body: 模型、消息、工具列表、是否流式。
+  // 参数 2 options.signal: 取消或超时时中止这次 HTTP 请求。
   const stream = await client.chat.completions.create(
     {
       model,
@@ -358,6 +395,7 @@ async function streamChat(
       // 权限入口仍会拦截：模型若硬编造 apply_edit 等名字，也会得到“未获授权”。
       tools: toolRegistry
         .definitions()
+        // filter 只保留当前模式允许出现在说明书里的工具。
         .filter((tool) => mode === "execute" || planningTools.has(tool.function.name)),
       stream: true,
       // openai SDK 的 stream: true 默认不返回 usage。需要加 stream_options: { include_usage: true }
@@ -434,8 +472,7 @@ async function streamChat(
   return { content, toolCalls, finishReason, usage };
 }
 
-// 用量显示保留提供商原始结果；没有报告时不伪造数值。
-
+/** 用量显示保留提供商原始结果；没有报告时不伪造数值。 */
 function printUsage(usage: Usage | null, write: (text: string) => void): void {
   if (!usage) {
     write("用量：未报告\n");
@@ -446,10 +483,17 @@ function printUsage(usage: Usage | null, write: (text: string) => void): void {
   );
 }
 
-// Agent 核心循环：请求模型、回填工具结果，再决定结束或进入下一轮。
-
 const MAX_ROUNDS = 5;
 
+/**
+ * Agent 核心循环：请求模型、回填工具结果，再决定结束或进入下一轮。
+ *
+ * @param userInput 已经展开过模板的用户文本，会先写入会话再发给模型
+ * @param userAbort 用户 Ctrl+C 使用的控制器；每轮再与超时信号合并
+ * @param onEvent 展示层；本函数会再包一层，以便写入诊断并通知扩展
+ * @param session 当前会话
+ * @param confirmTool 需要确认的工具问用户；默认拒绝，供非交互入口使用
+ */
 async function runAgent(
   userInput: string,
   userAbort: AbortController,
@@ -576,6 +620,7 @@ async function runAgent(
         content: steamChatResult.content,
         tool_calls: steamChatResult.toolCalls.map((tc) => ({
           id: tc.id,
+          // as const 让 type 的类型是字面量 "function"，而不是普通 string。
           type: "function" as const,
           function: {
             name: tc.name,
@@ -694,11 +739,17 @@ async function runAgent(
   }
 }
 
+/**
+ * 交互主循环：读一行、处理宿主命令或扩展命令，否则把文本交给 runAgent。
+ *
+ * 启动只创建内存引用；首次提问或 /new 时才创建会话文件。
+ */
 async function main(): Promise<void> {
-  // 启动只创建内存引用；首次提问或 /new 时才创建会话文件。
   let session: Session | undefined;
 
-  // 交互入口只负责读取输入、绑定取消信号和消费运行事件。
+  // createInterface 参数：
+  // - input:  从 stdin 读用户键入。
+  // - output: 把提示符写到 stdout。
   const input = createInterface({
     input: process.stdin,
     output: process.stdout,
@@ -725,7 +776,13 @@ async function main(): Promise<void> {
     activeAbort?.abort();
   };
 
-  // 命令提问与工具确认共用 readline，回答不进入普通输入队列。
+  /**
+   * 命令提问与工具确认共用 readline，回答不进入普通输入队列。
+   *
+   * @param question 显示给用户的问句
+   * @param signal 取消时中止 input.question
+   * @returns 用户提交的一行（不含末尾换行）
+   */
   async function askInput(question: string, signal: AbortSignal): Promise<string> {
     signal.throwIfAborted();
     if (closed) throw new Error("输入已关闭，无法提问");
@@ -734,6 +791,7 @@ async function main(): Promise<void> {
     if (asking) throw new Error("已有提问正在等待回答");
     asking = true;
     try {
+      // question 参数 1 prompt: 问句；参数 2 options.signal: 取消时拒绝 Promise。
       return await input.question(`${question} `, { signal });
     } finally {
       asking = false;
@@ -754,6 +812,7 @@ async function main(): Promise<void> {
 
   const showPrompt = (): void => {
     if (!closed && process.stdin.isTTY && process.stdout.isTTY) {
+      // 参数 preserveCursor: true，重绘提示符时尽量保住正在编辑的内容。
       input.prompt(true);
     }
   };
@@ -765,8 +824,11 @@ async function main(): Promise<void> {
       return;
     }
     const { rows } = input.getCursorPos();
+    // moveCursor 参数 1 stream、参数 2 dx、参数 3 dy：相对当前光标上移 rows 行。
     moveCursor(process.stdout, 0, -rows);
+    // cursorTo 参数 1 stream、参数 2 x：移到当前行行首。
     cursorTo(process.stdout, 0);
+    // clearScreenDown：从光标清到屏幕底部，去掉旧提示符和半行输出。
     clearScreenDown(process.stdout);
     process.stdout.write(text);
     // readline 重绘时会上移原光标行数，先留出同样的行数以保留输出。
@@ -774,6 +836,7 @@ async function main(): Promise<void> {
     showPrompt();
   };
 
+  // on: 订阅 readline 事件。SIGINT 是终端 Ctrl+C，close 是输入结束。
   input.on("SIGINT", onSigint);
   input.on("close", onClose);
   input.setPrompt("> ");
@@ -791,8 +854,10 @@ async function main(): Promise<void> {
     for await (const line of input) {
       if (closed) break;
 
-      const userInput = line.trim();
-      if (userInput === "/exit") break;
+      let userInput = line.trim();
+      if (userInput === "/exit") {
+        break;
+      }
 
       if (!userInput) {
         showPrompt();
@@ -820,6 +885,7 @@ async function main(): Promise<void> {
         userInput === "/new" ||
         userInput === "/sessions" ||
         userInput === "/history" ||
+        userInput === "/prompts" ||
         userInput === "/diagnostics" ||
         userInput.startsWith("/diagnostics ") ||
         userInput.startsWith("/resume ")
@@ -832,6 +898,19 @@ async function main(): Promise<void> {
             writeOutput(listSessions().join("\n") + "\n");
           } else if (userInput === "/history") {
             writeOutput(JSON.stringify(session?.messages ?? [], null, 2) + "\n");
+          } else if (userInput === "/prompts") {
+            // 查看模板只访问目录，不创建会话、不请求模型。
+            try {
+              const files = listPrompts(process.cwd());
+              writeOutput(files.length ? files.join("\n") + "\n" : "当前项目暂无提示模板\n");
+            } catch (error) {
+              writeOutput(
+                `模板读取失败：${error instanceof Error ? error.message : String(error)}\n`,
+                true,
+              );
+            }
+            showPrompt();
+            continue;
           } else if (userInput === "/diagnostics" || userInput.startsWith("/diagnostics ")) {
             const file =
               userInput === "/diagnostics"
@@ -853,7 +932,8 @@ async function main(): Promise<void> {
       }
 
       // 宿主命令优先；扩展命令及未知斜杠命令都不发送给模型。
-      if (userInput.startsWith("/")) {
+      // /prompt 除外：它要展开成用户消息，不能在这里被当成扩展命令吃掉。
+      if (userInput.startsWith("/") && !/^\/prompt(?:\s|$)/.test(userInput)) {
         // 每条命令拥有独立的取消控制器：
         // 登记为 activeAbort 后，用户按 Ctrl+C 会取消本条命令，而不是退出程序。
         const commandAbort = new AbortController();
@@ -918,6 +998,20 @@ async function main(): Promise<void> {
         continue;
       }
 
+      // 在创建会话和保存消息前展开；失败时保留原会话，继续等待输入。
+      // 非 /prompt 行会原样返回。这里的 signal 不会被 Ctrl+C 绑上：
+      // 展开是同步读文件，失败只提示，不进入 Agent 循环。
+      try {
+        userInput = expandPrompt(userInput, process.cwd(), new AbortController().signal);
+      } catch (error) {
+        writeOutput(
+          `模板展开失败：${error instanceof Error ? error.message : String(error)}\n`,
+          true,
+        );
+        showPrompt();
+        continue;
+      }
+
       if (!session) {
         session = createSession(model);
         writeOutput(`会话：${session.file}\n`);
@@ -949,9 +1043,14 @@ async function main(): Promise<void> {
   }
 }
 
+/**
+ * 非交互入口用于脚本和调试，复用同一 Agent 循环与事件渲染器。
+ * 与交互模式一样先展开 /prompt，再打印并写入会话的是展开后的正文。
+ */
 async function runNonInteractive(userInput: string): Promise<void> {
-  // 非交互入口用于脚本和调试，复用同一 Agent 循环与事件渲染器。
+  userInput = expandPrompt(userInput, process.cwd(), new AbortController().signal);
   console.log(`用户: ${userInput}\n`);
+
   const session = createSession(model);
   // 打印当前会话文件名，便于非交互模式下追踪会话标识并在后续通过 /resume 恢复。
   console.log(`会话：${session.file}`);
@@ -961,6 +1060,7 @@ async function runNonInteractive(userInput: string): Promise<void> {
   }
 }
 
+// slice(2) 去掉 node 路径和脚本路径，剩下的参数拼成一句非交互输入。
 const nonInteractiveInput = process.argv.slice(2).join(" ").trim();
 let disposeExtension: (() => void) | undefined;
 let disposeExternal: (() => void) | undefined;
@@ -984,6 +1084,7 @@ try {
   client = new OpenAI({ apiKey: config.apiKey, baseURL: config.baseURL });
   model = config.model;
   // 有命令行文本时单次运行，否则进入 readline 交互模式。
+  // lockSessions 防止两个进程同时改同一套会话文件；返回的 unlock 必须在结束时调用。
   const unlock = lockSessions();
   try {
     if (nonInteractiveInput) {
@@ -1006,6 +1107,7 @@ try {
   // 按装载逆序逐个清理；一个扩展失败不能跳过其他扩展。
   for (const dispose of [disposeExternal, disposeExtension]) {
     try {
+      // ?. 仅在 dispose 有值时调用；装载失败时对应项可能仍是 undefined。
       dispose?.();
     } catch {
       console.error("扩展清理失败，部分资源可能尚未释放");
