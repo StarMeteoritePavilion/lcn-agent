@@ -9,7 +9,7 @@ import { loadConfig } from "./core/config.js";
 import { createDiagnostics, DiagnosticWriteError, showDiagnostics } from "./core/diagnostics.js";
 import { createSkills } from "./extensions/skills.js";
 import { expandPrompt, listPrompts } from "./core/prompts.js";
-import { compactSession, contextMessages } from "./core/compaction.js";
+import { compactIfNeeded, compactSession, contextMessages } from "./core/compaction.js";
 
 import {
   createSession,
@@ -137,7 +137,8 @@ type SteamChatResult = {
  * - tool_start / tool_end：工具开始与结果
  * - turn_start / usage：轮次标题与用量
  * - agent_end：整次 Agent 运行结束（字段见 tools.ts 的 AgentEndEvent）
- * - error：需要展示的错误文本
+ * - error：需要展示的错误文本（走 stderr，并把状态标成 error）
+ * - notice：进度或结果提示（走 stdout，不改变失败状态）
  */
 type RuntimeEvent =
   | {
@@ -170,6 +171,10 @@ type RuntimeEvent =
   | AgentEndEvent
   | {
       type: "error";
+      message: string;
+    }
+  | {
+      type: "notice";
       message: string;
     };
 
@@ -356,6 +361,10 @@ function createUiRenderer(
         state.status = "error";
         append(`\n请求失败：${event.message}\n`);
         break;
+      case "notice":
+        // 不改 status，也不当 error 写 stderr：自动压缩的进度和结果走这条通道。
+        append(`\n${event.message}\n`);
+        break;
     }
     if (output) write(output, event.type === "error");
   };
@@ -535,6 +544,45 @@ async function runAgent(
       // 本轮的模型请求与本轮所有工具调用都使用这个 signal，共享同一个 30 秒预算。
       const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
       const signal = AbortSignal.any([userAbort.signal, timeout]);
+
+      // 一次用户提问只检查一次，不在工具循环中反复请求摘要。
+      // 真正开始生成摘要时才发 notice（回调由 compactSession 调用）；未达阈值则静默。
+      if (round === 1) {
+        try {
+          const result = await compactIfNeeded(session, signal, (messages, requestSignal) => {
+            onEvent({
+              type: "notice",
+              message: "历史达到压缩阈值，正在生成摘要，可按 Ctrl+C 取消",
+            });
+            return summarizeHistory(session, messages, requestSignal);
+          });
+
+          signal.throwIfAborted();
+
+          if (result !== null) {
+            onEvent({ type: "notice", message: result });
+          }
+        } catch (error) {
+          // 自动压缩失败则整次提问停止，避免带着超长上下文继续请求。
+          // /compact 失败只提示、仍等下一行，那是用户主动命令，行为不同。
+          if (signal.aborted) {
+            onEvent({
+              type: "agent_end",
+              reason: userAbort.signal.aborted ? "cancelled" : "timeout",
+              round,
+            });
+          } else {
+            onEvent({
+              type: "error",
+              message:
+                `自动压缩失败，本次提问停止：` +
+                (error instanceof Error ? error.message : String(error)),
+            });
+            onEvent({ type: "agent_end", reason: "error", round });
+          }
+          return;
+        }
+      }
 
       const operation = diagnostics.start("model", model, round);
       let steamChatResult: SteamChatResult;

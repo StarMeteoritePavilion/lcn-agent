@@ -209,3 +209,35 @@ export async function compactSession(
   writeState(stateContext(session, signal), "compactions", next);
   return `压缩已保存：请求消息 JSON 从 ${beforeBytes} 降至 ${afterBytes} 字节；原始历史保留`;
 }
+
+/**
+ * 达到消息 JSON 字节阈值时，复用已有压缩流程。
+ *
+ * 量的是 contextMessages 的 JSON 字节数（发给模型的视图），不是磁盘上的全文。
+ * 未达阈值返回 null，调用方就不必提示用户；达阈值则交给 compactSession，
+ * 后者仍可能返回“暂无可进一步压缩”，或在失败时抛错且不改旧状态。
+ *
+ * @param thresholdBytes 默认 64 KiB，必须是正的安全整数
+ * @returns 压缩结果说明；未达阈值时为 null
+ */
+export async function compactIfNeeded(
+  session: Session,
+  signal: AbortSignal,
+  summarize: Summarize,
+  thresholdBytes = 64 * 1024,
+): Promise<string | null> {
+  signal.throwIfAborted();
+
+  // Number.isSafeInteger：能被 JS number 精确表示的整数（不含 Infinity / 小数）。
+  if (!Number.isSafeInteger(thresholdBytes) || thresholdBytes <= 0) {
+    throw new Error("压缩阈值必须是正的安全整数");
+  }
+
+  const bytes = Buffer.byteLength(JSON.stringify(contextMessages(session, signal)), "utf8");
+
+  if (bytes < thresholdBytes) return null;
+
+  // ponytail: 按历史视图的 JSON 字节数触发，不估算提供商 token；
+  // 需要模型窗口预算时，再接入经核验的容量和计数方式。
+  return compactSession(session, signal, summarize);
+}
