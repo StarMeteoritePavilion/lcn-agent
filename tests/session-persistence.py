@@ -120,6 +120,19 @@ class Handler(BaseHTTPRequestHandler):
                                    'function':{'name':name,'arguments':json.dumps(args)}}
                                   for i,(name,args) in enumerate(calls)]}
             reason = 'tool_calls'
+        elif last['role'] == 'user' and last['content'].startswith('综合验收：'):
+            action = last['content'].split('：', 1)[1]
+            cases = {
+                '计划': ('plan_set', {'goal':'验证文件修改','steps':['检查原文','修改内容','运行断言']}),
+                '预览': ('preview_edit', {'path':'acceptance.txt','oldText':'before','newText':'after'}),
+                '保存': ('apply_edit', {'path':'acceptance.txt','before':'before\n','after':'after\n'}),
+                '验证': ('run_command', {'executable':shutil.which('node'),'args':['-e',
+                    "const fs=require('node:fs');require('node:assert/strict').equal(fs.readFileSync('acceptance.txt','utf8'),'after\\n');fs.appendFileSync('acceptance-runs','1');console.log('文件内容验证通过')"]}),
+            }
+            name, arguments = cases[action]
+            delta = {'tool_calls':[{'index':0,'id':'acceptance_'+action,'type':'function',
+                                   'function':{'name':name,'arguments':json.dumps(arguments)}}]}
+            reason = 'tool_calls'
         elif last['role'] == 'user' and last['content'] == '权限拒绝验证':
             delta = {'tool_calls': [{'index': 0, 'id': 'denied_1', 'type': 'function',
                                     'function': {'name': 'denied_probe', 'arguments': '{}'}}]}
@@ -1921,6 +1934,74 @@ export default function(api) {
         send(child,'/exit'); assert child.wait(timeout=5)==0
         assert requests.empty()
         print('通过：规划模式工具过滤、强制写入拦截、外部扩展与直接命令限制、只读审批、文件不变、切换及重启边界')
+
+        # 阶段 6 综合流程：同一会话保存计划、修改文件、断言成功后完成待办，再重启恢复。
+        artifact = project / 'acceptance.txt'; artifact.write_bytes(b'before\n')
+        executions = project / 'acceptance-runs'
+        master, slave = pty.openpty()
+        child = subprocess.Popen(['node', 'dist/index.js'], cwd=project, env=test_env,
+                                 stdin=slave, stdout=slave, stderr=slave)
+        children.append(child); os.close(slave)
+        try:
+            command_expect('生成中 Ctrl+C')
+            before = set((project / '.lcn-agent/sessions').glob('*.jsonl'))
+            os.write(master,b'/new\n'); command_expect('会话：')
+            acceptance_session, = set((project / '.lcn-agent/sessions').glob('*.jsonl')) - before
+            acceptance_plan = project / '.lcn-agent/plans' / (acceptance_session.name+'.json')
+            acceptance_todo = project / '.lcn-agent/todos' / (acceptance_session.name+'.json')
+            def acceptance_call(action):
+                os.write(master,('综合验收：'+action+'\n').encode())
+                prompt = command_expect('[y/N]')
+                os.write(master,b'y\n'); command_expect('完成，共 2 轮')
+                requests.get(timeout=5); history = requests.get(timeout=5)
+                assert history[-1]['tool_call_id']=='acceptance_'+action
+                return prompt, history[-1]['content']
+            acceptance_call('计划')
+            os.write(master,'/todo_add 修改文件并通过断言\n'.encode()); command_expect('已添加 #1')
+            plan_bytes=acceptance_plan.read_bytes(); todo_bytes=acceptance_todo.read_bytes()
+            os.write(master,b'/mode plan\n'); command_expect('当前模式：plan')
+            _, result=acceptance_call('预览')
+            assert json.loads(result)=={'path':'acceptance.txt','before':'before\n','after':'after\n'}
+            assert artifact.read_bytes()==b'before\n'
+            assert acceptance_plan.read_bytes()==plan_bytes and acceptance_todo.read_bytes()==todo_bytes
+            os.write(master,b'/mode execute\n'); command_expect('当前模式：execute')
+            # 尚未修改时先运行同一断言：非零退出，待办保持未完成。
+            _, result=acceptance_call('验证'); assert json.loads(result)['exitCode']!=0
+            assert not executions.exists() and acceptance_todo.read_bytes()==todo_bytes
+            prompt,result=acceptance_call('保存')
+            assert b'"before"' in prompt and b'"after"' in prompt
+            assert json.loads(result)=={'path':'acceptance.txt','applied':True}
+            assert artifact.read_bytes()==b'after\n'
+            _,result=acceptance_call('验证')
+            assert json.loads(result)=={'exitCode':0,'stdout':'文件内容验证通过\n','stderr':''}
+            assert executions.read_text()=='1'
+            os.write(master,b'/todo_done 1\n'); command_expect('已完成 #1')
+            assert json.loads(acceptance_todo.read_text())['items'][0]['done'] is True
+            os.write(master,b'/plan\n'); command_expect('3. 运行断言')
+            os.write(master,b'/todo_list\n'); command_expect('[x] #1 修改文件并通过断言')
+            os.write(master,b'/exit\n'); command_expect('终端程序已退出'); assert child.wait(timeout=5)==0
+        finally:
+            os.close(master)
+        # 保存前后的磁盘证据在新进程恢复后必须完全一致，命令不能自动重放。
+        snapshots={path:path.read_bytes() for path in [acceptance_session,acceptance_plan,acceptance_todo,artifact,executions]}
+        diagnostics=list((project/'.lcn-agent/diagnostics'/acceptance_session.name).glob('*.jsonl'))
+        assert diagnostics
+        records=[json.loads(line) for path in diagnostics for line in path.read_text().splitlines()]
+        assert any(record.get('kind')=='tool' and record.get('name')=='run_command' for record in records)
+        messages=[json.loads(line)['message'] for line in acceptance_session.read_text().splitlines()[1:]]
+        results=[json.loads(message['content']) for message in messages
+                 if message.get('role')=='tool' and message.get('tool_call_id')=='acceptance_验证']
+        assert [result['exitCode']==0 for result in results]==[False,True]
+        child,lines=launch(); expect(lines,'生成中 Ctrl+C')
+        send(child,'/resume '+acceptance_session.name); expect(lines,'已恢复：')
+        send(child,'/plan'); expect(lines,'3. 运行断言')
+        send(child,'/todo_list'); expect(lines,'[x] #1 修改文件并通过断言')
+        send(child,'/history'); expect(lines,'文件内容验证通过')
+        send(child,'/diagnostics'); expect(lines,'运行结束：completed')
+        send(child,'/exit'); assert child.wait(timeout=5)==0
+        assert all(path.read_bytes()==data for path,data in snapshots.items())
+        assert requests.empty()
+        print('通过：阶段 6 同会话计划→预览→失败断言→保存→成功断言→待办完成，以及重启后状态一致、历史证据与无副作用重放')
 
         # 空编辑行 Ctrl+D 关闭终端输入，等待中的提问必须退出。
         master, slave = pty.openpty()
