@@ -24,6 +24,7 @@
 
 ### Node.js 运行时
 - [13 readline.on/off 信号监听与 SIGINT 处理](#2026-09-20-13-readlineonoff-信号监听与-sigint-处理)
+- [19 路径边界检查 checkInside](#2026-09-27-19-路径边界检查-checkinside)
 
 ### Agent 与会话
 - [15 运行诊断与中断状态](#2026-09-25-15-运行诊断与中断状态)
@@ -1179,3 +1180,58 @@ saveItems(context, next);
 - "直接修改它的属性即可"：实际用的是 `map` + `{ ...entry, done: true }` 生成新对象，没有修改原对象。
 
 **总结：** `[...items, item]` 用 spread 语法创建"原数组元素 + 新元素"的新数组，不修改 `items`。它是浅拷贝，元素对象仍然共享；要改元素需再用对象展开生成新对象。
+
+---
+
+## 2026-09-27-19 路径边界检查 checkInside
+
+**问题：** `function checkInside(root, target)` 里用 `relative`、`isAbsolute`、`path === ".."`、`path.startsWith(\`..\${sep}\`)` 是什么写法？
+
+**答案：**
+
+这是**路径边界检查**，不是文件系统沙箱：判断 `target` 是否落在 `root` 工作区里面。不在里面就抛错，防止 `../` 路径穿越读到工作区外。返回 `void`：通过什么都不返回，失败抛异常。
+
+### 拆解
+
+```ts
+function checkInside(root: string, target: string): void {
+  const path = relative(root, target);
+  if (isAbsolute(path) || path === ".." || path.startsWith(`..${sep}`)) {
+    throw new Error("只能读取当前工作区内的文件");
+  }
+}
+```
+
+| 部分 | 作用 |
+|------|------|
+| `relative(root, target)` | 算出从 `root` 走到 `target` 的相对路径 |
+| `isAbsolute(path)` | 相对路径居然是绝对的 → Windows 跨盘 |
+| `path === ".."` | 刚好是上一级目录 |
+| `path.startsWith(\`..\${sep}\`)` | 第一段是 `..`，后面还有内容 |
+| `sep` | Unix 为 `/`，Windows 为 `\` |
+
+`relative` 的结果：
+
+```ts
+relative("/proj", "/proj/src/a.ts")  // "src/a.ts"        ✅ 里面
+relative("/proj", "/proj")           // ""                ✅ root 自己
+relative("/proj", "/etc/passwd")     // 以 ".." 开头       ❌ 外面
+relative("C:\\proj", "D:\\x")        // "D:\\x" 绝对路径   ❌ 跨盘
+```
+
+### 必须按路径段判断，不能用字符串前缀
+
+```ts
+target.startsWith(root)   // ❌ "/proj-secret" 也能骗过 "/proj"
+path.startsWith("..")     // ❌ 误杀合法文件名 "..foo"
+```
+
+正确拆成两段：`path === ".."`（恰好上一级）或 `path.startsWith(".." + sep)`（`../etc`）。`..foo` 两个都不满足，放行。
+
+`` `..${sep}` `` 是模板字符串，等价于 `".." + sep`，保证匹配的是路径段 `..` 而不是文件名碰巧以两点开头。
+
+### 类比 Java
+
+Java 的 `Path.startsWith` 按路径段比较，不是字符串前缀。这段 TS 是在没有该 API 时，用 `relative` 的结果手写同等检查。函数假定传入的是已 `resolve` 的绝对路径；防 symlink 逃逸通常还要在外面配合 `realpathSync`。
+
+**总结：** `relative` 算出从工作区走到目标的路；这条路如果是绝对路径、或第一段是 `..`，就说明目标在工作区外，拒绝读取。必须按路径段判断，不能用字符串 `startsWith`。

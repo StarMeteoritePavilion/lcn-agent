@@ -22,18 +22,27 @@ import {
 let client: OpenAI;
 let model: string;
 
-// 自动允许的可信学习工具名单；delay_echo 和待办写入工具逐次确认，其他名称默认拒绝。
+// 自动允许的可信学习工具名单；不在名单里的名称默认拒绝。
+// delay_echo、todo_add / todo_done、read_file 不自动允许，由下方策略逐次确认。
 // 仅用于当前可信学习扩展；名称名单不能证明外部实现没有副作用。
 // （名单只检查名字：若外部扩展注册了一个同名工具，它同样会被放行，
 //   因此名单不能替代对扩展代码本身的审查。）
-// 名单里只有只读或无副作用的工具：todo_list 只读取待办；todo_add、todo_done 不在自动允许名单中，由下方策略逐次确认。
+// 自动允许的都是只读或无副作用：echo / upper 只变换文本，todo_list 只读取待办。
 const allowedTools = new Set(["echo", "upper", "todo_list"]);
 
 // 注册表由入口持有；扩展在启动时登记，Agent 循环统一查找和执行。
 // 宿主控制自动允许与逐次确认，扩展注册本身不代表获得授权。
+// 策略分三路：名单内自动允许；指定名称交给用户确认；其余一律拒绝。
 const toolRegistry = createToolRegistry((name, argumentsJson, context) => {
   if (allowedTools.has(name)) return true;
-  if (name === "delay_echo" || name === "todo_add" || name === "todo_done") {
+  if (
+    name === "delay_echo" ||
+    name === "todo_add" ||
+    name === "todo_done" ||
+    name === "read_file"
+  ) {
+    // argumentsJson 是宿主冻结的参数快照，确认时展示的就是即将执行的内容。
+    // 把 signal 传给 confirm，用户在确认期间按 Ctrl+C 或超时时，提问会中止。
     return context.confirm(name, argumentsJson, context.callId, context.signal);
   }
   return false;
@@ -352,6 +361,7 @@ async function runAgent(
   userAbort: AbortController,
   onEvent: EventHandler,
   session: Session,
+  // 默认拒绝：runNonInteractive 不传入时，需要确认的工具不会被执行。
   confirmTool: ConfirmTool = async () => false,
 ): Promise<void> {
   saveMessage(session, { role: "user", content: userInput });
@@ -513,6 +523,7 @@ async function runAgent(
               sessionFile: session.file,
               callId: tc.id,
               signal,
+              // 宿主的确认回调；权限策略通过 context.confirm 向用户提问。
               confirm: confirmTool,
             }),
           );
@@ -624,7 +635,8 @@ async function main(): Promise<void> {
   async function askInput(question: string, signal: AbortSignal): Promise<string> {
     signal.throwIfAborted();
     if (closed) throw new Error("输入已关闭，无法提问");
-    if (!process.stdin.isTTY || !process.stdout.isTTY) throw new Error("交互提问需要终端输入和输出");
+    if (!process.stdin.isTTY || !process.stdout.isTTY)
+      throw new Error("交互提问需要终端输入和输出");
     if (asking) throw new Error("已有提问正在等待回答");
     asking = true;
     try {
@@ -636,6 +648,8 @@ async function main(): Promise<void> {
 
   const confirmTool: ConfirmTool = async (name, argumentsJson, callId, signal) => {
     // 非终端默认拒绝；只有对本次问题输入小写 y 才允许。
+    // JSON.stringify 让名称、调用 ID 里的空格或引号原样可见，避免和提示文本粘在一起。
+    // 不接受 Y / yes：必须精确等于 trim 后的 "y"，其余一律视为拒绝。
     if (!process.stdin.isTTY || !process.stdout.isTTY) return false;
     const answer = await askInput(
       `允许工具 ${JSON.stringify(name)}，调用 ${JSON.stringify(callId)}，参数 ${argumentsJson}？[y/N]`,
@@ -836,7 +850,8 @@ let disposeExtension: (() => void) | undefined;
 let disposeExternal: (() => void) | undefined;
 
 try {
-  // 默认能力共用装载与清理：初始化失败统一回滚，无需环境变量即可提问和管理待办。
+  // 默认能力共用装载与清理：初始化失败统一回滚。
+  // 无需环境变量即可使用 echo、提问/待办（workflow）和受限读文件。
   disposeExtension = mountExtension(toolRegistry, (api) => {
     registerEcho(api);
     registerWorkflow(api);
