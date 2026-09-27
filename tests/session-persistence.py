@@ -75,6 +75,10 @@ class Handler(BaseHTTPRequestHandler):
             delta = {'tool_calls': [{'index': 0, 'id': 'read_1', 'type': 'function',
                                     'function': {'name': 'read_file', 'arguments': '{"path":"read-fixture.txt"}'}}]}
             reason = 'tool_calls'
+        elif last['role'] == 'user' and last['content'] == '搜索文件验证':
+            delta = {'tool_calls': [{'index': 0, 'id': 'search_1', 'type': 'function',
+                                    'function': {'name': 'search_file', 'arguments': '{"path":"read-fixture.txt","query":"验收"}'}}]}
+            reason = 'tool_calls'
         elif last['role'] == 'user' and last['content'] == '权限拒绝验证':
             delta = {'tool_calls': [{'index': 0, 'id': 'denied_1', 'type': 'function',
                                     'function': {'name': 'denied_probe', 'arguments': '{}'}}]}
@@ -487,6 +491,23 @@ try {
  // 拒绝必须先于文件访问，否则不存在的路径会返回 ENOENT。
  const denied=createToolRegistry(()=>false);const stop=mountExtension(denied,files);
  await assert.rejects(denied.execute("read_file",{path:"missing"},ctx),/未获授权/);stop();
+ writeFileSync(join(cwd,"search"),"a.b\r\nA.B\n空 格\na.b a.b\n");
+ const search=async(query,path="search")=>JSON.parse(await r.execute("search_file",{path,query},ctx));
+ assert.deepEqual(await search("a.b"),{matches:[{line:1,text:"a.b"},{line:4,text:"a.b a.b"}],truncated:false});
+ assert.deepEqual(await search("不存在"),{matches:[],truncated:false});
+ assert.deepEqual(await search(" "),{matches:[{line:3,text:"空 格"},{line:4,text:"a.b a.b"}],truncated:false});
+ assert.deepEqual(await search("a","empty"),{matches:[],truncated:false});
+ for(const count of [50,51]) {
+  writeFileSync(join(cwd,"many"),Array(count).fill("匹配").join("\n"));
+  const result=await search("匹配","many");assert.equal(result.matches.length,50);
+  assert.equal(result.matches[49].line,50);assert.equal(result.truncated,count===51);
+ }
+ for(const path of ["escape","../outside","directory","large","invalid"]) await assert.rejects(search("a",path));
+ for(const args of [null,[],{}, {path:"search",query:""},{path:"search",query:"a\nb"},{path:"search",query:"\r"},{path:"search",query:1},{path:"search",query:"a",extra:1}]) await assert.rejects(r.execute("search_file",args,ctx),/参数/);
+ await assert.rejects(r.execute("search_file",{path:"search",query:"a"},{...ctx,signal:abort.signal}),{name:"AbortError"});
+ const no=createToolRegistry(()=>false);const off=mountExtension(no,files);
+ await assert.rejects(no.execute("search_file",{path:"missing",query:"a"},ctx),/未获授权/);off();
+ console.log("通过：单文件搜索行号、大小写、字面匹配、空格、空结果、50/51 行截断、参数、读取边界与取消");
  assert.equal(readFileSync(join(cwd,"文本.txt"),"utf8"),"中文内容");
  console.log("通过：文件读取大小边界、空文件、UTF-8、路径越界、符号链接、参数、取消和权限拒绝");
 } finally {close();rmSync(base,{recursive:true,force:true});}
@@ -507,7 +528,7 @@ r.onAgentEnd=listener=>subscribe(event=>{notifications++;listener(event)});
 const commands=["context","runs","upper","wait","ask","todo_add","todo_list","todo_done"];
 for(let i=0;i<3;i++) {
  const close=await loadExtension(r,"dist/extensions/workflow.js");
- assert.deepEqual(r.definitions().map(t=>t.function.name),["upper","todo_list","todo_add","todo_done","read_file"]);
+ assert.deepEqual(r.definitions().map(t=>t.function.name),["upper","todo_list","todo_add","todo_done","read_file","search_file"]);
  assert.equal(await r.executeCommand("ask","",context),"回答：组合回答");
  assert.equal(await r.executeCommand("upper","hello",context),"HELLO");
  await assert.rejects(r.executeCommand("todo_list","",context),/先 \/new/);
@@ -868,7 +889,7 @@ console.log("通过：保存恢复、损坏定位、原文件保护、工具配�
         expect(lines, '生成中 Ctrl+C')
         assert len(ask(child, lines, '第一问')) == 1
         definitions = tool_definitions.get(timeout=5)
-        assert [tool['function']['name'] for tool in definitions] == ['echo', 'upper', 'todo_list', 'todo_add', 'todo_done', 'read_file']
+        assert [tool['function']['name'] for tool in definitions] == ['echo', 'upper', 'todo_list', 'todo_add', 'todo_done', 'read_file', 'search_file']
         assert definitions[0]['function']['parameters']['required'] == ['text']
         history = ask(child, lines, '第二问')
         assert [m['role'] for m in history] == ['user', 'assistant', 'user']
@@ -1019,7 +1040,7 @@ console.log("通过：保存恢复、损坏定位、原文件保护、工具配�
             assert first[-1]['content'] == '外部工具验证'
             history = requests.get(timeout=5)
             assert history[-1] == {'role': 'tool', 'tool_call_id': 'upper_1', 'content': 'HELLO'}
-            assert [t['function']['name'] for t in tool_definitions.get(timeout=5)] == ['echo', 'upper', 'todo_list', 'todo_add', 'todo_done', 'read_file', 'delay_echo']
+            assert [t['function']['name'] for t in tool_definitions.get(timeout=5)] == ['echo', 'upper', 'todo_list', 'todo_add', 'todo_done', 'read_file', 'search_file', 'delay_echo']
             assert requests.empty()
             missing = Path(external) / '不存在.mjs'
             result = subprocess.run(['node', 'dist/index.js', '不应请求模型'], cwd=project,
@@ -1255,6 +1276,15 @@ export default function(api) {
                 requests.get(timeout=5); history = requests.get(timeout=5)
                 expected = '文件读取验收内容' if answer == 'y' else '执行失败：工具未获授权: read_file'
                 assert history[-1] == {'role':'tool','tool_call_id':'read_1','content':expected}
+            for answer in ['n', 'y']:
+                os.write(master, '搜索文件验证\n'.encode()); command_expect('[y/N]')
+                os.write(master, (answer + '\n').encode()); command_expect('完成，共 2 轮')
+                requests.get(timeout=5); history = requests.get(timeout=5)
+                assert history[-1]['tool_call_id'] == 'search_1'
+                if answer == 'y':
+                    assert json.loads(history[-1]['content']) == {'matches':[{'line':1,'text':'文件读取验收内容'}],'truncated':False}
+                else:
+                    assert history[-1]['content'] == '执行失败：工具未获授权: search_file'
             os.write(master, '读取文件验证\n'.encode()); command_expect('[y/N]')
             os.write(master, b'\x03'); command_expect('请求已取消')
             requests.get(timeout=5); assert requests.empty()
@@ -1267,6 +1297,13 @@ export default function(api) {
         assert result.returncode == 0 and '工具未获授权: read_file' in result.stdout
         requests.get(timeout=5); history = requests.get(timeout=5)
         assert history[-1]['content'] == '执行失败：工具未获授权: read_file'
+        assert requests.empty()
+        result = subprocess.run(['node', 'dist/index.js', '搜索文件验证'], cwd=project, env=test_env,
+                                capture_output=True, text=True, timeout=5)
+        assert result.returncode == 0 and '工具未获授权: search_file' in result.stdout
+        requests.get(timeout=5); history = requests.get(timeout=5)
+        assert history[-1]['tool_call_id'] == 'search_1'
+        assert history[-1]['content'] == '执行失败：工具未获授权: search_file'
         assert requests.empty()
         print('通过：默认文件工具的终端允许/拒绝、取消、结果配对及非交互拒绝')
 
@@ -1325,7 +1362,7 @@ export default function(api) {
         history = requests.get(timeout=5)
         assert history[-1] == {'role':'tool', 'tool_call_id':'todo_read_1',
                                'content':'[x] #1 阅读会话模块\n[ ] #2 吃饭'}
-        assert [tool['function']['name'] for tool in tool_definitions.get(timeout=5)] == ['echo', 'upper', 'todo_list', 'todo_add', 'todo_done', 'read_file']
+        assert [tool['function']['name'] for tool in tool_definitions.get(timeout=5)] == ['echo', 'upper', 'todo_list', 'todo_add', 'todo_done', 'read_file', 'search_file']
         assert todo_path.read_bytes() == original_todo
         assert requests.empty()
         print('通过：模型发现待办工具、列表正确回填且待办文件字节不变')

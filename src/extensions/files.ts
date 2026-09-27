@@ -30,6 +30,46 @@ function checkInside(root: string, target: string): void {
 }
 
 /**
+ * 按行搜索区分大小写的字面文本，最多返回 50 个匹配行；复用读取边界。
+ *
+ * 先走 readWorkspaceFile，因此路径沙箱、64 KiB 上限、UTF-8 校验与取消检查都相同。
+ * 搜索是 String.includes 字面匹配，不是正则：query 里的 `.` 只匹配点，不匹配任意字符。
+ *
+ * @param path 相对工作区的文件路径，原样交给 readWorkspaceFile
+ * @param query 要查找的非空、不含换行的字面文本；空格有含义，不做 trim
+ * @param context 本次工具调用的上下文，循环中继续响应 signal
+ * @returns JSON 字符串：`{ matches: [{ line, text }], truncated }`
+ *          line 从 1 起算；truncated 为 true 表示还有更多匹配未返回
+ * @throws {Error} 与 readWorkspaceFile 相同的读失败，或搜索过程中被取消
+ */
+function searchWorkspaceFile(path: string, query: string, context: ToolContext): string {
+  // `\r?\n` 同时切开 Unix 的 `\n` 和 Windows 的 `\r\n`，避免 `\r` 留在行尾干扰匹配。
+  const lines = readWorkspaceFile(path, context).split(/\r?\n/);
+  const matches: Array<{ line: number; text: string }> = [];
+  let truncated = false;
+
+  for (let index = 0; index < lines.length; index++) {
+    // 大文件按行扫描可能较慢，每行检查一次取消。
+    context.signal.throwIfAborted();
+    const line = lines[index];
+    if (!line.includes(query)) {
+      continue;
+    }
+
+    // 发现第 51 个匹配行才标记截断，避免恰好 50 行时误报。
+    if (matches.length === 50) {
+      truncated = true;
+      break;
+    }
+    // index 从 0 起，展示给模型的行号从 1 起，与常见编辑器一致。
+    matches.push({ line: index + 1, text: line });
+  }
+
+  // 原文件已限制为 64 KiB；JSON 输出可明确区分换行、制表符等字符。
+  return JSON.stringify({ matches, truncated });
+}
+
+/**
  * 有界读取普通文件，严格解码 UTF-8；任何情况下都关闭文件描述符。
  *
  * 顺序：拒绝绝对路径 → 规范化工作区 → 解析前检查 `..` →
@@ -113,10 +153,10 @@ function readWorkspaceFile(path: string, context: ToolContext): string {
 }
 
 /**
- * 受限读文件扩展：注册工具 read_file，只读当前工作区内不超过 64 KiB 的 UTF-8 普通文件。
+ * 受限文件扩展：read_file 读取文本，search_file 按行搜索；共用 64 KiB 及路径限制。
  *
  * 本扩展提供路径边界检查和有界读取，不是文件系统沙箱；是否执行由宿主权限入口决定
- * （index.ts 里 read_file 走逐次确认，不在自动允许名单中）。
+ * （index.ts 里 read_file 和 search_file 走逐次确认，不在自动允许名单中）。
  *
  * 使用默认导出供组合入口复用，当前由 workflow.ts 默认装载；不要重复配置外部加载。
  *
@@ -159,6 +199,50 @@ export default function registerFiles({ registerTool }: ExtensionAPI): void {
 
       // 只用 trim 判断空白，不修改真实文件名。
       return readWorkspaceFile(args.path, context);
+    },
+  });
+
+  registerTool({
+    definition: {
+      type: "function",
+      function: {
+        name: "search_file",
+        description:
+          "经用户确认，在工作区内不超过 64 KiB 的 UTF-8 文件中搜索字面文本，区分大小写，最多返回 50 个匹配行",
+        parameters: {
+          type: "object",
+          properties: {
+            path: { type: "string", description: "工作区相对文件路径" },
+            query: { type: "string", description: "要查找的字面文本，不支持跨行搜索" },
+          },
+          required: ["path", "query"],
+          additionalProperties: false,
+        },
+      },
+    },
+    execute(args, context) {
+      // 参数来自模型，必须先校验（原因见 core/tools.ts 的 Tool.execute）。
+      // 只允许恰好两个字段：path 与 query。多出来的键一律拒绝。
+      // query 用 length === 0 判断空串，而不是 trim：空格本身可以是要搜的内容。
+      // 含 `\r` / `\n` 的 query 无法按行匹配，也禁止拿来做跨行搜索。
+      if (
+        typeof args !== "object" ||
+        args === null ||
+        Array.isArray(args) ||
+        Object.keys(args).length !== 2 ||
+        !("path" in args) ||
+        typeof args.path !== "string" ||
+        !args.path.trim() ||
+        !("query" in args) ||
+        typeof args.query !== "string" ||
+        args.query.length === 0 ||
+        /[\r\n]/.test(args.query)
+      ) {
+        throw new Error("search_file 参数须仅包含有效 path 和非空、无换行的 query");
+      }
+
+      // 查询中的空格有实际含义，不使用 trim 修改查询内容。
+      return searchWorkspaceFile(args.path, args.query, context);
     },
   });
 }
