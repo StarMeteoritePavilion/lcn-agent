@@ -295,6 +295,7 @@ export function createToolRegistry(permit: ToolPermission = () => false): ToolRe
   // 宿主保留命令集合：这些命令名由宿主（index.ts）直接处理，扩展不可覆盖。
   // 含 /mode：规划/执行模式只能由用户切换，扩展不能注册同名命令来抢入口。
   // 含 /prompts、/prompt：列模板和展开模板由宿主处理，展开结果当作用户消息送给模型。
+  // 含 /compact：压缩会话请求视图由宿主处理，扩展不能注册同名命令。
   const reserved = new Set([
     "exit",
     "new",
@@ -305,6 +306,7 @@ export function createToolRegistry(permit: ToolPermission = () => false): ToolRe
     "mode",
     "prompts",
     "prompt",
+    "compact",
   ]);
 
   // 运行结束事件的订阅者集合。Set 会保持插入顺序，因此通知顺序即订阅顺序。
