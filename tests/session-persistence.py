@@ -102,6 +102,11 @@ class Handler(BaseHTTPRequestHandler):
             delta = {'tool_calls': [{'index': 0, 'id': 'command_1', 'type': 'function',
                                     'function': {'name': 'run_command', 'arguments': arguments}}]}
             reason = 'tool_calls'
+        elif last['role'] == 'user' and last['content'] == '计划保存验证':
+            arguments = json.dumps({'goal':'测试计划','steps':['测试步骤']})
+            delta = {'tool_calls': [{'index': 0, 'id': 'plan_1', 'type': 'function',
+                                    'function': {'name': 'plan_set', 'arguments': arguments}}]}
+            reason = 'tool_calls'
         elif last['role'] == 'user' and last['content'] == '权限拒绝验证':
             delta = {'tool_calls': [{'index': 0, 'id': 'denied_1', 'type': 'function',
                                     'function': {'name': 'denied_probe', 'arguments': '{}'}}]}
@@ -766,6 +771,72 @@ try {
         subprocess.run(['node', '--input-type=module', '-e', command_verification],
                        cwd=project, env=test_env, check=True, timeout=25)
 
+        plan_verification = r"""
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import {join} from "node:path";
+import {tmpdir} from "node:os";
+import {syncBuiltinESMExports} from "node:module";
+import {createToolRegistry,mountExtension} from "./dist/core/tools.js";
+import plan from "./dist/extensions/plan.js";
+const cwd=fs.mkdtempSync(join(tmpdir(),"lcn-plan-"));
+const ctx={cwd,sessionFile:"a.jsonl",signal:new AbortController().signal};
+const r=createToolRegistry(()=>true);let close=mountExtension(r,plan);
+const value={goal:"目标",steps:["步骤一","步骤二"]};
+const set=(args=value,context=ctx,registry=r)=>registry.execute("plan_set",args,context);
+const show=(context=ctx)=>r.execute("plan_show",{},context);
+const file=join(cwd,".lcn-agent/plans/a.jsonl.json");
+try {
+ await assert.rejects(show({...ctx,sessionFile:null}),/先 \/new/);
+ await assert.rejects(set(value,{...ctx,sessionFile:null}),/先 \/new/);
+ assert(!fs.existsSync(join(cwd,".lcn-agent")));
+ assert.equal(await show(),"当前会话暂无计划");assert(!fs.existsSync(file));
+ await set();const saved=fs.readFileSync(file);
+ assert.equal(await r.executeCommand("plan","",ctx),await show());
+ for(const args of [null,[],{}, {goal:"",steps:["一步"]},{goal:" ",steps:["一步"]},
+  {goal:"x".repeat(1001),steps:["一步"]},{goal:"目标",steps:[]},{goal:"目标",steps:Array(21).fill("一步")},
+  {goal:"目标",steps:[1]},{goal:"目标",steps:[""]},{goal:"目标",steps:[" \n"]},
+  {goal:"目标",steps:["x".repeat(1001)]},{...value,extra:true},{...value,sessionFile:"b.jsonl"}]) {
+  await assert.rejects(set(args));assert.deepEqual(fs.readFileSync(file),saved);
+ }
+ for(const args of [null,[],{sessionFile:"b.jsonl"}]) await assert.rejects(r.execute("plan_show",args,ctx),/Schema/);
+ const denied=createToolRegistry(()=>false);const stop=mountExtension(denied,plan);
+ await assert.rejects(set(value,ctx,denied),/未获授权/);stop();assert.deepEqual(fs.readFileSync(file),saved);
+ const abort=new AbortController();abort.abort();await assert.rejects(set(value,{...ctx,signal:abort.signal}),{name:"AbortError"});
+ const during=new AbortController();const cancel=createToolRegistry(()=>{during.abort();return true;});const stopCancel=mountExtension(cancel,plan);
+ await assert.rejects(set(value,{...ctx,signal:during.signal},cancel),{name:"AbortError"});stopCancel();
+ assert.deepEqual(fs.readFileSync(file),saved);
+ // 非法 JSON、UTF-8、版本及业务字段均不能被新计划覆盖。
+ for(const broken of [Buffer.from('{'),Buffer.from([255]),...[
+  null,[],{version:2,plan:value},{version:1,plan:value,extra:true},
+  {version:1,plan:{goal:" ",steps:["一步"]}},{version:1,plan:{goal:"目标",steps:[]}},
+ ].map(data=>Buffer.from(JSON.stringify(data)))]) {
+  fs.writeFileSync(file,broken);
+  await assert.rejects(show());await assert.rejects(set());assert.deepEqual(fs.readFileSync(file),broken);
+ }
+ fs.writeFileSync(file,saved);
+ // 模拟最终替换失败：保留旧数据，清除临时文件，恢复后可以继续保存。
+ const rename=fs.renameSync;const names=fs.readdirSync(join(cwd,".lcn-agent/plans")).sort();
+ fs.renameSync=()=>{throw Error("模拟计划保存失败");};syncBuiltinESMExports();
+ try {await assert.rejects(set({goal:"新目标",steps:["新步骤"]}),/模拟计划保存失败/);}
+ finally {fs.renameSync=rename;syncBuiltinESMExports();}
+ assert.deepEqual(fs.readFileSync(file),saved);
+ assert.deepEqual(fs.readdirSync(join(cwd,".lcn-agent/plans")).sort(),names);
+ await set({goal:" 新目标 ",steps:[" 新步骤 "]});
+ assert.equal(await show(),"目标： 新目标 \n1.  新步骤 ");
+ const other={...ctx,sessionFile:"b.jsonl"};assert.equal(await show(other),"当前会话暂无计划");
+ await set(value,other);assert.equal(await show(),"目标： 新目标 \n1.  新步骤 ");
+ close();close();await assert.rejects(show(),/未知工具/);close=mountExtension(r,plan);
+ assert.equal(await show(),"目标： 新目标 \n1.  新步骤 ");
+ // 合法边界不应被误拒绝。
+ await set({goal:"x".repeat(1000),steps:Array(20).fill("x".repeat(1000))});
+ assert.equal(JSON.parse(fs.readFileSync(file,"utf8")).plan.steps.length,20);
+ console.log("通过：计划非法参数、无会话、拒绝、审批取消、损坏与未知版本保护、保存失败清理、异常后恢复、隔离与重装");
+} finally {close();fs.rmSync(cwd,{recursive:true,force:true});}
+"""
+        subprocess.run(['node', '--input-type=module', '-e', plan_verification],
+                       cwd=project, env=test_env, check=True, timeout=5)
+
         workflow_verification = r'''
 import assert from "node:assert/strict";
 import {createToolRegistry,loadExtension,mountExtension} from "./dist/core/tools.js";
@@ -779,7 +850,7 @@ r.onAgentEnd=listener=>subscribe(event=>{notifications++;listener(event)});
 const commands=["context","runs","upper","wait","ask","todo_add","todo_list","todo_done"];
 for(let i=0;i<3;i++) {
  const close=await loadExtension(r,"dist/extensions/workflow.js");
- assert.deepEqual(r.definitions().map(t=>t.function.name),["upper","todo_list","todo_add","todo_done","read_file","search_file","list_files","preview_edit","apply_edit","run_command"]);
+ assert.deepEqual(r.definitions().map(t=>t.function.name),["upper","todo_list","todo_add","todo_done","read_file","search_file","list_files","preview_edit","apply_edit","run_command","plan_show","plan_set"]);
  assert.equal(await r.executeCommand("ask","",context),"回答：组合回答");
  assert.equal(await r.executeCommand("upper","hello",context),"HELLO");
  await assert.rejects(r.executeCommand("todo_list","",context),/先 \/new/);
@@ -1140,7 +1211,7 @@ console.log("通过：保存恢复、损坏定位、原文件保护、工具配�
         expect(lines, '生成中 Ctrl+C')
         assert len(ask(child, lines, '第一问')) == 1
         definitions = tool_definitions.get(timeout=5)
-        assert [tool['function']['name'] for tool in definitions] == ['echo', 'upper', 'todo_list', 'todo_add', 'todo_done', 'read_file', 'search_file', 'list_files', 'preview_edit', 'apply_edit', 'run_command']
+        assert [tool['function']['name'] for tool in definitions] == ['echo', 'upper', 'todo_list', 'todo_add', 'todo_done', 'read_file', 'search_file', 'list_files', 'preview_edit', 'apply_edit', 'run_command', 'plan_show', 'plan_set']
         assert definitions[0]['function']['parameters']['required'] == ['text']
         history = ask(child, lines, '第二问')
         assert [m['role'] for m in history] == ['user', 'assistant', 'user']
@@ -1291,7 +1362,7 @@ console.log("通过：保存恢复、损坏定位、原文件保护、工具配�
             assert first[-1]['content'] == '外部工具验证'
             history = requests.get(timeout=5)
             assert history[-1] == {'role': 'tool', 'tool_call_id': 'upper_1', 'content': 'HELLO'}
-            assert [t['function']['name'] for t in tool_definitions.get(timeout=5)] == ['echo', 'upper', 'todo_list', 'todo_add', 'todo_done', 'read_file', 'search_file', 'list_files', 'preview_edit', 'apply_edit', 'run_command', 'delay_echo']
+            assert [t['function']['name'] for t in tool_definitions.get(timeout=5)] == ['echo', 'upper', 'todo_list', 'todo_add', 'todo_done', 'read_file', 'search_file', 'list_files', 'preview_edit', 'apply_edit', 'run_command', 'plan_show', 'plan_set', 'delay_echo']
             assert requests.empty()
             missing = Path(external) / '不存在.mjs'
             result = subprocess.run(['node', 'dist/index.js', '不应请求模型'], cwd=project,
@@ -1707,6 +1778,62 @@ export default function(api) {
         assert requests.empty() and not marker.exists()
         print('通过：命令真实审批允许/拒绝/取消、文件副作用、结果配对及非交互拒绝')
 
+        # 真实终端拒绝/取消及损坏记录：文件不变，错误后仍能执行命令。
+        master, slave = pty.openpty()
+        child = subprocess.Popen(['node', 'dist/index.js'], cwd=project, env=test_env,
+                                 stdin=slave, stdout=slave, stderr=slave)
+        children.append(child); os.close(slave)
+        try:
+            command_expect('生成中 Ctrl+C')
+            os.write(master, b'/plan\n'); command_expect('请先 /new')
+            before = set((project / '.lcn-agent/sessions').glob('*.jsonl'))
+            os.write(master, b'/new\n'); command_expect('会话：')
+            session_file, = set((project / '.lcn-agent/sessions').glob('*.jsonl')) - before
+            plan_file = project / '.lcn-agent/plans' / (session_file.name + '.json')
+            for answer in ['n', '', '取消', 'y']:
+                os.write(master, '计划保存验证\n'.encode()); output = command_expect('[y/N]')
+                assert b'plan_set' in output and '测试计划'.encode() in output
+                if answer == '取消':
+                    os.write(master, b'\x03'); command_expect('请求已取消')
+                    requests.get(timeout=5)
+                    os.write(master, b'/upper ready\n'); command_expect('READY')
+                    assert requests.empty() and not plan_file.exists()
+                    record = json.loads(session_file.read_text().splitlines()[-1])['message']
+                    assert record['tool_call_id'] == 'plan_1' and '用户取消' in record['content']
+                    continue
+                os.write(master, (answer + '\n').encode()); command_expect('完成，共 2 轮')
+                requests.get(timeout=5); history = requests.get(timeout=5)
+                assert history[-1]['tool_call_id'] == 'plan_1'
+                if answer == 'y':
+                    assert '计划已保存' in history[-1]['content']
+                    assert json.loads(plan_file.read_text()) == {'version':1,'plan':{'goal':'测试计划','steps':['测试步骤']}}
+                else:
+                    assert history[-1]['content'] == '执行失败：工具未获授权: plan_set'
+                    assert not plan_file.exists()
+            saved = plan_file.read_bytes(); plan_file.write_bytes(b'{')
+            os.write(master, b'/plan\n'); command_expect('命令执行失败：扩展状态文件损坏')
+            os.write(master, '计划保存验证\n'.encode()); command_expect('[y/N]')
+            os.write(master, b'y\n'); command_expect('完成，共 2 轮')
+            requests.get(timeout=5); history = requests.get(timeout=5)
+            assert history[-1]['tool_call_id'] == 'plan_1' and '损坏' in history[-1]['content']
+            assert plan_file.read_bytes() == b'{'
+            plan_file.write_bytes(saved)
+            os.write(master, b'/plan\n'); command_expect('1. 测试步骤')
+            os.write(master, b'/exit\n'); command_expect('终端程序已退出'); assert child.wait(timeout=5) == 0
+        finally:
+            os.close(master)
+        child, lines = launch()
+        expect(lines, '生成中 Ctrl+C'); send(child, '/resume ' + session_file.name); expect(lines, '已恢复：')
+        send(child, '/plan'); expect(lines, '1. 测试步骤')
+        send(child, '/exit'); assert child.wait(timeout=5) == 0
+        result = subprocess.run(['node', 'dist/index.js', '计划保存验证'], cwd=project, env=test_env,
+                                capture_output=True, text=True, timeout=5)
+        assert result.returncode == 0 and '工具未获授权: plan_set' in result.stdout
+        requests.get(timeout=5); history = requests.get(timeout=5)
+        assert history[-1] == {'role':'tool','tool_call_id':'plan_1','content':'执行失败：工具未获授权: plan_set'}
+        assert plan_file.read_bytes() == saved and requests.empty()
+        print('通过：计划真实终端拒绝/取消、损坏不覆盖、异常后恢复、重启恢复及非交互拒绝')
+
         # 空编辑行 Ctrl+D 关闭终端输入，等待中的提问必须退出。
         master, slave = pty.openpty()
         child = subprocess.Popen(['node', 'dist/index.js'], cwd=project, env=env,
@@ -1762,7 +1889,7 @@ export default function(api) {
         history = requests.get(timeout=5)
         assert history[-1] == {'role':'tool', 'tool_call_id':'todo_read_1',
                                'content':'[x] #1 阅读会话模块\n[ ] #2 吃饭'}
-        assert [tool['function']['name'] for tool in tool_definitions.get(timeout=5)] == ['echo', 'upper', 'todo_list', 'todo_add', 'todo_done', 'read_file', 'search_file', 'list_files', 'preview_edit', 'apply_edit', 'run_command']
+        assert [tool['function']['name'] for tool in tool_definitions.get(timeout=5)] == ['echo', 'upper', 'todo_list', 'todo_add', 'todo_done', 'read_file', 'search_file', 'list_files', 'preview_edit', 'apply_edit', 'run_command', 'plan_show', 'plan_set']
         assert todo_path.read_bytes() == original_todo
         assert requests.empty()
         print('通过：模型发现待办工具、列表正确回填且待办文件字节不变')

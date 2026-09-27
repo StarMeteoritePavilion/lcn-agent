@@ -23,13 +23,13 @@ let client: OpenAI;
 let model: string;
 
 // 自动允许的可信学习工具名单；不在名单里的名称默认拒绝。
-// delay_echo、待办写入、文件工具（含 preview_edit / apply_edit）和 run_command
+// delay_echo、待办写入、文件工具（含 preview_edit / apply_edit）、run_command 和 plan_set
 // 不自动允许，由下方策略逐次确认。
 // 仅用于当前可信学习扩展；名称名单不能证明外部实现没有副作用。
 // （名单只检查名字：若外部扩展注册了一个同名工具，它同样会被放行，
 //   因此名单不能替代对扩展代码本身的审查。）
-// 自动允许的都是只读或无副作用：echo / upper 只变换文本，todo_list 只读取待办。
-const allowedTools = new Set(["echo", "upper", "todo_list"]);
+// 自动允许的都是只读或无副作用：echo / upper 只变换文本，todo_list / plan_show 只读取。
+const allowedTools = new Set(["echo", "upper", "todo_list", "plan_show"]);
 
 // 注册表由入口持有；扩展在启动时登记，Agent 循环统一查找和执行。
 // 宿主控制自动允许与逐次确认，扩展注册本身不代表获得授权。
@@ -45,7 +45,8 @@ const toolRegistry = createToolRegistry((name, argumentsJson, context) => {
     name === "list_files" ||
     name === "preview_edit" ||
     name === "apply_edit" ||
-    name === "run_command"
+    name === "run_command" ||
+    name === "plan_set"
   ) {
     // argumentsJson 是宿主冻结的参数快照，确认时展示的就是即将执行的内容。
     // 把 signal 传给 confirm，用户在确认期间按 Ctrl+C 或超时时，提问会中止。
@@ -883,7 +884,7 @@ let disposeExternal: (() => void) | undefined;
 
 try {
   // 默认能力共用装载与清理：初始化失败统一回滚。
-  // 无需环境变量即可使用 echo、提问/待办（workflow）、受限文件能力，以及经确认的前台命令。
+  // 无需环境变量即可使用 echo、提问/待办/计划（workflow）、受限文件能力，以及经确认的前台命令。
   disposeExtension = mountExtension(toolRegistry, (api) => {
     registerEcho(api);
     registerWorkflow(api);
