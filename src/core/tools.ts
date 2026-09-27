@@ -296,6 +296,7 @@ export function createToolRegistry(permit: ToolPermission = () => false): ToolRe
   // 含 /mode：规划/执行模式只能由用户切换，扩展不能注册同名命令来抢入口。
   // 含 /prompts、/prompt：列模板和展开模板由宿主处理，展开结果当作用户消息送给模型。
   // 含 /compact：压缩会话请求视图由宿主处理，扩展不能注册同名命令。
+  // 含 /fork：从当前会话末尾复制出独立分支，由宿主处理。
   const reserved = new Set([
     "exit",
     "new",

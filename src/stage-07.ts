@@ -1052,6 +1052,7 @@ async function main(): Promise<void> {
 
       // 命令仅在当前请求结束后处理，不与正在执行的工具并发切换会话。
 
+      // /fork 是宿主命令：复制当前会话末尾为新会话，成功后才切换过去。
       if (userInput === "/fork") {
         if (!session) {
           writeOutput("请先创建或恢复会话\n", true);
@@ -1061,6 +1062,7 @@ async function main(): Promise<void> {
 
         try {
           const parentFile = session.file;
+          // 分叉是本地文件操作，未挂到 activeAbort；失败靠 forkSession 内部回滚。
           const branch = forkSession(session, new AbortController().signal);
 
           // 所有文件准备成功后才切换；失败时仍停留在原会话。
