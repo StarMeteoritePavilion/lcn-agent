@@ -1,5 +1,6 @@
 import { constants, openSync, fstatSync, readSync, closeSync, realpathSync } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
+import { opendir } from "node:fs/promises";
 import type { ExtensionAPI, ToolContext } from "../core/tools.js";
 
 // 64 KiB：限制读入内存并回传给模型的体积，避免一次工具结果撑爆上下文。
@@ -32,7 +33,7 @@ function checkInside(root: string, target: string): void {
 /**
  * 按行搜索区分大小写的字面文本，最多返回 50 个匹配行；复用读取边界。
  *
- * 先走 readWorkspaceFile，因此路径沙箱、64 KiB 上限、UTF-8 校验与取消检查都相同。
+ * 先走 readWorkspaceFile，因此路径边界检查、64 KiB 上限、UTF-8 校验与取消检查都相同。
  * 搜索是 String.includes 字面匹配，不是正则：query 里的 `.` 只匹配点，不匹配任意字符。
  *
  * @param path 相对工作区的文件路径，原样交给 readWorkspaceFile
@@ -116,8 +117,12 @@ function readWorkspaceFile(path: string, context: ToolContext): string {
   try {
     // fstatSync 按已打开的描述符取状态，避免再按路径 stat 时文件被替换。
     const stat = fstatSync(descriptor);
-    if (!stat.isFile()) throw new Error("只能读取普通文件");
-    if (stat.size > MAX_BYTES) throw new Error("文件超过 64 KiB 读取上限");
+    if (!stat.isFile()) {
+      throw new Error("只能读取普通文件");
+    }
+    if (stat.size > MAX_BYTES) {
+      throw new Error("文件超过 64 KiB 读取上限");
+    }
 
     // 多读一个字节，用于检测检查大小后文件继续增长的情况。
     const bytes = Buffer.alloc(MAX_BYTES + 1);
@@ -132,11 +137,15 @@ function readWorkspaceFile(path: string, context: ToolContext): string {
       // 参数 5 position: null 表示从当前文件偏移继续读（循环累加）。
       // 返回值是本次实际读到的字节数；0 表示已经到文件末尾。
       const count = readSync(descriptor, bytes, length, bytes.length - length, null);
-      if (count === 0) break;
+      if (count === 0) {
+        break;
+      }
       length += count;
     }
 
-    if (length > MAX_BYTES) throw new Error("文件超过 64 KiB 读取上限");
+    if (length > MAX_BYTES) {
+      throw new Error("文件超过 64 KiB 读取上限");
+    }
     context.signal.throwIfAborted();
 
     try {
@@ -153,10 +162,72 @@ function readWorkspaceFile(path: string, context: ToolContext): string {
 }
 
 /**
- * 受限文件扩展：read_file 读取文本，search_file 按行搜索；共用 64 KiB 及路径限制。
+ * 列出目录的直接子项，最多返回 100 项，不递归或跟随子项链接。
  *
+ * 路径检查与 readWorkspaceFile 相同：相对路径、realpath、工作区边界。
+ * 只打开这一层目录，不进入子目录；指向目录的符号链接也只报成 symlink。
+ *
+ * @param path 相对工作区的目录路径；`.` 表示工作区根目录
+ * @param context 本次工具调用的上下文，枚举过程中继续响应 signal
+ * @returns Promise，完成后得到 JSON：`{ entries: [{ name, type }], truncated }`
+ *          type 为 symlink / directory / file / other；truncated 表示还有未列出的项
+ * @throws {Error} 路径越界、不是目录、打开失败，或已取消
+ */
+async function listWorkspaceFiles(path: string, context: ToolContext): Promise<string> {
+  context.signal.throwIfAborted();
+  if (isAbsolute(path)) {
+    throw new Error("请使用相对于工作区的路径");
+  }
+
+  const root = realpathSync(context.cwd);
+  const requested = resolve(root, path);
+  checkInside(root, requested);
+
+  const target = realpathSync(requested);
+  checkInside(root, target);
+  context.signal.throwIfAborted();
+
+  const entries: Array<{ name: string; type: string }> = [];
+  let truncated = false;
+
+  // opendir 打开目录，返回异步迭代器，一次读一个 Dirent，不必一次载入全部文件名。
+  // 参数 1 path: 已经 realpath 过的目录。若 target 不是目录，这里会抛错。
+  const directory = await opendir(target);
+
+  // for await 在正常结束、break 或抛错时都会关闭目录句柄。
+  for await (const entry of directory) {
+    context.signal.throwIfAborted();
+
+    // 只有发现第 101 项才标记截断。
+    if (entries.length === 100) {
+      truncated = true;
+      break;
+    }
+
+    entries.push({
+      name: entry.name,
+      // 先判断符号链接：指向目录的链接仍报 symlink，避免把链接目标当成直接子目录。
+      type: entry.isSymbolicLink()
+        ? "symlink"
+        : entry.isDirectory()
+          ? "directory"
+          : entry.isFile()
+            ? "file"
+            : "other",
+    });
+  }
+
+  // 空目录没有进入循环，也需检查等待期间是否发生取消。
+  context.signal.throwIfAborted();
+  return JSON.stringify({ entries, truncated });
+}
+
+/**
+ * 受限文件扩展：read_file 读取文本，search_file 按行搜索，list_files 列出直接子项。
+ *
+ * read_file / search_file 共用 64 KiB 及路径限制；list_files 共用路径限制，最多 100 项且不递归。
  * 本扩展提供路径边界检查和有界读取，不是文件系统沙箱；是否执行由宿主权限入口决定
- * （index.ts 里 read_file 和 search_file 走逐次确认，不在自动允许名单中）。
+ * （index.ts 里这三个工具都走逐次确认，不在自动允许名单中）。
  *
  * 使用默认导出供组合入口复用，当前由 workflow.ts 默认装载；不要重复配置外部加载。
  *
@@ -243,6 +314,45 @@ export default function registerFiles({ registerTool }: ExtensionAPI): void {
 
       // 查询中的空格有实际含义，不使用 trim 修改查询内容。
       return searchWorkspaceFile(args.path, args.query, context);
+    },
+  });
+
+  registerTool({
+    definition: {
+      type: "function",
+      function: {
+        name: "list_files",
+        description: "经用户确认，列出工作区内指定目录的直接子项，最多 100 项，不递归",
+        parameters: {
+          type: "object",
+          properties: {
+            path: {
+              type: "string",
+              description: "工作区相对目录路径；使用 . 表示工作区根目录",
+            },
+          },
+          required: ["path"],
+          additionalProperties: false,
+        },
+      },
+    },
+    execute(args, context) {
+      // 参数来自模型，必须先校验（原因见 core/tools.ts 的 Tool.execute）。
+      // additionalProperties: false 只是给模型看的 Schema，运行时仍可能多传字段。
+      if (
+        typeof args !== "object" ||
+        args === null ||
+        Array.isArray(args) ||
+        Object.keys(args).length !== 1 ||
+        !("path" in args) ||
+        typeof args.path !== "string" ||
+        !args.path.trim()
+      ) {
+        throw new Error("list_files 参数必须仅包含非空字符串 path");
+      }
+
+      // 只用 trim 判断空白，不修改真实目录名；`.` 表示工作区根目录。
+      return listWorkspaceFiles(args.path, context);
     },
   });
 }
