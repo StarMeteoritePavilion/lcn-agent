@@ -10,6 +10,7 @@ import { createDiagnostics, DiagnosticWriteError, showDiagnostics } from "./core
 import { createSkills } from "./extensions/skills.js";
 import { expandPrompt, listPrompts } from "./core/prompts.js";
 import { compactIfNeeded, compactSession, contextMessages } from "./core/compaction.js";
+import { memoryPrompt } from "./core/memory.js";
 
 import {
   createSession,
@@ -61,7 +62,8 @@ let mode: "plan" | "execute" = "execute";
 
 // 规划模式下允许的扩展命令。直接输入的 `/命令` 不经过工具审批，
 // 若不限制，用户（或模型让用户去跑）就能用 /todo_add 绕过 plan 工具黑名单。
-// /skills、/skill 允许列出或激活 Skill 正文；写入类命令仍禁止。
+// /skills、/skill 允许列出或激活 Skill 正文；/memory 只读列出项目记忆。
+// /memory_add、/memory_delete 不在名单里，规划模式下不能改记忆。
 const planningCommands = new Set([
   "context",
   "runs",
@@ -72,6 +74,7 @@ const planningCommands = new Set([
   "plan",
   "skills",
   "skill",
+  "memory",
 ]);
 
 // 注册表由入口持有；扩展在启动时登记，Agent 循环统一查找和执行。
@@ -375,7 +378,7 @@ const REQUEST_TIMEOUT_MS = 30_000;
 /**
  * 读取一次模型流：收集完整响应，同时把文本增量和模型结束事件立即上报。
  *
- * @param messages 本轮要发给模型的消息（压缩后的请求视图，不含 Skills 系统说明）
+ * @param messages 本轮要发给模型的消息（压缩后的请求视图；记忆和 Skills 在本函数里临时拼到前面）
  * @param signal 本轮取消/超时信号，传给 SDK
  * @param onEvent 展示层回调
  * @param sessionFile 当前会话文件名，用于读取本会话已激活的 Skills
@@ -387,13 +390,19 @@ async function streamChat(
   onEvent: EventHandler,
   sessionFile: string,
 ): Promise<SteamChatResult> {
-  // 每次请求现拼 Skills 系统说明，不写入会话文件。
-  // 没有可展示的目录且本会话未激活任何 Skill 时，instruction 为空，不加 system 消息。
-  const instruction = skills.prompt({
-    cwd: process.cwd(),
-    sessionFile,
-    signal,
-  });
+  // 每次请求读取项目记忆，并拼接当前会话的 Skills。
+  // 两者独立于历史摘要，不反复追加到会话消息中。
+  // filter 去掉空串，避免只有其中一段时多出空白 system 内容。
+  const instruction = [
+    memoryPrompt(process.cwd()),
+    skills.prompt({
+      cwd: process.cwd(),
+      sessionFile,
+      signal,
+    }),
+  ]
+    .filter((text) => text.length > 0)
+    .join("\n\n");
 
   // 参数 1 body: 模型、消息、工具列表、是否流式。
   // 参数 2 options.signal: 取消或超时时中止这次 HTTP 请求。
