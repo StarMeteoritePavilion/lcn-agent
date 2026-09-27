@@ -1,5 +1,18 @@
-import { constants, openSync, fstatSync, readSync, closeSync, realpathSync } from "node:fs";
-import { isAbsolute, relative, resolve, sep } from "node:path";
+import {
+  constants,
+  openSync,
+  fstatSync,
+  readSync,
+  closeSync,
+  realpathSync,
+  lstatSync,
+  mkdtempSync,
+  writeFileSync,
+  chmodSync,
+  renameSync,
+  rmSync,
+} from "node:fs";
+import { isAbsolute, relative, resolve, sep, dirname, join } from "node:path";
 import { opendir } from "node:fs/promises";
 import type { ExtensionAPI, ToolContext } from "../core/tools.js";
 
@@ -152,7 +165,9 @@ function readWorkspaceFile(path: string, context: ToolContext): string {
       // TextDecoder 说明见 session.ts：fatal: true 让非法 UTF-8 直接失败。
       // subarray 只解码已读入的前 length 个字节，不把缓冲区里多出来的 0 算进去。
       // ignoreBOM: true 保留 BOM 字符，保证编辑预览不静默丢失文件头。
-      return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes.subarray(0, length));
+      return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(
+        bytes.subarray(0, length),
+      );
     } catch {
       throw new Error("文件不是有效的 UTF-8 文本");
     }
@@ -223,7 +238,19 @@ async function listWorkspaceFiles(path: string, context: ToolContext): Promise<s
   return JSON.stringify({ entries, truncated });
 }
 
-/** 预览一次唯一的字面替换，不修改文件。 */
+/**
+ * 预览一次唯一的字面替换，不修改文件。
+ *
+ * 先完整读入原文，再要求 oldText 恰好出现一次，拼出 after 交给调用方展示。
+ * 真正落盘是 applyWorkspaceEdit 的事：用户看到 before / after 之后再确认保存。
+ *
+ * @param path 相对工作区的文件路径，原样交给 readWorkspaceFile
+ * @param oldText 必须在文件中唯一出现的非空原文；按字面匹配，不是正则
+ * @param newText 替换文本；空字符串表示删除这一段
+ * @param context 本次工具调用的上下文
+ * @returns JSON：`{ path, before, after }`，before 是当前全文，after 是替换后的全文
+ * @throws {Error} 读失败、找不到、出现多次、替换无变化、改后超过 64 KiB，或已取消
+ */
 function previewWorkspaceEdit(
   path: string,
   oldText: string,
@@ -231,12 +258,14 @@ function previewWorkspaceEdit(
   context: ToolContext,
 ): string {
   const before = readWorkspaceFile(path, context);
+  // indexOf 按字面查找，返回第一次出现的下标；找不到时为 -1。
   const index = before.indexOf(oldText);
 
   if (index === -1) {
     throw new Error("未找到待替换文本");
   }
   // 从下一字符继续查找，重叠匹配也算多个，避免替换位置不明确。
+  // 例如 oldText 为 `aa`、原文为 `aaa` 时，下标 0 和 1 都能匹配。
   if (before.indexOf(oldText, index + 1) !== -1) {
     throw new Error("待替换文本出现多次，请提供更完整的上下文");
   }
@@ -247,6 +276,7 @@ function previewWorkspaceEdit(
   const after = before.slice(0, index) + newText + before.slice(index + oldText.length);
 
   // 按 UTF-8 字节数限制，不用字符串长度代替文件大小。
+  // 中文等字符在 JS 里长度是 1，编码后可能占 3 个字节。
   if (Buffer.byteLength(after, "utf8") > MAX_BYTES) {
     throw new Error("修改后的文件超过 64 KiB 上限");
   }
@@ -256,11 +286,123 @@ function previewWorkspaceEdit(
 }
 
 /**
- * 受限文件扩展：read_file 读取文本，search_file 按行搜索，list_files 列出直接子项，preview_edit 预览替换但不落盘。
+ * 应用已经由宿主确认的完整文本修改。
  *
- * read_file / search_file 共用 64 KiB 及路径限制；list_files 共用路径限制，最多 100 项且不递归。
- * 本扩展提供路径边界检查和有界读取，不是文件系统沙箱；是否执行由宿主权限入口决定
- * （index.ts 里这四个工具都走逐次确认，不在自动允许名单中）。
+ * before 是预期原文；after 是用户批准的新内容。
+ * 先写同目录临时文件，再检查原文件，最后通过 rename 替换。
+ * 写入临时文件失败时，原文件不受影响。
+ *
+ * 保存前会再读一次：若磁盘内容已经不等于 before（例如预览之后文件被改过），
+ * 就拒绝写入，避免把用户批准的 after 盖到一份不同的原文上。
+ *
+ * @param path 相对工作区的文件路径
+ * @param before 用户批准时看到的完整原文，必须与当前文件完全一致
+ * @param after 用户批准的完整新文本；空字符串表示清空文件
+ * @param context 本次工具调用的上下文
+ * @returns JSON：`{ path, applied: true }`
+ * @throws {Error} 无实际修改、超过 64 KiB、无法原样编码、原文已变、
+ *                 不是普通文件、有多个硬链接、路径变化，或已取消
+ */
+function applyWorkspaceEdit(
+  path: string,
+  before: string,
+  after: string,
+  context: ToolContext,
+): string {
+  if (before === after) {
+    throw new Error("修改前后相同，没有实际修改");
+  }
+
+  const bytes = Buffer.from(after, "utf8");
+  if (Buffer.byteLength(before, "utf8") > MAX_BYTES || bytes.length > MAX_BYTES) {
+    throw new Error("修改前后的文件不能超过 64 KiB");
+  }
+
+  // JS 字符串可能含孤立代理项，UTF-8 编码会把它替换成其他字符。
+  // 拒绝这种情况，保证实际保存的文本与用户批准的 after 相同。
+  if (bytes.toString("utf8") !== after) {
+    throw new Error("修改后的文本包含无法原样编码的 Unicode 字符");
+  }
+
+  // 复用已有路径、文件类型、UTF-8、大小和取消检查。
+  if (readWorkspaceFile(path, context) !== before) {
+    throw new Error("文件已变化，请重新读取并生成预览");
+  }
+
+  const root = realpathSync(context.cwd);
+  const requested = resolve(root, path);
+  checkInside(root, requested);
+  const target = realpathSync(requested);
+  checkInside(root, target);
+
+  // lstatSync 不跟随符号链接，检查的是最终路径自己的类型。
+  const original = lstatSync(target);
+  if (!original.isFile()) {
+    throw new Error("只能修改普通文件");
+  }
+
+  // 硬链接共享同一份文件；rename 只替换其中一个名字，语义不同，暂不支持。
+  if (original.nlink !== 1) {
+    throw new Error("暂不支持修改具有多个硬链接的文件");
+  }
+
+  context.signal.throwIfAborted();
+  // mkdtempSync 在指定前缀后追加随机后缀，创建一个尚未存在的空目录（说明见 state.ts）。
+  const temporary = mkdtempSync(join(dirname(target), ".lcn-edit-"));
+
+  try {
+    const pending = join(temporary, "content");
+
+    // 同目录临时文件与目标位于同一文件系统；完成写入后才能替换。
+    writeFileSync(pending, bytes, { flag: "wx", mode: 0o600, flush: true });
+    // 保留普通读写执行权限；不复制特殊权限位。
+    // `& 0o777` 去掉 setuid / setgid / sticky，避免把高权限位抄到新文件上。
+    chmodSync(pending, original.mode & 0o777);
+
+    // 防止路径在准备期间被重新指向其他位置。
+    if (realpathSync(requested) !== target) {
+      throw new Error("文件路径已变化，请重新生成预览");
+    }
+
+    // 再核对身份：同一设备、同一 inode、权限和硬链接数都没变，内容仍等于 before。
+    const current = lstatSync(target);
+    if (
+      !current.isFile() ||
+      current.dev !== original.dev ||
+      current.ino !== original.ino ||
+      current.mode !== original.mode ||
+      current.nlink !== original.nlink ||
+      readWorkspaceFile(path, context) !== before
+    ) {
+      throw new Error("文件已变化，请重新读取并生成预览");
+    }
+
+    context.signal.throwIfAborted();
+
+    // ponytail: 最后检查与替换之间仍有并发窗口；
+    // 需要抵御外部并发写入时，再采用所有写入方共同遵守的锁协议。
+    renameSync(pending, target);
+  } finally {
+    // 替换失败时删除临时内容；成功时删除已空的临时目录。
+    // 若替换已成功而清理失败，文件已经修改，不能把它理解为写入回滚。
+    rmSync(temporary, { recursive: true, force: true });
+  }
+
+  return JSON.stringify({ path, applied: true });
+}
+
+/**
+ * 受限文件扩展：
+ * - read_file 读取文本；
+ * - search_file 按行搜索；
+ * - list_files 列出直接子项；
+ * - preview_edit 预览一次唯一替换，不落盘；
+ * - apply_edit 在原文未变的前提下，用同目录临时文件原子替换目标。
+ *
+ * read_file / search_file / 编辑共用 64 KiB 及路径限制；
+ * list_files 共用路径限制，最多 100 项且不递归。
+ * 本扩展提供路径边界检查和有界读写，不是文件系统沙箱；是否执行由宿主权限入口决定
+ * （index.ts 里这五个工具都走逐次确认，不在自动允许名单中）。
  *
  * 使用默认导出供组合入口复用，当前由 workflow.ts 默认装载；不要重复配置外部加载。
  *
@@ -409,6 +551,9 @@ export default function registerFiles({ registerTool }: ExtensionAPI): void {
       },
     },
     execute(args, context) {
+      // 参数来自模型，必须先校验（原因见 core/tools.ts 的 Tool.execute）。
+      // 只允许恰好三个字段。oldText 用 length === 0 判断空串，空格可以是要替换的原文。
+      // newText 允许空字符串，表示删除这一段。
       if (
         typeof args !== "object" ||
         args === null ||
@@ -427,6 +572,49 @@ export default function registerFiles({ registerTool }: ExtensionAPI): void {
       }
 
       return previewWorkspaceEdit(args.path, args.oldText, args.newText, context);
+    },
+  });
+
+  registerTool({
+    definition: {
+      type: "function",
+      function: {
+        name: "apply_edit",
+        description:
+          "经用户重新确认完整修改前后文本后保存文件；before 必须与当前原文完全一致，否则拒绝",
+        parameters: {
+          type: "object",
+          properties: {
+            path: { type: "string", description: "工作区相对文件路径" },
+            before: { type: "string", description: "完整原文，包含原有 BOM 和换行" },
+            after: { type: "string", description: "完整新文本；空字符串表示清空文件" },
+          },
+          required: ["path", "before", "after"],
+          additionalProperties: false,
+        },
+      },
+    },
+    execute(args, context) {
+      // 参数来自模型，必须先校验（原因见 core/tools.ts 的 Tool.execute）。
+      // before / after 都允许空字符串：原文可以是空文件，after 为空表示清空。
+      // 真正“原文是否仍一致”在 applyWorkspaceEdit 里再读磁盘核对，这里只检查类型。
+      if (
+        typeof args !== "object" ||
+        args === null ||
+        Array.isArray(args) ||
+        Object.keys(args).length !== 3 ||
+        !("path" in args) ||
+        typeof args.path !== "string" ||
+        !args.path.trim() ||
+        !("before" in args) ||
+        typeof args.before !== "string" ||
+        !("after" in args) ||
+        typeof args.after !== "string"
+      ) {
+        throw new Error("apply_edit 参数须仅包含有效 path、字符串 before 和 after");
+      }
+
+      return applyWorkspaceEdit(args.path, args.before, args.after, context);
     },
   });
 }

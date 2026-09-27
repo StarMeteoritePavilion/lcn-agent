@@ -87,6 +87,11 @@ class Handler(BaseHTTPRequestHandler):
             delta = {'tool_calls': [{'index': 0, 'id': 'preview_1', 'type': 'function',
                                     'function': {'name': 'preview_edit', 'arguments': '{"path":"read-fixture.txt","oldText":"验收","newText":"预览"}'}}]}
             reason = 'tool_calls'
+        elif last['role'] == 'user' and last['content'] == '应用编辑验证':
+            arguments = json.dumps({'path': 'apply-fixture.txt', 'before': '原文', 'after': '新文'})
+            delta = {'tool_calls': [{'index': 0, 'id': 'apply_1', 'type': 'function',
+                                    'function': {'name': 'apply_edit', 'arguments': arguments}}]}
+            reason = 'tool_calls'
         elif last['role'] == 'user' and last['content'] == '权限拒绝验证':
             delta = {'tool_calls': [{'index': 0, 'id': 'denied_1', 'type': 'function',
                                     'function': {'name': 'denied_probe', 'arguments': '{}'}}]}
@@ -564,6 +569,96 @@ try {
  const rejectPreview=createToolRegistry(()=>false);const disposePreview=mountExtension(rejectPreview,files);
  await assert.rejects(rejectPreview.execute("preview_edit",{path:"missing",oldText:"x",newText:"y"},ctx),/未获授权/);disposePreview();
  console.log("通过：编辑预览唯一/重叠匹配、删除、多行、字面替换、字节上限、参数、取消及文件不变");
+
+ // 检查真实落盘结果；预览结果不能替代本次写入审批。
+ const apply=(before,after,registry=r,context=ctx)=>
+  registry.execute("apply_edit",{path:"edit",before,after},context);
+ writeFileSync(editPath,"\ufeff原文\r\n");
+ const approved=await preview("edit","原文","新文");
+ assert.deepEqual(JSON.parse(await apply(approved.before,approved.after)),{path:"edit",applied:true});
+ assert.equal(readFileSync(editPath,"utf8"),"\ufeff新文\r\n");
+ await assert.rejects(apply(approved.before,"覆盖"),/文件已变化/);
+ assert.equal(readFileSync(editPath,"utf8"),"\ufeff新文\r\n");
+
+ const denyEdit=createToolRegistry(()=>false);const stopEdit=mountExtension(denyEdit,files);
+ try {
+  await assert.rejects(apply("\ufeff新文\r\n","覆盖",denyEdit),/未获授权/);
+ } finally {stopEdit();}
+ await assert.rejects(apply("\ufeff新文\r\n","覆盖",r,{...ctx,signal:abort.signal}),{name:"AbortError"});
+ assert.equal(readFileSync(editPath,"utf8"),"\ufeff新文\r\n");
+
+ // 模拟审批等待期间外部修改文件；批准旧参数也不能覆盖新内容。
+ const changedEdit=createToolRegistry(()=>{writeFileSync(editPath,"外部修改");return true;});
+ const stopChanged=mountExtension(changedEdit,files);
+ try {
+  await assert.rejects(apply("\ufeff新文\r\n","覆盖",changedEdit),/文件已变化/);
+ } finally {stopChanged();}
+ assert.equal(readFileSync(editPath,"utf8"),"外部修改");
+ for(const [before,after,error] of [
+  ["外部修改","外部修改",/相同/],
+  ["外部修改","\ud800",/Unicode/],
+  ["外部修改","中".repeat(21846),/64 KiB/],
+  ["a".repeat(65537),"新文",/64 KiB/],
+ ]) {
+  await assert.rejects(apply(before,after),error);
+  assert.equal(readFileSync(editPath,"utf8"),"外部修改");
+ }
+ for(const args of [null,[],{}, {path:" ",before:"外部修改",after:"新文"},
+  {path:"edit",before:1,after:"新文"},{path:"edit",before:"外部修改",after:1},
+  {path:"edit",before:"外部修改",after:"新文",extra:1}]) {
+  await assert.rejects(r.execute("apply_edit",args,ctx),/参数/);
+  assert.equal(readFileSync(editPath,"utf8"),"外部修改");
+ }
+ for(const path of ["escape","../outside","directory","large","invalid","missing",editPath]) {
+  await assert.rejects(r.execute("apply_edit",{path,before:"外部",after:"覆盖"},ctx));
+ }
+ assert.equal(readFileSync(join(base,"outside"),"utf8"),"外部");
+ await apply("外部修改","");assert.equal(readFileSync(editPath).length,0);
+ const limitText="中".repeat(21845)+"a";
+ await apply("",limitText);assert.equal(readFileSync(editPath).length,65536);
+ assert.equal(readFileSync(editPath,"utf8"),limitText);
+
+ // 注入替换失败，验证临时内容不会破坏原文件，也不会遗留临时目录。
+ const fsModule=await import("node:fs");const originalRename=fsModule.default.renameSync;
+ const namesBefore=fsModule.readdirSync(cwd).sort();
+ fsModule.default.renameSync=()=>{throw Error("模拟替换失败");};syncBuiltinESMExports();
+ try {
+  await assert.rejects(apply(limitText,"不应写入"),/模拟替换失败/);
+ } finally {fsModule.default.renameSync=originalRename;syncBuiltinESMExports();}
+ assert.equal(readFileSync(editPath,"utf8"),limitText);
+ assert.deepEqual(fsModule.readdirSync(cwd).sort(),namesBefore);
+
+ // 普通权限保留、内部链接修改目标、硬链接拒绝。
+ fsModule.chmodSync(editPath,0o751);await apply(limitText,"权限测试");
+ assert.equal(fsModule.statSync(editPath).mode&0o777,0o751);
+ symlinkSync(editPath,join(cwd,"edit-link"));
+ await r.execute("apply_edit",{path:"edit-link",before:"权限测试",after:"链接修改"},ctx);
+ assert(fsModule.lstatSync(join(cwd,"edit-link")).isSymbolicLink());
+ assert.equal(readFileSync(editPath,"utf8"),"链接修改");
+ fsModule.linkSync(editPath,join(cwd,"hard-link"));
+ await assert.rejects(apply("链接修改","不应写入"),/硬链接/);
+ assert.equal(readFileSync(editPath,"utf8"),"链接修改");fsModule.unlinkSync(join(cwd,"hard-link"));
+
+ // 在临时文件准备阶段注入故障或变化，检查第二次核验与 finally 清理。
+ const originalWrite=fsModule.default.writeFileSync;
+ for(const scenario of ["写入失败","内容变化","取消"]) {
+  const controller=new AbortController();const names=fsModule.readdirSync(cwd).sort();
+  fsModule.default.writeFileSync=(...args)=>{
+   if(scenario==="写入失败") throw Error("模拟写入失败");
+   originalWrite(...args);
+   if(scenario==="内容变化") originalWrite(editPath,"并发修改");
+   if(scenario==="取消") controller.abort();
+  };
+  syncBuiltinESMExports();
+  try {
+   await assert.rejects(apply("链接修改","不应写入",r,{...ctx,signal:controller.signal}),
+    scenario==="取消"?{name:"AbortError"}:scenario==="内容变化"?/文件已变化/:/模拟写入失败/);
+  } finally {fsModule.default.writeFileSync=originalWrite;syncBuiltinESMExports();}
+  assert.equal(readFileSync(editPath,"utf8"),scenario==="内容变化"?"并发修改":"链接修改");
+  assert.deepEqual(fsModule.readdirSync(cwd).sort(),names);writeFileSync(editPath,"链接修改");
+ }
+ console.log("通过：编辑权限保留、内部链接、硬链接拒绝、临时写入失败、准备期间变化与取消清理");
+ console.log("通过：编辑保存、BOM 与换行、旧原文拒绝、审批期间变化、拒绝、取消、参数与字节边界、清空及替换失败保护");
  assert.equal(readFileSync(join(cwd,"文本.txt"),"utf8"),"中文内容");
  console.log("通过：文件读取大小边界、空文件、UTF-8、路径越界、符号链接、参数、取消和权限拒绝");
 } finally {close();rmSync(base,{recursive:true,force:true});}
@@ -584,7 +679,7 @@ r.onAgentEnd=listener=>subscribe(event=>{notifications++;listener(event)});
 const commands=["context","runs","upper","wait","ask","todo_add","todo_list","todo_done"];
 for(let i=0;i<3;i++) {
  const close=await loadExtension(r,"dist/extensions/workflow.js");
- assert.deepEqual(r.definitions().map(t=>t.function.name),["upper","todo_list","todo_add","todo_done","read_file","search_file","list_files","preview_edit"]);
+ assert.deepEqual(r.definitions().map(t=>t.function.name),["upper","todo_list","todo_add","todo_done","read_file","search_file","list_files","preview_edit","apply_edit"]);
  assert.equal(await r.executeCommand("ask","",context),"回答：组合回答");
  assert.equal(await r.executeCommand("upper","hello",context),"HELLO");
  await assert.rejects(r.executeCommand("todo_list","",context),/先 \/new/);
@@ -945,7 +1040,7 @@ console.log("通过：保存恢复、损坏定位、原文件保护、工具配�
         expect(lines, '生成中 Ctrl+C')
         assert len(ask(child, lines, '第一问')) == 1
         definitions = tool_definitions.get(timeout=5)
-        assert [tool['function']['name'] for tool in definitions] == ['echo', 'upper', 'todo_list', 'todo_add', 'todo_done', 'read_file', 'search_file', 'list_files', 'preview_edit']
+        assert [tool['function']['name'] for tool in definitions] == ['echo', 'upper', 'todo_list', 'todo_add', 'todo_done', 'read_file', 'search_file', 'list_files', 'preview_edit', 'apply_edit']
         assert definitions[0]['function']['parameters']['required'] == ['text']
         history = ask(child, lines, '第二问')
         assert [m['role'] for m in history] == ['user', 'assistant', 'user']
@@ -1096,7 +1191,7 @@ console.log("通过：保存恢复、损坏定位、原文件保护、工具配�
             assert first[-1]['content'] == '外部工具验证'
             history = requests.get(timeout=5)
             assert history[-1] == {'role': 'tool', 'tool_call_id': 'upper_1', 'content': 'HELLO'}
-            assert [t['function']['name'] for t in tool_definitions.get(timeout=5)] == ['echo', 'upper', 'todo_list', 'todo_add', 'todo_done', 'read_file', 'search_file', 'list_files', 'preview_edit', 'delay_echo']
+            assert [t['function']['name'] for t in tool_definitions.get(timeout=5)] == ['echo', 'upper', 'todo_list', 'todo_add', 'todo_done', 'read_file', 'search_file', 'list_files', 'preview_edit', 'apply_edit', 'delay_echo']
             assert requests.empty()
             missing = Path(external) / '不存在.mjs'
             result = subprocess.run(['node', 'dist/index.js', '不应请求模型'], cwd=project,
@@ -1405,6 +1500,63 @@ export default function(api) {
         assert requests.empty()
         print('通过：默认文件工具的终端允许/拒绝、取消、结果配对及非交互拒绝')
 
+        # 默认入口真实审批：展示完整参数，检查磁盘、模型回填和取消/超时后的会话配对。
+        apply_path = project / 'apply-fixture.txt'
+        before_sessions = set((project / '.lcn-agent/sessions').glob('*.jsonl'))
+        master, slave = pty.openpty()
+        child = subprocess.Popen(['node', 'dist/index.js'], cwd=project, env=test_env,
+                                 stdin=slave, stdout=slave, stderr=slave)
+        children.append(child); os.close(slave)
+        try:
+            command_expect('生成中 Ctrl+C')
+            for scenario in ['拒绝', '默认拒绝', '允许', '文件变化', '取消', '超时']:
+                apply_path.write_text('原文')
+                os.write(master, '应用编辑验证\n'.encode())
+                output = command_expect('[y/N]')
+                assert b'apply_edit' in output and b'apply_1' in output
+                assert b'apply-fixture.txt' in output and '原文'.encode() in output and '新文'.encode() in output
+                assert b'"before"' in output and b'"after"' in output
+                if scenario == '文件变化':
+                    apply_path.write_text('外部修改')
+                if scenario in ('取消', '超时'):
+                    if scenario == '取消':
+                        os.write(master, b'\x03'); command_expect('请求已取消')
+                    else:
+                        command_expect('请求超时', timeout=35)
+                    requests.get(timeout=5)
+                    # 命令屏障确保上一轮的 tool 消息已经保存。
+                    os.write(master, b'/upper ready\n'); command_expect('READY')
+                    assert requests.empty(), '取消或超时后不得启动下一轮模型请求'
+                    session_file, = set((project / '.lcn-agent/sessions').glob('*.jsonl')) - before_sessions
+                    message = json.loads(session_file.read_text().splitlines()[-1])['message']
+                    assert message['role'] == 'tool' and message['tool_call_id'] == 'apply_1'
+                    assert ('用户取消' if scenario == '取消' else '本轮超时') in message['content']
+                else:
+                    answer = 'n' if scenario == '拒绝' else '' if scenario == '默认拒绝' else 'y'
+                    os.write(master, (answer + '\n').encode()); command_expect('完成，共 2 轮')
+                    requests.get(timeout=5); history = requests.get(timeout=5)
+                    message = history[-1]
+                    assert message['role'] == 'tool' and message['tool_call_id'] == 'apply_1'
+                    if scenario == '允许':
+                        assert json.loads(message['content']) == {'path':'apply-fixture.txt','applied':True}
+                    elif scenario == '文件变化':
+                        assert '文件已变化' in message['content']
+                    else:
+                        assert message['content'] == '执行失败：工具未获授权: apply_edit'
+                expected = '新文' if scenario == '允许' else '外部修改' if scenario == '文件变化' else '原文'
+                assert apply_path.read_text() == expected
+            os.write(master, b'/exit\n'); command_expect('终端程序已退出')
+            assert child.wait(timeout=5) == 0
+        finally:
+            os.close(master)
+        result = subprocess.run(['node', 'dist/index.js', '应用编辑验证'], cwd=project, env=test_env,
+                                capture_output=True, text=True, timeout=5)
+        assert result.returncode == 0 and '工具未获授权: apply_edit' in result.stdout
+        requests.get(timeout=5); history = requests.get(timeout=5)
+        assert history[-1] == {'role':'tool','tool_call_id':'apply_1','content':'执行失败：工具未获授权: apply_edit'}
+        assert apply_path.read_text() == '原文' and requests.empty()
+        print('通过：编辑真实终端参数展示、允许/拒绝、文件变化、取消、30 秒审批超时、结果配对及非交互拒绝')
+
         # 空编辑行 Ctrl+D 关闭终端输入，等待中的提问必须退出。
         master, slave = pty.openpty()
         child = subprocess.Popen(['node', 'dist/index.js'], cwd=project, env=env,
@@ -1460,7 +1612,7 @@ export default function(api) {
         history = requests.get(timeout=5)
         assert history[-1] == {'role':'tool', 'tool_call_id':'todo_read_1',
                                'content':'[x] #1 阅读会话模块\n[ ] #2 吃饭'}
-        assert [tool['function']['name'] for tool in tool_definitions.get(timeout=5)] == ['echo', 'upper', 'todo_list', 'todo_add', 'todo_done', 'read_file', 'search_file', 'list_files', 'preview_edit']
+        assert [tool['function']['name'] for tool in tool_definitions.get(timeout=5)] == ['echo', 'upper', 'todo_list', 'todo_add', 'todo_done', 'read_file', 'search_file', 'list_files', 'preview_edit', 'apply_edit']
         assert todo_path.read_bytes() == original_todo
         assert requests.empty()
         print('通过：模型发现待办工具、列表正确回填且待办文件字节不变')
