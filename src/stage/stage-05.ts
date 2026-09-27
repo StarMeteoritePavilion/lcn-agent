@@ -1,12 +1,11 @@
-import type { ConfirmTool } from "./core/tools.js";
+import type { ConfirmTool } from "../core/tools.js";
 import OpenAI from "openai";
 import { clearScreenDown, cursorTo, moveCursor } from "node:readline";
-import { AgentEndEvent, createToolRegistry, loadExtension, mountExtension } from "./core/tools.js";
-import { registerEcho } from "./extensions/echo.js";
-import registerWorkflow from "./extensions/workflow.js";
+import { AgentEndEvent, createToolRegistry, loadExtension, mountExtension } from "../core/tools.js";
+import { registerEcho } from "../extensions/echo.js";
 import { createInterface } from "node:readline/promises";
-import { loadConfig } from "./core/config.js";
-import { createDiagnostics, DiagnosticWriteError, showDiagnostics } from "./core/diagnostics.js";
+import { loadConfig } from "../core/config.js";
+import { createDiagnostics, DiagnosticWriteError, showDiagnostics } from "../core/diagnostics.js";
 
 import {
   createSession,
@@ -16,71 +15,24 @@ import {
   saveMessage,
   type Session,
   SessionWriteError,
-} from "./core/session.js";
+} from "../core/session.js";
 
 // 在入口的错误边界内完成初始化，配置校验通过后才允许运行 Agent。
 let client: OpenAI;
 let model: string;
 
-// 自动允许的可信学习工具名单；不在名单里的名称默认拒绝。
-// delay_echo、待办写入、文件工具（含 preview_edit / apply_edit）、run_command 和 plan_set
-// 不自动允许，由下方策略逐次确认。
+// 自动允许的可信学习工具名单；delay_echo 和待办写入工具逐次确认，其他名称默认拒绝。
 // 仅用于当前可信学习扩展；名称名单不能证明外部实现没有副作用。
 // （名单只检查名字：若外部扩展注册了一个同名工具，它同样会被放行，
 //   因此名单不能替代对扩展代码本身的审查。）
-// 自动允许的都是只读或无副作用：echo / upper 只变换文本，todo_list / plan_show 只读取。
-const allowedTools = new Set(["echo", "upper", "todo_list", "plan_show"]);
-
-// 规划模式允许发给模型、并允许走到后面审批的工具名单。
-// 这是宿主维护的名单，不接受扩展自报“只读”作为依据。
-// 只含不改磁盘的能力：读文件/搜索/列目录/预览编辑可以，apply_edit、run_command、
-// plan_set、todo_add / todo_done、delay_echo 都不在名单里。
-const planningTools = new Set([
-  "echo",
-  "upper",
-  "todo_list",
-  "plan_show",
-  "read_file",
-  "search_file",
-  "list_files",
-  "preview_edit",
-]);
-
-// 模式属于当前进程，不随会话保存；启动时沿用现有执行模式。
-// 只有用户输入宿主命令才能切换，模型没有切换模式的工具。
-// /new、/resume 或重启都不会改它：切到 plan 后换会话仍是 plan，退出再进则回到 execute。
-let mode: "plan" | "execute" = "execute";
-
-// 规划模式下允许的扩展命令。直接输入的 `/命令` 不经过工具审批，
-// 若不限制，用户（或模型让用户去跑）就能用 /todo_add 绕过 plan 工具黑名单。
-const planningCommands = new Set(["context", "runs", "upper", "wait", "ask", "todo_list", "plan"]);
+// 名单里只有只读或无副作用的工具：todo_list 只读取待办；todo_add、todo_done 不在自动允许名单中，由下方策略逐次确认。
+const allowedTools = new Set(["echo", "upper", "todo_list"]);
 
 // 注册表由入口持有；扩展在启动时登记，Agent 循环统一查找和执行。
 // 宿主控制自动允许与逐次确认，扩展注册本身不代表获得授权。
-// 策略分四路：规划模式先拦不在 planningTools 里的名字；
-// 其余再按名单自动允许、指定名称交给用户确认、其他一律拒绝。
 const toolRegistry = createToolRegistry((name, argumentsJson, context) => {
-  // 必须先检查模式，再检查自动允许或逐次确认。
-  // 规划模式禁止的工具直接拒绝，不通过用户输入 y 临时放行。
-  if (mode === "plan" && !planningTools.has(name)) {
-    return false;
-  }
-
   if (allowedTools.has(name)) return true;
-  if (
-    name === "delay_echo" ||
-    name === "todo_add" ||
-    name === "todo_done" ||
-    name === "read_file" ||
-    name === "search_file" ||
-    name === "list_files" ||
-    name === "preview_edit" ||
-    name === "apply_edit" ||
-    name === "run_command" ||
-    name === "plan_set"
-  ) {
-    // argumentsJson 是宿主冻结的参数快照，确认时展示的就是即将执行的内容。
-    // 把 signal 传给 confirm，用户在确认期间按 Ctrl+C 或超时时，提问会中止。
+  if (name === "delay_echo" || name === "todo_add" || name === "todo_done") {
     return context.confirm(name, argumentsJson, context.callId, context.signal);
   }
   return false;
@@ -265,45 +217,19 @@ function createUiRenderer(
       case "agent_end":
         flushMarkdown(state, append);
         state.markdown.inCodeBlock = false;
-        if (process.stdout.isTTY) {
-          append(ANSI_RESET);
-        }
+        if (process.stdout.isTTY) append(ANSI_RESET);
         state.tool = null;
-
-        if (event.reason === "completed") {
-          state.status = "completed";
-        } else if (event.reason === "cancelled") {
-          state.status = "cancelled";
-        } else if (event.reason === "timeout") {
-          state.status = "timeout";
-        } else if (event.reason === "truncated") {
-          state.status = "truncated";
-        } else if (event.reason === "loop_limit") {
-          state.status = "loop_limit";
-        } else {
-          state.status = "error";
-        }
-
-        if (event.reason === "completed") {
-          append(`\n完成，共 ${event.round} 轮\n`);
-        }
-
-        if (event.reason === "cancelled") {
-          append("\n请求已取消\n");
-        }
-
-        if (event.reason === "timeout") {
-          append("\n请求超时：本轮超过 30 秒预算\n");
-        }
-
-        if (event.reason === "truncated") {
-          append("\n响应因长度截断，不执行工具\n");
-        }
-
-        if (event.reason === "loop_limit") {
-          append(`\n达到最大轮次限制: ${event.round}\n`);
-        }
-
+        if (event.reason === "completed") state.status = "completed";
+        else if (event.reason === "cancelled") state.status = "cancelled";
+        else if (event.reason === "timeout") state.status = "timeout";
+        else if (event.reason === "truncated") state.status = "truncated";
+        else if (event.reason === "loop_limit") state.status = "loop_limit";
+        else state.status = "error";
+        if (event.reason === "completed") append(`\n完成，共 ${event.round} 轮\n`);
+        if (event.reason === "cancelled") append("\n请求已取消\n");
+        if (event.reason === "timeout") append("\n请求超时：本轮超过 30 秒预算\n");
+        if (event.reason === "truncated") append("\n响应因长度截断，不执行工具\n");
+        if (event.reason === "loop_limit") append(`\n达到最大轮次限制: ${event.round}\n`);
         break;
       case "error":
         flushMarkdown(state, append);
@@ -328,11 +254,7 @@ async function streamChat(
     {
       model,
       messages,
-      // 规划模式不把写入类工具发给模型，减少它主动去调这些名字。
-      // 权限入口仍会拦截：模型若硬编造 apply_edit 等名字，也会得到“未获授权”。
-      tools: toolRegistry
-        .definitions()
-        .filter((tool) => mode === "execute" || planningTools.has(tool.function.name)),
+      tools: toolRegistry.definitions(),
       stream: true,
       // openai SDK 的 stream: true 默认不返回 usage。需要加 stream_options: { include_usage: true }
       // 这个还需要产商支持的
@@ -429,7 +351,6 @@ async function runAgent(
   userAbort: AbortController,
   onEvent: EventHandler,
   session: Session,
-  // 默认拒绝：runNonInteractive 不传入时，需要确认的工具不会被执行。
   confirmTool: ConfirmTool = async () => false,
 ): Promise<void> {
   saveMessage(session, { role: "user", content: userInput });
@@ -591,7 +512,6 @@ async function runAgent(
               sessionFile: session.file,
               callId: tc.id,
               signal,
-              // 宿主的确认回调；权限策略通过 context.confirm 向用户提问。
               confirm: confirmTool,
             }),
           );
@@ -703,8 +623,7 @@ async function main(): Promise<void> {
   async function askInput(question: string, signal: AbortSignal): Promise<string> {
     signal.throwIfAborted();
     if (closed) throw new Error("输入已关闭，无法提问");
-    if (!process.stdin.isTTY || !process.stdout.isTTY)
-      throw new Error("交互提问需要终端输入和输出");
+    if (!process.stdin.isTTY || !process.stdout.isTTY) throw new Error("交互提问需要终端输入和输出");
     if (asking) throw new Error("已有提问正在等待回答");
     asking = true;
     try {
@@ -716,8 +635,6 @@ async function main(): Promise<void> {
 
   const confirmTool: ConfirmTool = async (name, argumentsJson, callId, signal) => {
     // 非终端默认拒绝；只有对本次问题输入小写 y 才允许。
-    // JSON.stringify 让名称、调用 ID 里的空格或引号原样可见，避免和提示文本粘在一起。
-    // 不接受 Y / yes：必须精确等于 trim 后的 "y"，其余一律视为拒绝。
     if (!process.stdin.isTTY || !process.stdout.isTTY) return false;
     const answer = await askInput(
       `允许工具 ${JSON.stringify(name)}，调用 ${JSON.stringify(callId)}，参数 ${argumentsJson}？[y/N]`,
@@ -754,7 +671,6 @@ async function main(): Promise<void> {
 
   console.log(`模型: ${model}`);
   console.log("输入内容后回车，输入 /exit 退出。");
-  console.log("/mode 查看模式，/mode plan 只读规划，/mode execute 恢复执行。");
   console.log("/new 新建，/sessions 列出，/resume 完整文件名 恢复，/history 查看历史。");
   console.log("/diagnostics 查看当前诊断；/diagnostics 完整会话文件名 查看指定会话诊断。");
   // 这里的“生成中”也包括扩展命令执行中：两者都会登记 activeAbort。
@@ -769,22 +685,6 @@ async function main(): Promise<void> {
       if (userInput === "/exit") break;
 
       if (!userInput) {
-        showPrompt();
-        continue;
-      }
-
-      // 模式只能由用户通过宿主命令切换；串行输入保证不会中途改变审批范围。
-      // `/^\/mode(?:\s|$)/` 匹配单独的 /mode 或 /mode 加参数，避免 /modefoo 被当成切模式。
-      if (/^\/mode(?:\s|$)/.test(userInput)) {
-        const requested = userInput.slice("/mode".length).trim();
-        if (requested === "") {
-          writeOutput(`当前模式：${mode}\n`);
-        } else if (requested === "plan" || requested === "execute") {
-          mode = requested;
-          writeOutput(`当前模式：${mode}\n`);
-        } else {
-          writeOutput("用法：/mode [plan|execute]\n", true);
-        }
         showPrompt();
         continue;
       }
@@ -839,11 +739,6 @@ async function main(): Promise<void> {
           }
           const name = match[1];
           const args = match[2] ?? "";
-          // 直接命令不经过工具审批；未知扩展命令也不能绕过规划模式。
-          // 抛出后由下方 catch 显示“命令执行失败”，不会把该斜杠行送给模型。
-          if (mode === "plan" && !planningCommands.has(name)) {
-            throw new Error(`规划模式禁止执行命令: /${name}`);
-          }
           // 每次执行时读取当前状态，避免扩展一直引用旧会话。
           // Object.freeze 让扩展在运行时也无法改写上下文（CommandContext 的 Readonly 只在编译期生效）。
           const context = Object.freeze({
@@ -940,14 +835,10 @@ let disposeExtension: (() => void) | undefined;
 let disposeExternal: (() => void) | undefined;
 
 try {
-  // 默认能力共用装载与清理：初始化失败统一回滚。
-  // 无需环境变量即可使用 echo、提问/待办/计划（workflow）、受限文件能力，以及经确认的前台命令。
-  disposeExtension = mountExtension(toolRegistry, (api) => {
-    registerEcho(api);
-    registerWorkflow(api);
-  });
+  // 内置扩展：代码中直接 import，同步装载。
+  disposeExtension = mountExtension(toolRegistry, registerEcho);
   // 外部扩展（可选）：由环境变量 LCN_AGENT_EXTENSION 指定文件路径，运行时动态加载，
-  // 例如 LCN_AGENT_EXTENSION=dist/extensions/delay.js；重复加载默认扩展会明确报重名。
+  // 例如 LCN_AGENT_EXTENSION=dist/extensions/upper.js。
   const extensionPath = process.env.LCN_AGENT_EXTENSION;
   if (extensionPath) {
     disposeExternal = await loadExtension(toolRegistry, extensionPath);

@@ -1,8 +1,8 @@
 import OpenAI from "openai";
 import { clearScreenDown, cursorTo, moveCursor } from "node:readline";
 import { createInterface } from "node:readline/promises";
-import { loadConfig } from "./core/config.js";
-import { createDiagnostics, DiagnosticWriteError, showDiagnostics } from "./core/diagnostics.js";
+import { loadConfig } from "../core/config.js";
+import { createDiagnostics, DiagnosticWriteError, showDiagnostics } from "../core/diagnostics.js";
 
 import {
   createSession,
@@ -12,7 +12,7 @@ import {
   saveMessage,
   type Session,
   SessionWriteError,
-} from "./core/session.js";
+} from "../core/session.js";
 
 // 在入口的错误边界内完成初始化，配置校验通过后才允许运行 Agent。
 let client: OpenAI;

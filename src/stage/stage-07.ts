@@ -1,17 +1,17 @@
-import type { ConfirmTool } from "./core/tools.js";
+import type { ConfirmTool } from "../core/tools.js";
 import OpenAI from "openai";
 import { clearScreenDown, cursorTo, moveCursor } from "node:readline";
-import { AgentEndEvent, createToolRegistry, loadExtension, mountExtension } from "./core/tools.js";
-import { registerEcho } from "./extensions/echo.js";
-import registerWorkflow from "./extensions/workflow.js";
+import { AgentEndEvent, createToolRegistry, loadExtension, mountExtension } from "../core/tools.js";
+import { registerEcho } from "../extensions/echo.js";
+import registerWorkflow from "../extensions/workflow.js";
 import { createInterface } from "node:readline/promises";
-import { loadConfig } from "./core/config.js";
-import { createDiagnostics, DiagnosticWriteError, showDiagnostics } from "./core/diagnostics.js";
-import { createSkills } from "./extensions/skills.js";
-import { expandPrompt, listPrompts } from "./core/prompts.js";
-import { compactIfNeeded, compactSession, contextMessages } from "./core/compaction.js";
-import { memoryPrompt } from "./core/memory.js";
-import { forkSession } from "./core/branch.js";
+import { loadConfig } from "../core/config.js";
+import { createDiagnostics, DiagnosticWriteError, showDiagnostics } from "../core/diagnostics.js";
+import { createSkills } from "../extensions/skills.js";
+import { expandPrompt, listPrompts } from "../core/prompts.js";
+import { compactIfNeeded, compactSession, contextMessages } from "../core/compaction.js";
+import { memoryPrompt } from "../core/memory.js";
+import { forkSession } from "../core/branch.js";
 
 import {
   createSession,
@@ -21,7 +21,7 @@ import {
   saveMessage,
   type Session,
   SessionWriteError,
-} from "./core/session.js";
+} from "../core/session.js";
 
 // 在入口的错误边界内完成初始化，配置校验通过后才允许运行 Agent。
 let client: OpenAI;

@@ -6,6 +6,7 @@
 - [01 ESM 是什么](#2026-09-17-01-esm-是什么)
 - [02 npx 是什么 & 命令解析](#2026-09-17-02-npx-是什么--命令解析)
 - [09 npm start 与 npm run 的区别](#2026-09-19-09-npm-start-与-npm-run-的区别)
+- [23 npm install --save-exact 与默认安装](#2026-09-27-23-npm-install---save-exact-与默认安装)
 
 ### TypeScript / JavaScript 语法
 - [03 AsyncGenerator 类型标注与底层操作](#2026-09-17-03-asyncgenerator-类型标注与底层操作)
@@ -1328,3 +1329,21 @@ ReturnType<createSkills>         // ❌ 值不能当类型参数
 同族还有 `Parameters<typeof createSkills>`（参数元组）。字段抽取见 [21](#2026-09-27-21-pick-与-omit-工具类型)。入口里配置通过才初始化，所以不能写成 `const skills = createSkills(cwd)`，只能先用返回类型标注再赋值。
 
 **总结：** `ReturnType<typeof fn>` 就是 `fn` 返回值的类型；这里让 `skills` 与 `createSkills` 的返回形状保持同步。
+
+---
+
+## 2026-09-27-23 npm install --save-exact 与默认安装
+
+**问题：** `npm install --save-exact xxx` 和普通的 `npm install` 有什么区别？
+
+**答案：**
+
+差别只在写进 `package.json` 的版本号，不在装不装得上。
+
+默认 `npm install xxx` 写成 caret 范围：`"yaml": "^2.9.1"`，允许同一主版本内升级（可到 `2.10.0`，不会到 `3.0.0`）。`--save-exact`（短选项 `-E`）写成精确版本：`"yaml": "2.9.1"`，之后只装这一版。
+
+`~2.9.1` 只允许补丁（`2.9.x`）。默认 npm 用 `^` 不用 `~`。本仓库多数依赖使用 `^`，`@modelcontextprotocol/sdk` 使用精确版本 `1.30.1`。
+
+即使写了 `^`，提交了 `package-lock.json` 后 `npm ci` 仍装 lock 里的那一版。`--save-exact` 管的是没有 lock、或有人跑 `npm update` 时，`package.json` 允不允许往前走。行为很脆的 CLI/编译器/SDK 适合 exact；多数应用依赖用 `^` + lockfile 即可。脚本命令见 [09](#2026-09-19-09-npm-start-与-npm-run-的区别)。
+
+**总结：** 默认安装写入 `^x.y.z`（可升小版本）；`--save-exact` 写入 `x.y.z`（只准这一版）。锁文件决定 `npm ci` 的精确复现。
