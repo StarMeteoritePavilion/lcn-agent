@@ -3,6 +3,7 @@ import type { ExtensionAPI, Tool } from "../core/tools.js";
 
 // 第 1 部分：给模型看的说明书。
 // 告诉模型：有个叫 upper 的工具，需要一个 string 类型的 text 参数。
+// Tool["definition"] 取出 Tool 类型里 definition 字段的类型，不必把整段结构再抄一遍。
 const definition: Tool["definition"] = {
   type: "function",
   function: {
@@ -18,9 +19,19 @@ const definition: Tool["definition"] = {
   },
 };
 
-// 第 2 部分：真正执行的逻辑。
-// Schema 只描述参数；JSON.parse 和 TypeScript 类型都不会替我们验证它，
-// 参数来自模型，可能缺字段或类型不对，所以先校验再使用。
+/**
+ * 第 2 部分：真正执行的逻辑。
+ *
+ * Schema 只描述参数；JSON.parse 和 TypeScript 类型都不会替我们验证它，
+ * 参数来自模型，可能缺字段或类型不对，所以先校验再使用。
+ *
+ * 不声明第 2 个参数 context：转大写不读文件、不等待，用不到 cwd / signal。
+ * 参数更少的函数可以赋给 Tool.execute（见 core/tools.ts）。
+ *
+ * @param args 宿主对 tool_call.function.arguments 做 JSON.parse 后的值，类型未知
+ * @returns 转成大写后的 text，作为 tool 消息的 content 回传给模型
+ * @throws {Error} args 不是对象，或 text 不是字符串
+ */
 function execute(args: unknown): string {
   // 校验 1：必须是普通对象（排除 null 和数组，二者的 typeof 也是 "object"）。
   if (typeof args !== "object" || args === null || Array.isArray(args)) {
@@ -35,6 +46,7 @@ function execute(args: unknown): string {
     throw new Error("upper 工具参数 text 必须是 string");
   }
 
+  // 只要求有字符串 text；多出来的字段忽略，不在这里拒绝。
   return text.toUpperCase();
 }
 
@@ -42,9 +54,10 @@ function execute(args: unknown): string {
  * 第 3 部分：扩展的统一入口，通过 ExtensionAPI 向宿主注册本扩展提供的全部能力：
  * - 命令 /context：展示当前工作目录、模型和会话文件（演示 CommandContext 的用法）；
  * - 命令 /runs：展示本次装载以来已结束的 Agent 运行次数（演示 onAgentEnd 订阅）；
- * - 工具 upper：供模型调用，把文本转为大写；
+ * - 工具 upper：供模型调用，把文本转为大写；宿主把它放进自动允许名单，不必逐次确认；
  * - 命令 /upper：供用户直接调用，效果同上但不经过模型；
- * - 命令 /wait：等待 3 秒后返回，可按 Ctrl+C 取消（演示异步命令与 context.signal）。
+ * - 命令 /wait：等待 3 秒后返回，可按 Ctrl+C 取消（演示异步命令与 context.signal）；
+ * - 命令 /ask：向用户提一个问题并返回回答（演示 context.ui.ask）。
  *
  * 为什么使用 export default：
  * - 外部扩展通过路径动态加载，宿主事先不知道本文件中的函数叫什么。
@@ -62,6 +75,9 @@ function execute(args: unknown): string {
  * 本项目为“一个外部扩展的主入口”选择默认导出；核心模块的多个公共函数使用命名导出。
  * Pi 在本项目参考版本中的扩展入口也采用默认导出工厂函数，加载器按该约定取得入口。
  * 这里沿用入口组织方式；参数是本项目的 ExtensionAPI，通过它注册工具、命令和订阅事件。
+ *
+ * 当前由 workflow.ts 默认装载；不要再用 LCN_AGENT_EXTENSION 指定本文件，否则会报重名。
+ * 默认导出仍可供未装载 upper 的独立注册表通过 loadExtension 加载。
  *
  * @param api 宿主提供的扩展 API。参数处直接解构出三个方法；
  *            `registerTool: register` 是解构时重命名的写法，表示取出 registerTool 并命名为 register。
@@ -103,13 +119,15 @@ export default function registerUpper({
   register({ definition, execute });
 
   // 用户直接输入命令时执行，不经过模型。
+  // 命令的 args 是 `/upper` 后面剩下的整段文本（字符串），不是 JSON，因此直接 toUpperCase。
   registerCommand({
     name: "upper",
     execute: (args) => args.toUpperCase(),
   });
 
   // 命令 /wait：异步命令示例。
-  // execute 写成 async 函数，返回 Promise；宿主会 await 它；等待期间仍可输入，提交的后续行会排队，结束后才执行。
+  // execute 写成 async 函数，返回 Promise；宿主会 await 它。
+  // 等待期间仍可输入，提交的后续行会排队，结束后才执行。
   registerCommand({
     name: "wait",
     async execute(_args, context) {
@@ -131,9 +149,12 @@ export default function registerUpper({
     },
   });
 
+  // 命令 /ask：演示 context.ui.ask。提问占用同一条输入线，回答不会当新命令执行。
   registerCommand({
     name: "ask",
     async execute(args, context) {
+      // args 为空时用默认问句；`||` 把空字符串也当成“没提供问题”。
+      // 等待回答期间按 Ctrl+C，ask 的 Promise 会拒绝，宿主输出“命令已取消”。
       const answer = await context.ui.ask(args || "请输入回答：");
       return `回答：${answer}`;
     },
