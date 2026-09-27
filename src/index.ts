@@ -31,10 +31,41 @@ let model: string;
 // 自动允许的都是只读或无副作用：echo / upper 只变换文本，todo_list / plan_show 只读取。
 const allowedTools = new Set(["echo", "upper", "todo_list", "plan_show"]);
 
+// 规划模式允许发给模型、并允许走到后面审批的工具名单。
+// 这是宿主维护的名单，不接受扩展自报“只读”作为依据。
+// 只含不改磁盘的能力：读文件/搜索/列目录/预览编辑可以，apply_edit、run_command、
+// plan_set、todo_add / todo_done、delay_echo 都不在名单里。
+const planningTools = new Set([
+  "echo",
+  "upper",
+  "todo_list",
+  "plan_show",
+  "read_file",
+  "search_file",
+  "list_files",
+  "preview_edit",
+]);
+
+// 模式属于当前进程，不随会话保存；启动时沿用现有执行模式。
+// 只有用户输入宿主命令才能切换，模型没有切换模式的工具。
+// /new、/resume 或重启都不会改它：切到 plan 后换会话仍是 plan，退出再进则回到 execute。
+let mode: "plan" | "execute" = "execute";
+
+// 规划模式下允许的扩展命令。直接输入的 `/命令` 不经过工具审批，
+// 若不限制，用户（或模型让用户去跑）就能用 /todo_add 绕过 plan 工具黑名单。
+const planningCommands = new Set(["context", "runs", "upper", "wait", "ask", "todo_list", "plan"]);
+
 // 注册表由入口持有；扩展在启动时登记，Agent 循环统一查找和执行。
 // 宿主控制自动允许与逐次确认，扩展注册本身不代表获得授权。
-// 策略分三路：名单内自动允许；指定名称交给用户确认；其余一律拒绝。
+// 策略分四路：规划模式先拦不在 planningTools 里的名字；
+// 其余再按名单自动允许、指定名称交给用户确认、其他一律拒绝。
 const toolRegistry = createToolRegistry((name, argumentsJson, context) => {
+  // 必须先检查模式，再检查自动允许或逐次确认。
+  // 规划模式禁止的工具直接拒绝，不通过用户输入 y 临时放行。
+  if (mode === "plan" && !planningTools.has(name)) {
+    return false;
+  }
+
   if (allowedTools.has(name)) return true;
   if (
     name === "delay_echo" ||
@@ -297,7 +328,11 @@ async function streamChat(
     {
       model,
       messages,
-      tools: toolRegistry.definitions(),
+      // 规划模式不把写入类工具发给模型，减少它主动去调这些名字。
+      // 权限入口仍会拦截：模型若硬编造 apply_edit 等名字，也会得到“未获授权”。
+      tools: toolRegistry
+        .definitions()
+        .filter((tool) => mode === "execute" || planningTools.has(tool.function.name)),
       stream: true,
       // openai SDK 的 stream: true 默认不返回 usage。需要加 stream_options: { include_usage: true }
       // 这个还需要产商支持的
@@ -719,6 +754,7 @@ async function main(): Promise<void> {
 
   console.log(`模型: ${model}`);
   console.log("输入内容后回车，输入 /exit 退出。");
+  console.log("/mode 查看模式，/mode plan 只读规划，/mode execute 恢复执行。");
   console.log("/new 新建，/sessions 列出，/resume 完整文件名 恢复，/history 查看历史。");
   console.log("/diagnostics 查看当前诊断；/diagnostics 完整会话文件名 查看指定会话诊断。");
   // 这里的“生成中”也包括扩展命令执行中：两者都会登记 activeAbort。
@@ -733,6 +769,22 @@ async function main(): Promise<void> {
       if (userInput === "/exit") break;
 
       if (!userInput) {
+        showPrompt();
+        continue;
+      }
+
+      // 模式只能由用户通过宿主命令切换；串行输入保证不会中途改变审批范围。
+      // `/^\/mode(?:\s|$)/` 匹配单独的 /mode 或 /mode 加参数，避免 /modefoo 被当成切模式。
+      if (/^\/mode(?:\s|$)/.test(userInput)) {
+        const requested = userInput.slice("/mode".length).trim();
+        if (requested === "") {
+          writeOutput(`当前模式：${mode}\n`);
+        } else if (requested === "plan" || requested === "execute") {
+          mode = requested;
+          writeOutput(`当前模式：${mode}\n`);
+        } else {
+          writeOutput("用法：/mode [plan|execute]\n", true);
+        }
         showPrompt();
         continue;
       }
@@ -787,6 +839,11 @@ async function main(): Promise<void> {
           }
           const name = match[1];
           const args = match[2] ?? "";
+          // 直接命令不经过工具审批；未知扩展命令也不能绕过规划模式。
+          // 抛出后由下方 catch 显示“命令执行失败”，不会把该斜杠行送给模型。
+          if (mode === "plan" && !planningCommands.has(name)) {
+            throw new Error(`规划模式禁止执行命令: /${name}`);
+          }
           // 每次执行时读取当前状态，避免扩展一直引用旧会话。
           // Object.freeze 让扩展在运行时也无法改写上下文（CommandContext 的 Readonly 只在编译期生效）。
           const context = Object.freeze({

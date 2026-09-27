@@ -107,6 +107,19 @@ class Handler(BaseHTTPRequestHandler):
             delta = {'tool_calls': [{'index': 0, 'id': 'plan_1', 'type': 'function',
                                     'function': {'name': 'plan_set', 'arguments': arguments}}]}
             reason = 'tool_calls'
+        elif last['role'] == 'user' and last['content'] == '规划拦截验证':
+            calls = [
+                ('todo_add', {'text':'不应新增'}), ('todo_done', {'id':'1'}),
+                ('plan_set', {'goal':'不应替换','steps':['不应执行']}),
+                ('apply_edit', {'path':'mode-file.txt','before':'原文','after':'覆盖'}),
+                ('run_command', {'executable':shutil.which('node'),'args':['-e',
+                    "require('node:fs').writeFileSync('mode-command-marker','不应执行')"]}),
+                ('delay_echo', {'text':'不应执行'}),
+            ]
+            delta = {'tool_calls':[{'index':i,'id':f'mode_{i}','type':'function',
+                                   'function':{'name':name,'arguments':json.dumps(args)}}
+                                  for i,(name,args) in enumerate(calls)]}
+            reason = 'tool_calls'
         elif last['role'] == 'user' and last['content'] == '权限拒绝验证':
             delta = {'tool_calls': [{'index': 0, 'id': 'denied_1', 'type': 'function',
                                     'function': {'name': 'denied_probe', 'arguments': '{}'}}]}
@@ -387,7 +400,7 @@ const context = Object.freeze({
 import { createToolRegistry, mountExtension } from "./dist/core/tools.js";
 const r = createToolRegistry(() => true);
 const command = { name: "sample", execute: text => text };
-for (const name of ["exit", "new", "sessions", "history", "diagnostics", "resume"]) {
+for (const name of ["exit", "new", "sessions", "history", "diagnostics", "resume", "mode"]) {
   assert.throws(() => r.registerCommand({ ...command, name }), /宿主命令不可覆盖/);
 }
 for (const name of ["", "/bad", "bad name", "Upper", "1bad"]) {
@@ -1833,6 +1846,81 @@ export default function(api) {
         assert history[-1] == {'role':'tool','tool_call_id':'plan_1','content':'执行失败：工具未获授权: plan_set'}
         assert plan_file.read_bytes() == saved and requests.empty()
         print('通过：计划真实终端拒绝/取消、损坏不覆盖、异常后恢复、重启恢复及非交互拒绝')
+
+        # 强制模型调用被隐藏的工具，验证真正的执行拦截及业务文件不变。
+        mode_probe = project / 'mode-probe.mjs'
+        mode_probe.write_text('''
+import {writeFileSync} from "node:fs";
+export default function(api) {
+ api.registerTool({definition:{type:"function",function:{name:"delay_echo",parameters:{type:"object"}}},
+  execute(){writeFileSync("mode-external-marker","不应执行");return "已执行";}});
+ api.registerCommand({name:"external_write",execute(){writeFileSync("mode-external-marker","不应执行");}});
+}
+''')
+        mode_env = {**test_env, 'LCN_AGENT_EXTENSION':str(mode_probe)}
+        master, slave = pty.openpty()
+        child = subprocess.Popen(['node', 'dist/index.js'], cwd=project, env=mode_env,
+                                 stdin=slave, stdout=slave, stderr=slave)
+        children.append(child); os.close(slave)
+        try:
+            command_expect('生成中 Ctrl+C')
+            os.write(master, b'/mode\n'); command_expect('当前模式：execute')
+            before = set((project / '.lcn-agent/sessions').glob('*.jsonl'))
+            os.write(master, b'/new\n'); command_expect('会话：')
+            mode_session, = set((project / '.lcn-agent/sessions').glob('*.jsonl')) - before
+            os.write(master, '/todo_add 原待办\n'.encode()); command_expect('已添加 #1')
+            mode_plan = project / '.lcn-agent/plans' / (mode_session.name + '.json')
+            mode_plan.parent.mkdir(exist_ok=True)
+            mode_plan.write_text(json.dumps({'version':1,'plan':{'goal':'原计划','steps':['原步骤']}}))
+            mode_file = project / 'mode-file.txt'; mode_file.write_text('原文')
+            mode_todo = project / '.lcn-agent/todos' / (mode_session.name + '.json')
+            unchanged = {path:path.read_bytes() for path in [mode_file,mode_plan,mode_todo]}
+            os.write(master, b'/mode plan\n'); command_expect('当前模式：plan')
+            os.write(master, b'/mode wrong\n'); command_expect('用法：/mode')
+            os.write(master, b'/mode\n'); command_expect('当前模式：plan')
+            for command in ['/todo_add 不应保存','/todo_done 1','/external_write']:
+                os.write(master, (command+'\n').encode()); command_expect('规划模式禁止执行命令: '+command.split()[0])
+            while not tool_definitions.empty(): tool_definitions.get_nowait()
+            os.write(master, '规划拦截验证\n'.encode()); output = command_expect('完成，共 2 轮')
+            assert b'[y/N]' not in output
+            requests.get(timeout=5); history = requests.get(timeout=5)
+            names = ['todo_add','todo_done','plan_set','apply_edit','run_command','delay_echo']
+            assert history[-6:] == [{'role':'tool','tool_call_id':f'mode_{i}',
+                'content':f'执行失败：工具未获授权: {name}'} for i,name in enumerate(names)]
+            for _ in range(2):
+                assert [tool['function']['name'] for tool in tool_definitions.get(timeout=5)] == [
+                    'echo','upper','todo_list','read_file','search_file','list_files','preview_edit','plan_show']
+            assert all(path.read_bytes()==data for path,data in unchanged.items())
+            assert not (project/'mode-command-marker').exists() and not (project/'mode-external-marker').exists()
+            # 只读工具仍需原有审批，并且可以正常回填。
+            os.write(master, '读取文件验证\n'.encode()); command_expect('[y/N]')
+            os.write(master, b'y\n'); command_expect('完成，共 2 轮')
+            requests.get(timeout=5); history = requests.get(timeout=5)
+            assert history[-1] == {'role':'tool','tool_call_id':'read_1','content':'文件读取验收内容'}
+            os.write(master, b'/plan\n'); command_expect('1. 原步骤')
+            os.write(master, b'/todo_list\n'); command_expect('[ ] #1 原待办')
+            os.write(master, b'/new\n'); command_expect('会话：')
+            os.write(master, b'/mode\n'); command_expect('当前模式：plan')
+            os.write(master, ('/resume '+mode_session.name+'\n').encode()); command_expect('已恢复：')
+            os.write(master, b'/mode\n'); command_expect('当前模式：plan')
+            assert all(path.read_bytes()==data for path,data in unchanged.items())
+            os.write(master, b'/mode execute\n'); command_expect('当前模式：execute')
+            os.write(master, b'/todo_done 1\n'); command_expect('已完成 #1')
+            os.write(master, '计划保存验证\n'.encode()); command_expect('[y/N]')
+            os.write(master, b'n\n'); command_expect('完成，共 2 轮')
+            requests.get(timeout=5); history = requests.get(timeout=5)
+            assert history[-1]['content'] == '执行失败：工具未获授权: plan_set'
+            assert mode_plan.read_bytes()==unchanged[mode_plan]
+            # 重启模式不持久化，保持既有启动行为。
+            os.write(master, b'/mode plan\n'); command_expect('当前模式：plan')
+            os.write(master, b'/exit\n'); command_expect('终端程序已退出'); assert child.wait(timeout=5)==0
+        finally:
+            os.close(master)
+        child, lines = launch()
+        expect(lines,'生成中 Ctrl+C'); send(child,'/mode'); expect(lines,'当前模式：execute')
+        send(child,'/exit'); assert child.wait(timeout=5)==0
+        assert requests.empty()
+        print('通过：规划模式工具过滤、强制写入拦截、外部扩展与直接命令限制、只读审批、文件不变、切换及重启边界')
 
         # 空编辑行 Ctrl+D 关闭终端输入，等待中的提问必须退出。
         master, slave = pty.openpty()
