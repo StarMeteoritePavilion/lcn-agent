@@ -96,6 +96,12 @@ class Handler(BaseHTTPRequestHandler):
             delta = {'tool_calls': [{'index': 0, 'id': 'apply_1', 'type': 'function',
                                     'function': {'name': 'apply_edit', 'arguments': arguments}}]}
             reason = 'tool_calls'
+        elif last['role'] == 'user' and last['content'] == '命令执行验证':
+            arguments = json.dumps({'executable': shutil.which('node'), 'args': ['-e',
+                "require('node:fs').writeFileSync('command-marker','已执行');console.log('命令输出')"]})
+            delta = {'tool_calls': [{'index': 0, 'id': 'command_1', 'type': 'function',
+                                    'function': {'name': 'run_command', 'arguments': arguments}}]}
+            reason = 'tool_calls'
         elif last['role'] == 'user' and last['content'] == '权限拒绝验证':
             delta = {'tool_calls': [{'index': 0, 'id': 'denied_1', 'type': 'function',
                                     'function': {'name': 'denied_probe', 'arguments': '{}'}}]}
@@ -717,6 +723,49 @@ try {
         subprocess.run(['node', '--input-type=module', '-e', files_verification],
                        cwd=project, env=test_env, check=True, timeout=5)
 
+        command_verification = r"""
+import assert from "node:assert/strict";
+import {mkdtempSync,rmSync,existsSync,readFileSync,realpathSync} from "node:fs";
+import {tmpdir} from "node:os";
+import {join} from "node:path";
+import {setTimeout as delay} from "node:timers/promises";
+import {createToolRegistry,mountExtension} from "./dist/core/tools.js";
+import commands from "./dist/extensions/commands.js";
+const cwd=mkdtempSync(join(tmpdir(),"lcn-command-"));
+const ctx={cwd,signal:new AbortController().signal};
+const r=createToolRegistry(()=>true);const close=mountExtension(r,commands);
+const run=(code,context=ctx)=>r.execute("run_command",{executable:process.execPath,args:["-e",code]},context);
+try {
+ assert.deepEqual(JSON.parse(await run("console.log('中文');console.error('错误');process.exitCode=7")),{exitCode:7,stdout:"中文\n",stderr:"错误\n"});
+ assert.equal(JSON.parse(await run("console.log(process.cwd())")).stdout.trim(),realpathSync(cwd));
+ assert.equal(JSON.parse(await run("process.stdin.resume();process.stdin.on('end',()=>console.log('已关闭'))")).stdout,"已关闭\n");
+ const literal="空 格;$(echo 不执行)";
+ const result=JSON.parse(await r.execute("run_command",{executable:process.execPath,args:["-e","console.log(process.argv[1])",literal]},ctx));
+ assert.equal(result.stdout,literal+"\n");
+ for(const args of [{executable:"node",args:[]},{executable:process.execPath,args:["\0"]},{executable:"/不存在的程序",args:[]},{executable:process.execPath,args:[1]},{executable:process.execPath,args:Array(65).fill("x")}]) await assert.rejects(r.execute("run_command",args,ctx));
+ for(const stream of ["stdout","stderr"]) await assert.rejects(run(`process.${stream}.write('中'.repeat(30000))`),/ERR_CHILD_PROCESS_STDIO_MAXBUFFER/);
+ const marker=join(cwd,"marker");const write="require('node:fs').writeFileSync('marker','执行了')";
+ const denied=createToolRegistry(()=>false);const stop=mountExtension(denied,commands);
+ await assert.rejects(denied.execute("run_command",{executable:process.execPath,args:["-e",write]},ctx),/未获授权/);stop();assert(!existsSync(marker));
+ const aborted=new AbortController();aborted.abort();await assert.rejects(run(write,{...ctx,signal:aborted.signal}),{name:"AbortError"});assert(!existsSync(marker));
+ // 子进程写下 PID 后再取消，验证确实终止了已启动的直接子进程。
+ const controller=new AbortController();
+ const running=run("require('node:fs').writeFileSync('pid',String(process.pid));setInterval(()=>{},1000)",{...ctx,signal:controller.signal});
+ const cancelled=assert.rejects(running,{name:"AbortError"});
+ for(let i=0;i<100&&!existsSync(join(cwd,"pid"));i++) await delay(20);
+ assert(existsSync(join(cwd,"pid")));const pid=Number(readFileSync(join(cwd,"pid"),"utf8"));controller.abort();await cancelled;
+ let alive=true;
+ for(let i=0;i<100&&alive;i++){try{process.kill(pid,0);await delay(20);}catch(error){assert.equal(error.code,"ESRCH");alive=false;}}
+ assert.equal(alive,false);
+ const started=performance.now();
+ await assert.rejects(run("setInterval(()=>{},1000)"),/SIGKILL/);
+ assert(performance.now()-started>=9000);assert(performance.now()-started<15000);
+ console.log("通过：命令退出码、双输出、工作目录、stdin 关闭、参数字面传递、启动失败、参数边界、输出超限、拒绝、取消进程及真实 10 秒超时");
+} finally {close();rmSync(cwd,{recursive:true,force:true});}
+"""
+        subprocess.run(['node', '--input-type=module', '-e', command_verification],
+                       cwd=project, env=test_env, check=True, timeout=25)
+
         workflow_verification = r'''
 import assert from "node:assert/strict";
 import {createToolRegistry,loadExtension,mountExtension} from "./dist/core/tools.js";
@@ -730,7 +779,7 @@ r.onAgentEnd=listener=>subscribe(event=>{notifications++;listener(event)});
 const commands=["context","runs","upper","wait","ask","todo_add","todo_list","todo_done"];
 for(let i=0;i<3;i++) {
  const close=await loadExtension(r,"dist/extensions/workflow.js");
- assert.deepEqual(r.definitions().map(t=>t.function.name),["upper","todo_list","todo_add","todo_done","read_file","search_file","list_files","preview_edit","apply_edit"]);
+ assert.deepEqual(r.definitions().map(t=>t.function.name),["upper","todo_list","todo_add","todo_done","read_file","search_file","list_files","preview_edit","apply_edit","run_command"]);
  assert.equal(await r.executeCommand("ask","",context),"回答：组合回答");
  assert.equal(await r.executeCommand("upper","hello",context),"HELLO");
  await assert.rejects(r.executeCommand("todo_list","",context),/先 \/new/);
@@ -1091,7 +1140,7 @@ console.log("通过：保存恢复、损坏定位、原文件保护、工具配�
         expect(lines, '生成中 Ctrl+C')
         assert len(ask(child, lines, '第一问')) == 1
         definitions = tool_definitions.get(timeout=5)
-        assert [tool['function']['name'] for tool in definitions] == ['echo', 'upper', 'todo_list', 'todo_add', 'todo_done', 'read_file', 'search_file', 'list_files', 'preview_edit', 'apply_edit']
+        assert [tool['function']['name'] for tool in definitions] == ['echo', 'upper', 'todo_list', 'todo_add', 'todo_done', 'read_file', 'search_file', 'list_files', 'preview_edit', 'apply_edit', 'run_command']
         assert definitions[0]['function']['parameters']['required'] == ['text']
         history = ask(child, lines, '第二问')
         assert [m['role'] for m in history] == ['user', 'assistant', 'user']
@@ -1242,7 +1291,7 @@ console.log("通过：保存恢复、损坏定位、原文件保护、工具配�
             assert first[-1]['content'] == '外部工具验证'
             history = requests.get(timeout=5)
             assert history[-1] == {'role': 'tool', 'tool_call_id': 'upper_1', 'content': 'HELLO'}
-            assert [t['function']['name'] for t in tool_definitions.get(timeout=5)] == ['echo', 'upper', 'todo_list', 'todo_add', 'todo_done', 'read_file', 'search_file', 'list_files', 'preview_edit', 'apply_edit', 'delay_echo']
+            assert [t['function']['name'] for t in tool_definitions.get(timeout=5)] == ['echo', 'upper', 'todo_list', 'todo_add', 'todo_done', 'read_file', 'search_file', 'list_files', 'preview_edit', 'apply_edit', 'run_command', 'delay_echo']
             assert requests.empty()
             missing = Path(external) / '不存在.mjs'
             result = subprocess.run(['node', 'dist/index.js', '不应请求模型'], cwd=project,
@@ -1618,6 +1667,46 @@ export default function(api) {
         assert apply_path.read_text() == '原文' and requests.empty()
         print('通过：编辑真实终端参数展示、允许/拒绝、文件变化、取消、30 秒审批超时、结果配对及非交互拒绝')
 
+        # 真实默认入口确认后才允许产生文件副作用，拒绝/取消/非交互都不执行。
+        marker = project / 'command-marker'
+        master, slave = pty.openpty()
+        child = subprocess.Popen(['node', 'dist/index.js'], cwd=project, env=test_env,
+                                 stdin=slave, stdout=slave, stderr=slave)
+        children.append(child); os.close(slave)
+        try:
+            command_expect('生成中 Ctrl+C')
+            for answer in ['n', '', '取消', 'y']:
+                os.write(master, '命令执行验证\n'.encode())
+                output = command_expect('[y/N]')
+                assert b'run_command' in output and b'command-marker' in output
+                assert not marker.exists()
+                if answer == '取消':
+                    os.write(master, b'\x03'); command_expect('请求已取消')
+                    requests.get(timeout=5)
+                    os.write(master, b'/upper ready\n'); command_expect('READY')
+                    assert requests.empty() and not marker.exists()
+                    continue
+                os.write(master, (answer + '\n').encode()); command_expect('完成，共 2 轮')
+                requests.get(timeout=5); history = requests.get(timeout=5)
+                assert history[-1]['tool_call_id'] == 'command_1'
+                if answer == 'y':
+                    assert json.loads(history[-1]['content']) == {'exitCode':0,'stdout':'命令输出\n','stderr':''}
+                    assert marker.read_text() == '已执行'; marker.unlink()
+                else:
+                    assert history[-1]['content'] == '执行失败：工具未获授权: run_command'
+                    assert not marker.exists()
+            os.write(master, b'/exit\n'); command_expect('终端程序已退出')
+            assert child.wait(timeout=5) == 0
+        finally:
+            os.close(master)
+        result = subprocess.run(['node', 'dist/index.js', '命令执行验证'], cwd=project, env=test_env,
+                                capture_output=True, text=True, timeout=5)
+        assert result.returncode == 0 and '工具未获授权: run_command' in result.stdout
+        requests.get(timeout=5); history = requests.get(timeout=5)
+        assert history[-1] == {'role':'tool','tool_call_id':'command_1','content':'执行失败：工具未获授权: run_command'}
+        assert requests.empty() and not marker.exists()
+        print('通过：命令真实审批允许/拒绝/取消、文件副作用、结果配对及非交互拒绝')
+
         # 空编辑行 Ctrl+D 关闭终端输入，等待中的提问必须退出。
         master, slave = pty.openpty()
         child = subprocess.Popen(['node', 'dist/index.js'], cwd=project, env=env,
@@ -1673,7 +1762,7 @@ export default function(api) {
         history = requests.get(timeout=5)
         assert history[-1] == {'role':'tool', 'tool_call_id':'todo_read_1',
                                'content':'[x] #1 阅读会话模块\n[ ] #2 吃饭'}
-        assert [tool['function']['name'] for tool in tool_definitions.get(timeout=5)] == ['echo', 'upper', 'todo_list', 'todo_add', 'todo_done', 'read_file', 'search_file', 'list_files', 'preview_edit', 'apply_edit']
+        assert [tool['function']['name'] for tool in tool_definitions.get(timeout=5)] == ['echo', 'upper', 'todo_list', 'todo_add', 'todo_done', 'read_file', 'search_file', 'list_files', 'preview_edit', 'apply_edit', 'run_command']
         assert todo_path.read_bytes() == original_todo
         assert requests.empty()
         print('通过：模型发现待办工具、列表正确回填且待办文件字节不变')
