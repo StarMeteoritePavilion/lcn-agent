@@ -12,7 +12,7 @@ import registerFiles from "./files.js";
  * 当前组合：
  * - upper.ts：演示命令、上下文、异步等待与提问；
  * - todo.ts：按会话持久化待办，提供命令和模型工具；
- * - files.ts：经宿主确认后读取或搜索工作区内的小文本文件，并列出目录直接子项。
+ * - files.ts：经宿主确认后读取或搜索工作区内的小文本文件，列出目录直接子项，以及生成不落盘的编辑预览。
  *
  * echo 不在这里：它是内嵌命名导出，由入口单独 registerEcho。
  * delay_echo 也不在这里：默认需用 LCN_AGENT_EXTENSION 按路径加载。

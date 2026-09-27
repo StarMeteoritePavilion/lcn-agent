@@ -83,6 +83,10 @@ class Handler(BaseHTTPRequestHandler):
             delta = {'tool_calls': [{'index': 0, 'id': 'list_1', 'type': 'function',
                                     'function': {'name': 'list_files', 'arguments': '{"path":"list-fixture"}'}}]}
             reason = 'tool_calls'
+        elif last['role'] == 'user' and last['content'] == '预览编辑验证':
+            delta = {'tool_calls': [{'index': 0, 'id': 'preview_1', 'type': 'function',
+                                    'function': {'name': 'preview_edit', 'arguments': '{"path":"read-fixture.txt","oldText":"验收","newText":"预览"}'}}]}
+            reason = 'tool_calls'
         elif last['role'] == 'user' and last['content'] == '权限拒绝验证':
             delta = {'tool_calls': [{'index': 0, 'id': 'denied_1', 'type': 'function',
                                     'function': {'name': 'denied_probe', 'arguments': '{}'}}]}
@@ -543,6 +547,23 @@ try {
   }
  } finally {fsPromises.default.opendir=originalOpen;syncBuiltinESMExports();}
  console.log("通过：目录类型、空目录、100/101 项、符号链接边界、参数、权限、取消及真实目录句柄关闭");
+ const preview=async(path,oldText,newText)=>JSON.parse(await r.execute("preview_edit",{path,oldText,newText},ctx));
+ const editPath=join(cwd,"edit");
+ for(const [before,oldText,newText,after] of [["\ufeffabc","b","B","\ufeffaBc"],["甲\r\n乙\n丙","乙\n丙","新行","甲\r\n新行"],["a.b",".","$&","a$&b"],["abc","b","","ac"],["a b"," ","_","a_b"],["x","x","中".repeat(21845)+"a","中".repeat(21845)+"a"]]) {
+  writeFileSync(editPath,before);const bytes=readFileSync(editPath);
+  assert.deepEqual(await preview("edit",oldText,newText),{path:"edit",before,after});
+  assert.deepEqual(readFileSync(editPath),bytes);
+ }
+ for(const [before,oldText,newText,error] of [["aaa","aa","x",/多次/],["a a","a","b",/多次/],["abc","x","y",/未找到/],["abc","a","a",/相同/],["x","x","中".repeat(21846),/64 KiB/]]) {
+  writeFileSync(editPath,before);const bytes=readFileSync(editPath);
+  await assert.rejects(preview("edit",oldText,newText),error);assert.deepEqual(readFileSync(editPath),bytes);
+ }
+ for(const path of ["escape","../outside","directory","large","invalid"]) await assert.rejects(preview(path,"x","y"));
+ for(const args of [null,[],{}, {path:"edit",oldText:"",newText:"a"},{path:"edit",oldText:"x",newText:1},{path:"edit",oldText:"x",newText:"y",extra:1}]) await assert.rejects(r.execute("preview_edit",args,ctx),/参数/);
+ await assert.rejects(r.execute("preview_edit",{path:"edit",oldText:"x",newText:"y"},{...ctx,signal:abort.signal}),{name:"AbortError"});
+ const rejectPreview=createToolRegistry(()=>false);const disposePreview=mountExtension(rejectPreview,files);
+ await assert.rejects(rejectPreview.execute("preview_edit",{path:"missing",oldText:"x",newText:"y"},ctx),/未获授权/);disposePreview();
+ console.log("通过：编辑预览唯一/重叠匹配、删除、多行、字面替换、字节上限、参数、取消及文件不变");
  assert.equal(readFileSync(join(cwd,"文本.txt"),"utf8"),"中文内容");
  console.log("通过：文件读取大小边界、空文件、UTF-8、路径越界、符号链接、参数、取消和权限拒绝");
 } finally {close();rmSync(base,{recursive:true,force:true});}
@@ -563,7 +584,7 @@ r.onAgentEnd=listener=>subscribe(event=>{notifications++;listener(event)});
 const commands=["context","runs","upper","wait","ask","todo_add","todo_list","todo_done"];
 for(let i=0;i<3;i++) {
  const close=await loadExtension(r,"dist/extensions/workflow.js");
- assert.deepEqual(r.definitions().map(t=>t.function.name),["upper","todo_list","todo_add","todo_done","read_file","search_file","list_files"]);
+ assert.deepEqual(r.definitions().map(t=>t.function.name),["upper","todo_list","todo_add","todo_done","read_file","search_file","list_files","preview_edit"]);
  assert.equal(await r.executeCommand("ask","",context),"回答：组合回答");
  assert.equal(await r.executeCommand("upper","hello",context),"HELLO");
  await assert.rejects(r.executeCommand("todo_list","",context),/先 \/new/);
@@ -924,7 +945,7 @@ console.log("通过：保存恢复、损坏定位、原文件保护、工具配�
         expect(lines, '生成中 Ctrl+C')
         assert len(ask(child, lines, '第一问')) == 1
         definitions = tool_definitions.get(timeout=5)
-        assert [tool['function']['name'] for tool in definitions] == ['echo', 'upper', 'todo_list', 'todo_add', 'todo_done', 'read_file', 'search_file', 'list_files']
+        assert [tool['function']['name'] for tool in definitions] == ['echo', 'upper', 'todo_list', 'todo_add', 'todo_done', 'read_file', 'search_file', 'list_files', 'preview_edit']
         assert definitions[0]['function']['parameters']['required'] == ['text']
         history = ask(child, lines, '第二问')
         assert [m['role'] for m in history] == ['user', 'assistant', 'user']
@@ -1075,7 +1096,7 @@ console.log("通过：保存恢复、损坏定位、原文件保护、工具配�
             assert first[-1]['content'] == '外部工具验证'
             history = requests.get(timeout=5)
             assert history[-1] == {'role': 'tool', 'tool_call_id': 'upper_1', 'content': 'HELLO'}
-            assert [t['function']['name'] for t in tool_definitions.get(timeout=5)] == ['echo', 'upper', 'todo_list', 'todo_add', 'todo_done', 'read_file', 'search_file', 'list_files', 'delay_echo']
+            assert [t['function']['name'] for t in tool_definitions.get(timeout=5)] == ['echo', 'upper', 'todo_list', 'todo_add', 'todo_done', 'read_file', 'search_file', 'list_files', 'preview_edit', 'delay_echo']
             assert requests.empty()
             missing = Path(external) / '不存在.mjs'
             result = subprocess.run(['node', 'dist/index.js', '不应请求模型'], cwd=project,
@@ -1334,6 +1355,21 @@ export default function(api) {
             os.write(master, '列目录验证\n'.encode()); command_expect('[y/N]')
             os.write(master, b'\x03'); command_expect('请求已取消')
             requests.get(timeout=5); assert requests.empty()
+            original = (project / 'read-fixture.txt').read_bytes()
+            for answer in ['n', 'y']:
+                os.write(master, '预览编辑验证\n'.encode()); command_expect('[y/N]')
+                os.write(master, (answer + '\n').encode()); command_expect('完成，共 2 轮')
+                requests.get(timeout=5); history = requests.get(timeout=5)
+                assert history[-1]['tool_call_id'] == 'preview_1'
+                if answer == 'y':
+                    assert json.loads(history[-1]['content']) == {'path':'read-fixture.txt','before':'文件读取验收内容','after':'文件读取预览内容'}
+                else:
+                    assert history[-1]['content'] == '执行失败：工具未获授权: preview_edit'
+                assert (project / 'read-fixture.txt').read_bytes() == original
+            os.write(master, '预览编辑验证\n'.encode()); command_expect('[y/N]')
+            os.write(master, b'\x03'); command_expect('请求已取消')
+            requests.get(timeout=5); assert requests.empty()
+            assert (project / 'read-fixture.txt').read_bytes() == original
             os.write(master, '读取文件验证\n'.encode()); command_expect('[y/N]')
             os.write(master, b'\x03'); command_expect('请求已取消')
             requests.get(timeout=5); assert requests.empty()
@@ -1359,6 +1395,13 @@ export default function(api) {
         assert result.returncode == 0 and '工具未获授权: list_files' in result.stdout
         requests.get(timeout=5); history = requests.get(timeout=5)
         assert history[-1] == {'role':'tool','tool_call_id':'list_1','content':'执行失败：工具未获授权: list_files'}
+        assert requests.empty()
+        result = subprocess.run(['node', 'dist/index.js', '预览编辑验证'], cwd=project, env=test_env,
+                                capture_output=True, text=True, timeout=5)
+        assert result.returncode == 0 and '工具未获授权: preview_edit' in result.stdout
+        requests.get(timeout=5); history = requests.get(timeout=5)
+        assert history[-1] == {'role':'tool','tool_call_id':'preview_1','content':'执行失败：工具未获授权: preview_edit'}
+        assert (project / 'read-fixture.txt').read_bytes() == original
         assert requests.empty()
         print('通过：默认文件工具的终端允许/拒绝、取消、结果配对及非交互拒绝')
 
@@ -1417,7 +1460,7 @@ export default function(api) {
         history = requests.get(timeout=5)
         assert history[-1] == {'role':'tool', 'tool_call_id':'todo_read_1',
                                'content':'[x] #1 阅读会话模块\n[ ] #2 吃饭'}
-        assert [tool['function']['name'] for tool in tool_definitions.get(timeout=5)] == ['echo', 'upper', 'todo_list', 'todo_add', 'todo_done', 'read_file', 'search_file', 'list_files']
+        assert [tool['function']['name'] for tool in tool_definitions.get(timeout=5)] == ['echo', 'upper', 'todo_list', 'todo_add', 'todo_done', 'read_file', 'search_file', 'list_files', 'preview_edit']
         assert todo_path.read_bytes() == original_todo
         assert requests.empty()
         print('通过：模型发现待办工具、列表正确回填且待办文件字节不变')

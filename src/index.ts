@@ -23,7 +23,7 @@ let client: OpenAI;
 let model: string;
 
 // 自动允许的可信学习工具名单；不在名单里的名称默认拒绝。
-// delay_echo、todo_add / todo_done、read_file / search_file / list_files 不自动允许，由下方策略逐次确认。
+// delay_echo、todo_add / todo_done、read_file / search_file / list_files / preview_edit 不自动允许，由下方策略逐次确认。
 // 仅用于当前可信学习扩展；名称名单不能证明外部实现没有副作用。
 // （名单只检查名字：若外部扩展注册了一个同名工具，它同样会被放行，
 //   因此名单不能替代对扩展代码本身的审查。）
@@ -41,7 +41,8 @@ const toolRegistry = createToolRegistry((name, argumentsJson, context) => {
     name === "todo_done" ||
     name === "read_file" ||
     name === "search_file" ||
-    name === "list_files"
+    name === "list_files" ||
+    name === "preview_edit"
   ) {
     // argumentsJson 是宿主冻结的参数快照，确认时展示的就是即将执行的内容。
     // 把 signal 传给 confirm，用户在确认期间按 Ctrl+C 或超时时，提问会中止。
@@ -229,19 +230,45 @@ function createUiRenderer(
       case "agent_end":
         flushMarkdown(state, append);
         state.markdown.inCodeBlock = false;
-        if (process.stdout.isTTY) append(ANSI_RESET);
+        if (process.stdout.isTTY) {
+          append(ANSI_RESET);
+        }
         state.tool = null;
-        if (event.reason === "completed") state.status = "completed";
-        else if (event.reason === "cancelled") state.status = "cancelled";
-        else if (event.reason === "timeout") state.status = "timeout";
-        else if (event.reason === "truncated") state.status = "truncated";
-        else if (event.reason === "loop_limit") state.status = "loop_limit";
-        else state.status = "error";
-        if (event.reason === "completed") append(`\n完成，共 ${event.round} 轮\n`);
-        if (event.reason === "cancelled") append("\n请求已取消\n");
-        if (event.reason === "timeout") append("\n请求超时：本轮超过 30 秒预算\n");
-        if (event.reason === "truncated") append("\n响应因长度截断，不执行工具\n");
-        if (event.reason === "loop_limit") append(`\n达到最大轮次限制: ${event.round}\n`);
+
+        if (event.reason === "completed") {
+          state.status = "completed";
+        } else if (event.reason === "cancelled") {
+          state.status = "cancelled";
+        } else if (event.reason === "timeout") {
+          state.status = "timeout";
+        } else if (event.reason === "truncated") {
+          state.status = "truncated";
+        } else if (event.reason === "loop_limit") {
+          state.status = "loop_limit";
+        } else {
+          state.status = "error";
+        }
+
+        if (event.reason === "completed") {
+          append(`\n完成，共 ${event.round} 轮\n`);
+        }
+
+        if (event.reason === "cancelled") {
+          append("\n请求已取消\n");
+        }
+
+        if (event.reason === "timeout") {
+          append("\n请求超时：本轮超过 30 秒预算\n");
+        }
+
+        if (event.reason === "truncated") {
+          append("\n响应因长度截断，不执行工具\n");
+        }
+
+        if (event.reason === "loop_limit") {
+          append(`\n达到最大轮次限制: ${event.round}\n`);
+        }
+
         break;
       case "error":
         flushMarkdown(state, append);

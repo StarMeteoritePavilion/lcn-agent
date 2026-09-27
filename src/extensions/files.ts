@@ -151,7 +151,8 @@ function readWorkspaceFile(path: string, context: ToolContext): string {
     try {
       // TextDecoder 说明见 session.ts：fatal: true 让非法 UTF-8 直接失败。
       // subarray 只解码已读入的前 length 个字节，不把缓冲区里多出来的 0 算进去。
-      return new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, length));
+      // ignoreBOM: true 保留 BOM 字符，保证编辑预览不静默丢失文件头。
+      return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes.subarray(0, length));
     } catch {
       throw new Error("文件不是有效的 UTF-8 文本");
     }
@@ -222,12 +223,44 @@ async function listWorkspaceFiles(path: string, context: ToolContext): Promise<s
   return JSON.stringify({ entries, truncated });
 }
 
+/** 预览一次唯一的字面替换，不修改文件。 */
+function previewWorkspaceEdit(
+  path: string,
+  oldText: string,
+  newText: string,
+  context: ToolContext,
+): string {
+  const before = readWorkspaceFile(path, context);
+  const index = before.indexOf(oldText);
+
+  if (index === -1) {
+    throw new Error("未找到待替换文本");
+  }
+  // 从下一字符继续查找，重叠匹配也算多个，避免替换位置不明确。
+  if (before.indexOf(oldText, index + 1) !== -1) {
+    throw new Error("待替换文本出现多次，请提供更完整的上下文");
+  }
+
+  if (oldText === newText) {
+    throw new Error("替换前后相同，没有实际修改");
+  }
+  const after = before.slice(0, index) + newText + before.slice(index + oldText.length);
+
+  // 按 UTF-8 字节数限制，不用字符串长度代替文件大小。
+  if (Buffer.byteLength(after, "utf8") > MAX_BYTES) {
+    throw new Error("修改后的文件超过 64 KiB 上限");
+  }
+
+  context.signal.throwIfAborted();
+  return JSON.stringify({ path, before, after });
+}
+
 /**
- * 受限文件扩展：read_file 读取文本，search_file 按行搜索，list_files 列出直接子项。
+ * 受限文件扩展：read_file 读取文本，search_file 按行搜索，list_files 列出直接子项，preview_edit 预览替换但不落盘。
  *
  * read_file / search_file 共用 64 KiB 及路径限制；list_files 共用路径限制，最多 100 项且不递归。
  * 本扩展提供路径边界检查和有界读取，不是文件系统沙箱；是否执行由宿主权限入口决定
- * （index.ts 里这三个工具都走逐次确认，不在自动允许名单中）。
+ * （index.ts 里这四个工具都走逐次确认，不在自动允许名单中）。
  *
  * 使用默认导出供组合入口复用，当前由 workflow.ts 默认装载；不要重复配置外部加载。
  *
@@ -353,6 +386,47 @@ export default function registerFiles({ registerTool }: ExtensionAPI): void {
 
       // 只用 trim 判断空白，不修改真实目录名；`.` 表示工作区根目录。
       return listWorkspaceFiles(args.path, context);
+    },
+  });
+
+  registerTool({
+    definition: {
+      type: "function",
+      function: {
+        name: "preview_edit",
+        description:
+          "经用户确认，预览工作区内小型 UTF-8 文件的一次唯一字面替换，返回修改前后文本，不写入文件",
+        parameters: {
+          type: "object",
+          properties: {
+            path: { type: "string", description: "工作区相对文件路径" },
+            oldText: { type: "string", description: "必须唯一出现的非空原文" },
+            newText: { type: "string", description: "替换文本；空字符串表示删除" },
+          },
+          required: ["path", "oldText", "newText"],
+          additionalProperties: false,
+        },
+      },
+    },
+    execute(args, context) {
+      if (
+        typeof args !== "object" ||
+        args === null ||
+        Array.isArray(args) ||
+        Object.keys(args).length !== 3 ||
+        !("path" in args) ||
+        typeof args.path !== "string" ||
+        !args.path.trim() ||
+        !("oldText" in args) ||
+        typeof args.oldText !== "string" ||
+        args.oldText.length === 0 ||
+        !("newText" in args) ||
+        typeof args.newText !== "string"
+      ) {
+        throw new Error("preview_edit 参数须仅包含有效 path、非空 oldText 和字符串 newText");
+      }
+
+      return previewWorkspaceEdit(args.path, args.oldText, args.newText, context);
     },
   });
 }
