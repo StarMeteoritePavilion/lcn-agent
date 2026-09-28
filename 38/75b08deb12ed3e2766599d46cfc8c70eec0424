@@ -1,0 +1,38 @@
+src/index.ts
+  h_cc77f976c0845e 15,82-83,95,97,99,1323-1334,1357-1358,1360
+  h_cc77f976c0845e 96
+tests/mcp-stdio.mjs
+  h_cc77f976c0845e 5-6,44,65-111
+  h_cc77f976c0845e 8,42-43
+docs/agent-development-learning-plan.md
+  s_4bb043633b259c::t_1180483226bb1d 11,402,430
+docs/agent-handoff.md
+  s_4bb043633b259c::t_1180483226bb1d 3,61
+src/extensions/mcp.ts
+  h_cc77f976c0845e 1-126,128-140
+  s_4bb043633b259c::t_46d68fbc351063 127
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "3875b08deb12ed3e2766599d46cfc8c70eec0424",
+  "prompts": {},
+  "humans": {
+    "h_cc77f976c0845e": {
+      "author": "lcx29 <can@MacBook-Air-M5.local>"
+    }
+  },
+  "sessions": {
+    "s_4bb043633b259c": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0e5cc-ac45-7142-a73e-98ed7a875339",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "lcx29 <can@MacBook-Air-M5.local>",
+      "custom_attributes": {
+        "employee_email": "licanxin@gofo.com"
+      }
+    }
+  }
+}
