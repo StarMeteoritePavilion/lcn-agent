@@ -12,6 +12,7 @@ import { expandPrompt, listPrompts } from "./core/prompts.js";
 import { compactIfNeeded, compactSession, contextMessages } from "./core/compaction.js";
 import { memoryPrompt } from "./core/memory.js";
 import { forkSession } from "./core/branch.js";
+import { mountDemoMcp } from "./extensions/mcp.js";
 
 import {
   createSession,
@@ -78,6 +79,8 @@ const planningCommands = new Set([
   "memory",
 ]);
 
+let mcp: Awaited<ReturnType<typeof mountDemoMcp>> | undefined;
+
 // 注册表由入口持有；扩展在启动时登记，Agent 循环统一查找和执行。
 // 宿主控制自动允许与逐次确认，扩展注册本身不代表获得授权。
 // 策略分四路：规划模式先拦不在 planningTools 里的名字；
@@ -89,8 +92,11 @@ const toolRegistry = createToolRegistry((name, argumentsJson, context) => {
     return false;
   }
 
-  if (allowedTools.has(name)) return true;
+  if (allowedTools.has(name)) {
+    return true;
+  }
   if (
+    mcp?.names.includes(name) ||
     name === "delay_echo" ||
     name === "todo_add" ||
     name === "todo_done" ||
@@ -1314,6 +1320,18 @@ try {
   const config = loadConfig();
   client = new OpenAI({ apiKey: config.apiKey, baseURL: config.baseURL });
   model = config.model;
+
+  // 新增约定：只有精确的 1 启用仓库内演示服务，未设置则不启动。
+  const mcpDemo = process.env.LCN_AGENT_MCP_DEMO;
+  if (mcpDemo !== undefined && mcpDemo !== "1") {
+    throw new Error("LCN_AGENT_MCP_DEMO 仅接受 1 或不设置");
+  }
+
+  if (mcpDemo === "1") {
+    mcp = await mountDemoMcp(toolRegistry);
+    console.log(`已接入本地 MCP 工具：${mcp.names.join(", ")}`);
+  }
+
   // 有命令行文本时单次运行，否则进入 readline 交互模式。
   // lockSessions 防止两个进程同时改同一套会话文件；返回的 unlock 必须在结束时调用。
   const unlock = lockSessions();
@@ -1336,10 +1354,10 @@ try {
   }
 } finally {
   // 按装载逆序逐个清理；一个扩展失败不能跳过其他扩展。
-  for (const dispose of [disposeExternal, disposeExtension]) {
+  // 按装载逆序逐个清理；等待 MCP 连接关闭，一个失败仍继续清理其他扩展。
+  for (const dispose of [mcp?.dispose, disposeExternal, disposeExtension]) {
     try {
-      // ?. 仅在 dispose 有值时调用；装载失败时对应项可能仍是 undefined。
-      dispose?.();
+      await dispose?.();
     } catch {
       console.error("扩展清理失败，部分资源可能尚未释放");
       process.exitCode = 1;
