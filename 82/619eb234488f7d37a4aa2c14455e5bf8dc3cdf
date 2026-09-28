@@ -1,0 +1,57 @@
+src/mcp-demo-server.ts
+  s_4bb043633b259c::t_9e9744f9a39dd2 19-26
+docs/agent-coordination-guide.md
+  s_4bb043633b259c::t_637246f284a764 25-27
+package.json
+  s_4bb043633b259c::t_63cc3e6111fbae 10
+src/index.ts
+  s_4bb043633b259c::t_63cc3e6111fbae 70-71,1180-1201,1203-1206
+  s_4bb043633b259c::t_204453175daa93 1202
+  s_4bb043633b259c::t_df2d223af44f55 1207-1211
+src/mcp-http-demo-server.ts
+  s_4bb043633b259c::t_9e9744f9a39dd2 24-31
+README.md
+  s_4bb043633b259c::t_34de31b2ed9885 278-297,306
+src/extensions/mcp.ts
+  s_4bb043633b259c::t_9e9744f9a39dd2 1,164-165,175,263
+  s_4bb043633b259c::t_ebcdaa2411270d 260
+src/extensions/mcp-content.ts
+  s_4bb043633b259c::t_9e9744f9a39dd2 1-100
+docs/agent-development-learning-plan.md
+  s_4bb043633b259c::t_34de31b2ed9885 11,299,402,428,434
+docs/agent-handoff.md
+  s_4bb043633b259c::t_34de31b2ed9885 53-65
+  s_4bb043633b259c::t_637246f284a764 71-72
+  s_4bb043633b259c::t_6f37b509c438ea 69-70
+src/core/tools.ts
+  s_4bb043633b259c::t_63cc3e6111fbae 312
+tests/mcp-content.mjs
+  s_4bb043633b259c::t_63cc3e6111fbae 1-31,40
+  s_4bb043633b259c::t_6e01e40cec088b 32-39,41-51
+tests/mcp-http.mjs
+  s_4bb043633b259c::t_541de91f7b21ee 58-62
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "82619eb234488f7d37a4aa2c14455e5bf8dc3cdf",
+  "prompts": {},
+  "humans": {
+    "h_cc77f976c0845e": {
+      "author": "lcx29 <can@MacBook-Air-M5.local>"
+    }
+  },
+  "sessions": {
+    "s_4bb043633b259c": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0e5cc-ac45-7142-a73e-98ed7a875339",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "lcx29 <can@MacBook-Air-M5.local>",
+      "custom_attributes": {
+        "employee_email": "licanxin@gofo.com"
+      }
+    }
+  }
+}
