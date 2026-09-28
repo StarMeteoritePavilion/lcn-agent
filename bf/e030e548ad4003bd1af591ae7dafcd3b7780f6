@@ -1,0 +1,30 @@
+docs/agent-handoff.md
+  s_4bb043633b259c::t_d48023baba9cfe 3,55-61
+  s_4bb043633b259c::t_03c5c43db5e56b 62
+docs/agent-development-learning-plan.md
+  s_4bb043633b259c::t_d48023baba9cfe 15-17,430
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "bfe030e548ad4003bd1af591ae7dafcd3b7780f6",
+  "prompts": {},
+  "humans": {
+    "h_cc77f976c0845e": {
+      "author": "lcx29 <can@MacBook-Air-M5.local>"
+    }
+  },
+  "sessions": {
+    "s_4bb043633b259c": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0e5cc-ac45-7142-a73e-98ed7a875339",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "lcx29 <can@MacBook-Air-M5.local>",
+      "custom_attributes": {
+        "employee_email": "licanxin@gofo.com"
+      }
+    }
+  }
+}
