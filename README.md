@@ -2,7 +2,7 @@
 
 从零开始构建的可扩展终端 AI Agent。目前实现流式模型、工具循环、基础终端交互、JSONL 会话保存与恢复、运行诊断，以及工具扩展注册、清理和外部 JavaScript 模块加载。
 
-> **项目状态：** 阶段 0～7 已完成所记录基础范围的本地验收。阶段 7 已留档为 `src/stage/stage-07.ts`，独立模块由本次收尾提交保存；阶段 8 的独立 stdio MCP 演示已验收，下一步接入宿主工具与权限入口。
+> **项目状态：** 阶段 0～7 已完成所记录基础范围的本地验收。阶段 7 已留档为 `src/stage/stage-07.ts`，独立模块由本次收尾提交保存；阶段 8 的本地 stdio MCP 已接入宿主并完成验收，Streamable HTTP 测试服务已独立验收，下一步接入 HTTP 工具。
 
 ## 目标特性
 
@@ -263,7 +263,7 @@ npm test
 ```
 
 `npm run check` 对当前实现和阶段留档进行类型检查。
-`npm test` 先编译当前源码，再运行 `tests/mcp-stdio.mjs`，启动本地演示子进程，验证握手、工具发现、固定文本调用及关闭流程。需要 Node.js 与已安装依赖，不请求真实模型。
+`npm test` 先编译当前源码，再运行 `tests/mcp-stdio.mjs` 和 `tests/mcp-http.mjs`，分别启动本地 stdio 与 Streamable HTTP 演示子进程，验证握手、工具发现、固定文本调用及关闭流程。需要 Node.js 与已安装依赖，不请求真实模型。
 此前脚本 `tests/branch.mjs`、`tests/memory.mjs`、`tests/compaction.mjs`、`tests/prompts.mjs`、`tests/skills.mjs` 和 `tests/session-persistence.py` 保留，当前测试入口不运行它们；本次额外的终端与请求集成验证范围见学习计划验收记录。
 
 项目按阶段学习：`src/index.ts` 是当前入口，`src/stage/stage-xx.ts` 保存已完成阶段。

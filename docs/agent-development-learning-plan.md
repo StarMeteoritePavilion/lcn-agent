@@ -8,7 +8,7 @@
 
 ## 当前进度与学习节奏
 
-进度更新：2026-09-28。阶段 0～7 已完成所记录基础范围的本地验收。阶段 8 已完成独立本地 stdio 演示服务，以及发现工具接入宿主注册表、统一 Schema/权限入口、调用结果回填和异步关闭的本地与真实终端验收；下一步接入 Streamable HTTP 测试服务。
+进度更新：2026-09-28。阶段 0～7 已完成所记录基础范围的本地验收。阶段 8 已完成独立本地 stdio 演示服务、宿主注册接入，以及独立 Streamable HTTP 测试服务的握手、工具发现、调用和关闭验收；下一步将 HTTP 工具接入宿主。
 
 教学顺序与授权规则见 [协作引导](agent-coordination-guide.md#教学方式)。本文件集中维护路线、勾选和下一节点。
 
@@ -399,7 +399,7 @@ Pi 的 `commit/discard` 不能撤销扩展自行造成的文件和网络副作�
 
 ## 8. 当前节点与边界
 
-阶段 6 基础范围综合验收完成；阶段 7 已留档；阶段 8 已完成独立 stdio 服务通信及其宿主接入：工具定义来自实际发现结果，名称加 `mcp_demo_` 前缀后注册，调用仍使用服务原名；Schema 校验、逐次确认、取消信号、结果回填和异步关闭均已验证。紧邻下一步为 Streamable HTTP 测试服务；网页读取、搜索、resources/prompts 仍未开始。
+阶段 6 基础范围综合验收完成；阶段 7 已留档；阶段 8 已完成独立 stdio 服务通信及其宿主接入，以及独立 Streamable HTTP 测试服务验收。stdio 工具定义来自实际发现结果，名称加 `mcp_demo_` 前缀后注册；HTTP 测试服务完成握手、发现、调用和关闭。紧邻下一步为 HTTP 工具接入宿主；网页读取、搜索、resources/prompts 仍未开始。
 教学代码与修改片段只在对话展示，本节原地更新当前状态，不按每次推进追加章节。
 
 - 扩展初始化和事件监听器保持同步；命令与工具执行支持异步及协作取消。卸载会撤销注册项并执行 onDispose 登记的同步清理；资源创建后应立即登记。回调必须同步，不等待 Promise；异步连接关闭及等待子进程退出尚未实现。清理失败继续处理其余项并汇总错误，每项最多执行一次，不保证失败资源已释放。进程内扩展必须可信，注册 API 不是沙箱。
@@ -425,9 +425,10 @@ Pi 的 `commit/discard` 不能撤销扩展自行造成的文件和网络副作�
 
 ## 验收记录
 
-当前通过 `npm test` 构建并运行 `tests/mcp-stdio.mjs`；此前 `tests/branch.mjs`、 `tests/memory.mjs`、 `tests/compaction.mjs`、 `tests/prompts.mjs`、`tests/skills.mjs` 与 `tests/session-persistence.py` 保留但不再作为当前测试入口。运行方式见 [README](../README.md#当前阶段验收)。
+当前通过 `npm test` 构建并运行 `tests/mcp-stdio.mjs` 与 `tests/mcp-http.mjs`；此前 `tests/branch.mjs`、 `tests/memory.mjs`、 `tests/compaction.mjs`、`tests/prompts.mjs`、`tests/skills.mjs` 与 `tests/session-persistence.py` 保留但不再作为当前测试入口。运行方式见 [README](../README.md#当前阶段验收)。
 2026-09-27 阶段 8 stdio 基础：`npm run check`、`npm test`（含构建）、`git diff --check` 通过。先复现演示文本改成“第二版”引起的断言失败，再恢复“本地 MCP 服务已连通”并复验通过。SDK 固定 1.30.1，包内最新协议常量为 2025-11-25；实际发现 demo_status，inputSchema 为 `{ "type": "object", "properties": {} }`。临时 Node 检查确认正常关闭后子进程退出、服务初始化前退出导致连接失败，脚本未入库。未接入 Agent、模型权限、HTTP 服务、resources/prompts，也未验证调用中取消、断连、超时或异常关闭回收，不勾选阶段 8 的组合清单。
 2026-09-28 阶段 8 本地宿主接入：`LCN_AGENT_MCP_DEMO=1 npm start` 真实终端输出显示发现 `mcp_demo_demo_status`；用户输入 `y` 后实际调用返回“本地 MCP 服务已连通”，工具结果按调用 ID 回填，第二轮模型回答引用该结果并正常结束。此前修复了宿主名称未加入 `names` 集合导致默认拒绝的问题；`npm run check`、`npm test`、`git diff --check` 通过。HTTP、断连/超时异常、resources/prompts 和网页能力仍未完成。
+2026-09-28 Streamable HTTP 测试服务：新增 `src/mcp-http-demo-server.ts` 和 `tests/mcp-http.mjs`，使用 SDK `StreamableHTTPServerTransport` 与 `StreamableHTTPClientTransport`，真实本地 HTTP 服务完成握手、发现 `http_status`、调用固定文本和关闭子进程验收。服务绑定 `127.0.0.1` 的随机端口，使用单个内存会话；未接入宿主工具注册，也未验证鉴权、重连、resources/prompts 和网页能力。
 2026-09-28 接手与教学准备：本机缺少已声明依赖，按锁文件执行 `npm ci --ignore-scripts` 后，当前仓库的 `npm run check`、`npm test`、`git diff --check` 通过。另在临时源码副本验证下一步教学片段：注册、Schema 先于审批、允许/拒绝、重名及无效 Schema 回滚、分页拒绝、错误/非文本/结构化结果拒绝、断连、初始化失败、重复清理通过；本地模拟模型与 PTY 验证定义发现、按 ID 回填、规划模式、审批中及调用中取消、真实 30 秒超时、取消后剩余调用不执行、诊断分类、未启用不启动及退出 PID 回收。临时脚本未入库，未请求真实模型；仓库宿主接入仍未实现，用户手敲后须重新验收。
 2026-09-27 快照整理：阶段 0～7 从 `src/stage-xx.ts` 迁至 `src/stage/stage-xx.ts`，逐文件比对确认仅相对导入从 `./core`、`./extensions` 改为 `../core`、`../extensions`，没有逻辑变化；全量类型检查通过。
 2026-09-27 阶段 7 留档：当时将 `src/index.ts` 原样复制为 `src/stage-07.ts`，`cmp` 确认字节一致；后迁移到 `src/stage/stage-07.ts` 并调整相对导入，随后 `npm run check`、`npm test`（含构建）及 `git diff --check` 通过。
