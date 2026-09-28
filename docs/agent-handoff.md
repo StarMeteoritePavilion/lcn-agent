@@ -1,6 +1,6 @@
 # 当前工作交接
 
-更新日期：2026-09-28。当前已实现 stdio 与本机 Streamable HTTP 工具接入宿主。
+更新日期：2026-09-28。当前已实现 stdio 与本机 Streamable HTTP MCP、resources/prompts、受限网页读取和 Tavily 搜索。
 路线和历史证据见[学习计划](agent-development-learning-plan.md)，协作方式见[协作引导](agent-coordination-guide.md)。
 
 ## 接手顺序
@@ -61,7 +61,21 @@ resources/prompts 已接入：src/extensions/mcp-content.ts 处理清单、精�
 仓库测试覆盖两个传输内容入口、参数/分页/能力/类型/大小/卸载边界。
 临时隔离 PTY 与模拟模型检查拒绝、取消、应用、规划模式及保存内容；未请求真实模型。
 
-下一步：阶段 8 的受限网页读取，先明确来源、目标地址、重定向与体积限制，再接搜索提供商。
+read_web 已由用户手敲：默认注册、规划模式可见并逐次审批；仅 nodejs.org/api/ HTML，
+IPv4 地址过滤、禁止跳转、10 秒期限、1 MiB 上限，返回来源与原始 HTML。
+本次类型检查、现有 npm test、独立 node tests/web.mjs 与真实页面直接读取通过。
+package.json 已将 tests/web.mjs 纳入 npm test；重新构建及全部脚本通过，退出 0。
+用户报告验证通过，但未提供具体终端审批记录，本次不将恶意网页越权防护记为完整验收。
+search_web 已由用户手敲并注册，使用 POST https://api.tavily.com/search、Bearer 鉴权与 TAVILY_API_KEY。
+规划模式允许但仍逐次审批；固定 basic、最多 5 条结果，禁止跳转，15 秒期限与 256 KiB 响应上限。
+返回标题、链接和摘要，不自动访问结果链接；缺密钥明确报错，不回传服务错误正文或底层异常。
+2026-09-28 复跑 npm run check、npm test、git diff --check 全部退出 0，tests/search.mjs 已纳入入口。
+模拟测试覆盖请求契约、Schema 先于审批、允许/拒绝、卸载、预取消、缺密钥、空结果、协议与体积限制、错误脱敏。
+用户报告实测成功；本次未读取密钥、未调用真实 Tavily，也未独立验证搜索终端审批与会话日志。
+下一节点为阶段 8 的恶意外部内容与权限联合验收，含认证信息不写入会话日志；仍由用户手敲。
+正文抽取尚未实现。搜索结果 URL 只检查协议及凭据，不过滤私网地址；这些链接不会被自动访问。
+搜索注释已按实际实现修正：不宣称过滤私网链接、清洗成功结果或由 notice 防止越权；权限边界仍由宿主执行。
+学习计划已补勾三项有验收证据的 MCP/来源检查节点；阶段 8 最后一项联合验收仍未完成。
 resources/prompts 不代表完整协议支持；资源模板、分页、非文本消息仍未实现。
 
 ## 授权和数据边界

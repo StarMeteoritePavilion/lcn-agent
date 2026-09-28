@@ -8,7 +8,9 @@
 
 ## 当前进度与学习节奏
 
-进度更新：2026-09-28。阶段 0～7 已完成所记录基础范围的本地验收。阶段 8 已完成独立本地 stdio 演示服务、宿主注册接入，以及独立 Streamable HTTP 测试服务的握手、工具发现、调用和关闭验收；本机 HTTP 工具已接入宿主并通过本地模拟验收；MCP 调用中取消、故障诊断与失败清理已按记录范围验收；resources/prompts 的用户选择入口已完成本地验收；下一步为受限网页读取。
+进度更新：2026-09-28。阶段 0～7 已完成所记录基础范围的本地验收。阶段 8 已完成独立本地 stdio 演示服务、宿主注册接入，以及独立 Streamable HTTP 测试服务的握手、工具发现、调用和关闭验收；本机 HTTP 工具已接入宿主并通过本地模拟验收；MCP 调用中取消、故障诊断与失败清理已按记录范围验收；resources/prompts 的用户选择入口已完成本地验收；受限网页读取实现及独立脚本已复验通过，tests/web.mjs 已纳入 npm test 并通过完整复验；Tavily 搜索实现及模拟测试已通过；下一节点为恶意外部内容与权限联合验收。
+
+搜索提供商 Tavily 已接入；用户报告实测成功，本次独立复验使用模拟响应，未调用真实 API。
 
 教学顺序与授权规则见 [协作引导](agent-coordination-guide.md#教学方式)。本文件集中维护路线、勾选和下一节点。
 
@@ -293,19 +295,22 @@ Skill 元数据出现在目录里不等于模型已经读取正文，界面应�
 
 ### 阶段 8：MCP 与网络信息能力默认集成
 
-- [ ] 先接通一个本地 stdio MCP 服务，再接入 Streamable HTTP 测试服务。
-- [ ] 实现工具发现、调用和连接诊断，并让 MCP 工具经过统一权限判定。
-- [ ] 实现网页读取和一个可配置搜索提供商，并限制来源、重定向、目标地址和体积。
+- [x] 先接通一个本地 stdio MCP 服务，再接入 Streamable HTTP 测试服务。
+- [x] 实现工具发现、调用和连接诊断，并让 MCP 工具经过统一权限判定。
+- [x] 实现受限网页读取和 Tavily 搜索（通过 TAVILY_API_KEY 配置）；固定请求来源、禁止跳转并限制响应体积，搜索结果链接不自动访问。
 - [x] 列出 MCP resources/prompts，并支持用户选择读取或应用（固定资源和纯文本提示，分页/模板未支持）。
-- [ ] 验证同名工具不混淆、断连/超时可诊断、网页来源可追溯。
+- [x] 验证同名工具不混淆、断连/超时可诊断、网页来源可追溯。
 - [ ] 验证网页中的恶意指令不能触发越权执行，认证信息不写入会话日志。
+
+以上已完成项以本文验收记录为据：重名拒绝与两种传输共存、故障诊断、真实网页来源均有记录。
+阶段 8 仍待恶意外部内容与权限、认证信息不写入会话日志的联合验收。
 
 学习：Agent 是 MCP host，客户端连接 server；MCP 与本地扩展不是同一层。
 交付：内置 MCP 客户端扩展；先本地 stdio，再 Streamable HTTP；
 工具发现与调用、连接诊断；网页读取及一个可配置搜索提供商接入。
 MCP 的 resources/prompts 作为本阶段后半项：能够列出并由用户选择读取或应用，不承诺覆盖全部协议能力。
 
-六项验收：一个本地服务与一个远程测试服务；同名工具不混淆；
+六项验收：一个本地 stdio 服务与一个 Streamable HTTP 测试服务（当前仅本机回环地址，远程接入未实现）；同名工具不混淆；
 断连/超时可诊断；调用经过相同权限判定；网页内容包含来源且限制体积；
 网页中的恶意指令不能触发越权执行。
 
@@ -394,12 +399,13 @@ Pi 的 `commit/discard` 不能撤销扩展自行造成的文件和网络副作�
 | [ ] | 11 | 子代理与后台任务 | 父子任务关联、并发有界、可回收、用量归属清楚 |
 | [ ] | 12 | 新项目启动 | 默认能力可发现，缺少模型或外部服务配置时提示准确 |
 
+本表用于阶段 9 收尾时的最终产品联合验收；早期阶段的专项通过不直接勾选本表。
 每项记录：输入、运行事件、实际副作用、预期结果、通过/失败及原因。
 允许先用模拟模型通过确定性用例，再用真实模型抽查关键交互；两类结果分别报告。
 
 ## 8. 当前节点与边界
 
-阶段 6 基础范围综合验收完成；阶段 7 已留档；阶段 8 已完成独立 stdio 服务通信及其宿主接入，以及独立 Streamable HTTP 测试服务验收。stdio 工具定义来自实际发现结果，名称加 `mcp_demo_` 前缀后注册；HTTP 测试服务完成握手、发现、调用和关闭。HTTP 工具已复用同一注册与权限入口；resources/prompts 已提供用户显式选择入口；紧邻下一步为受限网页读取，搜索尚未开始。
+阶段 6 基础范围综合验收完成；阶段 7 已留档；阶段 8 已完成独立 stdio 服务通信及其宿主接入，以及独立 Streamable HTTP 测试服务验收。stdio 工具定义来自实际发现结果，名称加 `mcp_demo_` 前缀后注册；HTTP 测试服务完成握手、发现、调用和关闭。HTTP 工具已复用同一注册与权限入口；resources/prompts 已提供用户显式选择入口；受限网页读取与 Tavily 搜索已实现并通过当前测试；紧邻下一步为恶意外部内容、宿主权限与会话日志联合验收。
 教学代码与修改片段只在对话展示，本节原地更新当前状态，不按每次推进追加章节。
 
 - 扩展初始化和事件监听器保持同步；命令与工具执行支持异步及协作取消。卸载会撤销注册项并执行 onDispose 登记的同步清理；资源创建后应立即登记。回调必须同步，不等待 Promise；MCP 另由宿主等待异步 dispose，不改变同步 onDispose 契约。清理失败继续处理其余项并汇总错误，每项最多执行一次，不保证失败资源已释放。进程内扩展必须可信，注册 API 不是沙箱。
@@ -425,7 +431,13 @@ Pi 的 `commit/discard` 不能撤销扩展自行造成的文件和网络副作�
 
 ## 验收记录
 
-当前通过 `npm test` 构建并运行 `tests/mcp-stdio.mjs`、`tests/mcp-http.mjs` 、`tests/mcp-failures.mjs` 与 `tests/mcp-content.mjs`；此前 `tests/branch.mjs`、 `tests/memory.mjs`、 `tests/compaction.mjs`、`tests/prompts.mjs`、`tests/skills.mjs` 与 `tests/session-persistence.py` 保留但不再作为当前测试入口。运行方式见 [README](../README.md#当前阶段验收)。
+2026-09-28 Tavily 搜索：用户报告实测成功；独立复跑 `npm run check`、`npm test`、`git diff --check` 全部退出 0。`tests/search.mjs` 已纳入测试入口，模拟验证固定请求与鉴权契约、参数校验先于审批、拒绝不联网、允许执行、卸载、预取消、空查询、缺密钥、空结果、HTTP 错误、链接协议、256 KiB 上限及异常正文脱敏。入口已核对为规划模式允许且逐次审批。未读取真实密钥或重复调用 Tavily；调用中取消、15 秒超时、真实搜索终端审批及会话日志未在本次独立复验。下一节点为恶意外部内容与权限联合验收，阶段 8 整体仍未完成。
+
+2026-09-28 受限网页读取：用户报告验证通过；本次核对手敲实现后复跑 `npm run check`、现有 `npm test`、`git diff --check` 与独立 `node tests/web.mjs`，全部通过。直接调用当前构建的 readWeb 成功读取 https://nodejs.org/api/http.html，返回 UTF-8 HTML、647993 字节及准确来源。未请求模型，未独立复验真实终端审批/网页恶意指令场景。用户已将 tests/web.mjs 纳入 npm test；补齐后重新构建、全部脚本及 git diff --check 均退出 0；当时搜索提供商未实现；现已完成上述 Tavily 节点。此前临时教学代码的边界检查不替代当前仓库的完整网络故障验收。
+
+当前通过 `npm test` 构建并运行 `tests/mcp-stdio.mjs`、`tests/mcp-http.mjs` 、`tests/mcp-failures.mjs`、`tests/mcp-content.mjs`、`tests/web.mjs` 与 `tests/search.mjs`；此前 `tests/branch.mjs`、 `tests/memory.mjs`、 `tests/compaction.mjs`、`tests/prompts.mjs`、`tests/skills.mjs` 与 `tests/session-persistence.py` 保留但不再作为当前测试入口。运行方式见 [README](../README.md#当前阶段验收)。
+以下为各节点当时的验收记录，其中未完成事项的当前状态以阶段 8 清单为准。
+
 2026-09-27 阶段 8 stdio 基础：`npm run check`、`npm test`（含构建）、`git diff --check` 通过。先复现演示文本改成“第二版”引起的断言失败，再恢复“本地 MCP 服务已连通”并复验通过。SDK 固定 1.30.1，包内最新协议常量为 2025-11-25；实际发现 demo_status，inputSchema 为 `{ "type": "object", "properties": {} }`。临时 Node 检查确认正常关闭后子进程退出、服务初始化前退出导致连接失败，脚本未入库。未接入 Agent、模型权限、HTTP 服务、resources/prompts，也未验证调用中取消、断连、超时或异常关闭回收，不勾选阶段 8 的组合清单。
 2026-09-28 阶段 8 本地宿主接入：`LCN_AGENT_MCP_DEMO=1 npm start` 真实终端输出显示发现 `mcp_demo_demo_status`；用户输入 `y` 后实际调用返回“本地 MCP 服务已连通”，工具结果按调用 ID 回填，第二轮模型回答引用该结果并正常结束。此前修复了宿主名称未加入 `names` 集合导致默认拒绝的问题；`npm run check`、`npm test`、`git diff --check` 通过。HTTP、断连/超时异常、resources/prompts 和网页能力仍未完成。
 2026-09-28 Streamable HTTP 测试服务：新增 `src/mcp-http-demo-server.ts` 和 `tests/mcp-http.mjs`，使用 SDK `StreamableHTTPServerTransport` 与 `StreamableHTTPClientTransport`，真实本地 HTTP 服务完成握手、发现 `http_status`、调用固定文本和关闭子进程验收。服务绑定 `127.0.0.1` 的随机端口，使用单个内存会话；未接入宿主工具注册，也未验证鉴权、重连、resources/prompts 和网页能力。

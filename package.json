@@ -7,7 +7,7 @@
     "build": "tsc",
     "start": "tsc && node dist/index.js",
     "check": "tsc --noEmit",
-    "test": "npm run build && node tests/mcp-stdio.mjs && node tests/mcp-http.mjs && node tests/mcp-failures.mjs && node tests/mcp-content.mjs"
+    "test": "npm run build && node tests/mcp-stdio.mjs && node tests/mcp-http.mjs && node tests/mcp-failures.mjs && node tests/mcp-content.mjs && node tests/web.mjs && node tests/search.mjs"
   },
   "keywords": [],
   "author": "",

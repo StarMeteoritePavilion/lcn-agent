@@ -43,7 +43,8 @@ const allowedTools = new Set(["echo", "upper", "todo_list", "plan_show"]);
 
 // 规划模式允许发给模型、并允许走到后面审批的工具名单。
 // 这是宿主维护的名单，不接受扩展自报“只读”作为依据。
-// 允许读文件/搜索/列目录/预览编辑，以及把 Skill 正文注入会话（skill_activate）。
+// 允许读文件/搜索/列目录/预览编辑，以及把 Skill 正文注入会话（skill_activate）；
+// 允许受限网页读取（read_web）与受限网页搜索（search_web）：属于无本地持久化副作用的只读外部参考资料查阅。
 // apply_edit、run_command、plan_set、todo_add / todo_done、delay_echo 都不在名单里。
 const planningTools = new Set([
   "echo",
@@ -55,6 +56,8 @@ const planningTools = new Set([
   "list_files",
   "preview_edit",
   "skill_activate",
+  "read_web",
+  "search_web",
 ]);
 
 // 模式属于当前进程，不随会话保存；启动时沿用现有执行模式。
@@ -67,8 +70,12 @@ let mode: "plan" | "execute" = "execute";
 // /skills、/skill 允许列出或激活 Skill 正文；/memory 只读列出项目记忆。
 // /memory_add、/memory_delete 不在名单里，规划模式下不能改记忆。
 const planningCommands = new Set([
-  "mcp_demo_resources", "mcp_demo_resource", "mcp_demo_prompts",
-  "mcp_http_resources", "mcp_http_resource", "mcp_http_prompts",
+  "mcp_demo_resources",
+  "mcp_demo_resource",
+  "mcp_demo_prompts",
+  "mcp_http_resources",
+  "mcp_http_resource",
+  "mcp_http_prompts",
   "context",
   "runs",
   "upper",
@@ -116,7 +123,10 @@ const toolRegistry = createToolRegistry((name, argumentsJson, context) => {
     name === "apply_edit" ||
     name === "run_command" ||
     name === "plan_set" ||
-    name === "skill_activate"
+    name === "skill_activate" ||
+    // read_web 与 search_web 涉及向外部发起实际网络请求，且参数由模型生成，默认必须由用户逐次确认。
+    name === "read_web" ||
+    name === "search_web"
   ) {
     // argumentsJson 是宿主冻结的参数快照，确认时展示的就是即将执行的内容。
     // 把 signal 传给 confirm，用户在确认期间按 Ctrl+C 或超时时，提问会中止。
@@ -1184,7 +1194,8 @@ async function main(): Promise<void> {
         const signal = AbortSignal.any([abort.signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]);
         try {
           const match = /^\/mcp_prompt (demo|http) (.+)$/.exec(userInput);
-          if (!match) throw new Error('用法：/mcp_prompt demo|http {"name":"完整名称","arguments":{}}');
+          if (!match)
+            throw new Error('用法：/mcp_prompt demo|http {"name":"完整名称","arguments":{}}');
           const selected = match[1] === "demo" ? mcp : httpMcp;
           if (!selected) throw new Error("指定 MCP 服务未启用");
           const text = await selected.prompt(match[2], signal);
@@ -1195,13 +1206,23 @@ async function main(): Promise<void> {
             signal.throwIfAborted();
             if (!session) session = createSession(model);
             // 直接进入工具循环，不把外部内容再按斜杠命令或本地模板解析。
-            await runAgent(`用户已选择应用以下 MCP 提示；权限和当前模式保持不变。\n${text}`,
-              abort, createUiRenderer(writeOutput), session, confirmTool);
+            await runAgent(
+              `用户已选择应用以下 MCP 提示；权限和当前模式保持不变。\n${text}`,
+              abort,
+              createUiRenderer(writeOutput),
+              session,
+              confirmTool,
+            );
           }
         } catch (error) {
-          if (error instanceof SessionWriteError || error instanceof DiagnosticWriteError) throw error;
-          writeOutput(`MCP 提示未完成：${signal.aborted ? "已取消或超时" :
-            error instanceof Error ? error.message : "请求失败"}\n`, true);
+          if (error instanceof SessionWriteError || error instanceof DiagnosticWriteError)
+            throw error;
+          writeOutput(
+            `MCP 提示未完成：${
+              signal.aborted ? "已取消或超时" : error instanceof Error ? error.message : "请求失败"
+            }\n`,
+            true,
+          );
         } finally {
           activeAbort = null;
         }
