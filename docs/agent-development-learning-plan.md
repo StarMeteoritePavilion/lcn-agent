@@ -12,6 +12,9 @@
 
 教学顺序与授权规则见 [协作引导](agent-coordination-guide.md#教学方式)。本文件集中维护路线、勾选和下一节点。
 
+2026-09-28 接手复验通过；用户确定先用显式开关启用仓库内 MCP 演示服务，程序与参数固定沿用现有实现。
+宿主工具接入的教学副本已在临时目录验证，仓库实现仍待手敲，不改变阶段 8 勾选状态；新增约定见[当前交接](agent-handoff.md)。
+
 ### 阶段总览
 
 - [x] 阶段 0：掌握这条链路需要的 TypeScript。
@@ -424,6 +427,7 @@ Pi 的 `commit/discard` 不能撤销扩展自行造成的文件和网络副作�
 
 当前通过 `npm test` 构建并运行 `tests/mcp-stdio.mjs`；此前 `tests/branch.mjs`、 `tests/memory.mjs`、 `tests/compaction.mjs`、 `tests/prompts.mjs`、`tests/skills.mjs` 与 `tests/session-persistence.py` 保留但不再作为当前测试入口。运行方式见 [README](../README.md#当前阶段验收)。
 2026-09-27 阶段 8 stdio 基础：`npm run check`、`npm test`（含构建）、`git diff --check` 通过。先复现演示文本改成“第二版”引起的断言失败，再恢复“本地 MCP 服务已连通”并复验通过。SDK 固定 1.30.1，包内最新协议常量为 2025-11-25；实际发现 demo_status，inputSchema 为 `{ "type": "object", "properties": {} }`。临时 Node 检查确认正常关闭后子进程退出、服务初始化前退出导致连接失败，脚本未入库。未接入 Agent、模型权限、HTTP 服务、resources/prompts，也未验证调用中取消、断连、超时或异常关闭回收，不勾选阶段 8 的组合清单。
+2026-09-28 接手与教学准备：本机缺少已声明依赖，按锁文件执行 `npm ci --ignore-scripts` 后，当前仓库的 `npm run check`、`npm test`、`git diff --check` 通过。另在临时源码副本验证下一步教学片段：注册、Schema 先于审批、允许/拒绝、重名及无效 Schema 回滚、分页拒绝、错误/非文本/结构化结果拒绝、断连、初始化失败、重复清理通过；本地模拟模型与 PTY 验证定义发现、按 ID 回填、规划模式、审批中及调用中取消、真实 30 秒超时、取消后剩余调用不执行、诊断分类、未启用不启动及退出 PID 回收。临时脚本未入库，未请求真实模型；仓库宿主接入仍未实现，用户手敲后须重新验收。
 2026-09-27 快照整理：阶段 0～7 从 `src/stage-xx.ts` 迁至 `src/stage/stage-xx.ts`，逐文件比对确认仅相对导入从 `./core`、`./extensions` 改为 `../core`、`../extensions`，没有逻辑变化；全量类型检查通过。
 2026-09-27 阶段 7 留档：当时将 `src/index.ts` 原样复制为 `src/stage-07.ts`，`cmp` 确认字节一致；后迁移到 `src/stage/stage-07.ts` 并调整相对导入，随后 `npm run check`、`npm test`（含构建）及 `git diff --check` 通过。
 2026-09-27 会话分支及阶段 7 复验：`npm run check`、`npm test`（含构建）、`git diff --check` 均退出 0；基于本次构建再次运行 `node tests/skills.mjs`、`node tests/prompts.mjs`、`node tests/compaction.mjs`、`node tests/memory.mjs`、`node tests/branch.mjs`，全部退出 0。另以临时 Node 断言及 Python PTY/本地 HTTP 模拟服务验证状态复制、故障清理、请求与重启，全部退出 0；临时检查未保存为仓库脚本，未请求真实模型，未模拟强杀、断电或最终清理失败。用户提供了父子待办独立及项目记忆共享的终端证据。
