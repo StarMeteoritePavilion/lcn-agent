@@ -1,0 +1,40 @@
+tests/mcp-failures.mjs
+  s_4bb043633b259c::t_a143f98b7248a9 1-18,20-70
+  s_4bb043633b259c::t_2ae8dcbd9271f1 19
+  s_4bb043633b259c::t_d5cec3ad6e7659 71-108
+package.json
+  s_4bb043633b259c::t_c8ba7e2fafc834 10
+docs/agent-handoff.md
+  s_4bb043633b259c::t_514f8e124c5e61 42,44,46-55
+README.md
+  s_4bb043633b259c::t_514f8e124c5e61 271-275,286
+docs/agent-development-learning-plan.md
+  s_4bb043633b259c::t_514f8e124c5e61 11,402,428,433
+src/extensions/mcp.ts
+  s_4bb043633b259c::t_9d271dbe9d1585 80-85
+  s_4bb043633b259c::t_c8ba7e2fafc834 4,9-11,66-78,226-231
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "5a34479d8426e0960b33f9e74ba01ab3ac895a27",
+  "prompts": {},
+  "humans": {
+    "h_cc77f976c0845e": {
+      "author": "lcx29 <can@MacBook-Air-M5.local>"
+    }
+  },
+  "sessions": {
+    "s_4bb043633b259c": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0e5cc-ac45-7142-a73e-98ed7a875339",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "lcx29 <can@MacBook-Air-M5.local>",
+      "custom_attributes": {
+        "employee_email": "licanxin@gofo.com"
+      }
+    }
+  }
+}
