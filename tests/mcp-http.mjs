@@ -55,6 +55,11 @@ try {
   const count = confirmations;
   await assert.rejects(registry.execute(mcp.names[0], {}, { ...context, signal: AbortSignal.abort() }));
   assert.equal(confirmations, count);
+  const commandContext = { ...context, ui: { notify() {}, ask: async () => "n" } };
+  const resources = JSON.parse(await registry.executeCommand("mcp_http_resources", "", commandContext));
+  assert.equal(resources[0].uri, "demo://notes");
+  assert.match(await registry.executeCommand("mcp_http_resource", "demo://notes", commandContext), /MCP 演示资料/);
+  assert.equal(JSON.parse(await mcp.prompt('{"name":"demo_summary"}', context.signal)).source, "mcp_http_");
   const disposal = mcp.dispose();
   assert.equal(mcp.dispose(), disposal);
   await disposal;

@@ -8,7 +8,7 @@
 
 ## 当前进度与学习节奏
 
-进度更新：2026-09-28。阶段 0～7 已完成所记录基础范围的本地验收。阶段 8 已完成独立本地 stdio 演示服务、宿主注册接入，以及独立 Streamable HTTP 测试服务的握手、工具发现、调用和关闭验收；本机 HTTP 工具已接入宿主并通过本地模拟验收；MCP 调用中取消、故障诊断与失败清理已按记录范围验收；下一步处理 resources/prompts。
+进度更新：2026-09-28。阶段 0～7 已完成所记录基础范围的本地验收。阶段 8 已完成独立本地 stdio 演示服务、宿主注册接入，以及独立 Streamable HTTP 测试服务的握手、工具发现、调用和关闭验收；本机 HTTP 工具已接入宿主并通过本地模拟验收；MCP 调用中取消、故障诊断与失败清理已按记录范围验收；resources/prompts 的用户选择入口已完成本地验收；下一步为受限网页读取。
 
 教学顺序与授权规则见 [协作引导](agent-coordination-guide.md#教学方式)。本文件集中维护路线、勾选和下一节点。
 
@@ -296,7 +296,7 @@ Skill 元数据出现在目录里不等于模型已经读取正文，界面应�
 - [ ] 先接通一个本地 stdio MCP 服务，再接入 Streamable HTTP 测试服务。
 - [ ] 实现工具发现、调用和连接诊断，并让 MCP 工具经过统一权限判定。
 - [ ] 实现网页读取和一个可配置搜索提供商，并限制来源、重定向、目标地址和体积。
-- [ ] 列出 MCP resources/prompts，并支持用户选择读取或应用。
+- [x] 列出 MCP resources/prompts，并支持用户选择读取或应用（固定资源和纯文本提示，分页/模板未支持）。
 - [ ] 验证同名工具不混淆、断连/超时可诊断、网页来源可追溯。
 - [ ] 验证网页中的恶意指令不能触发越权执行，认证信息不写入会话日志。
 
@@ -399,7 +399,7 @@ Pi 的 `commit/discard` 不能撤销扩展自行造成的文件和网络副作�
 
 ## 8. 当前节点与边界
 
-阶段 6 基础范围综合验收完成；阶段 7 已留档；阶段 8 已完成独立 stdio 服务通信及其宿主接入，以及独立 Streamable HTTP 测试服务验收。stdio 工具定义来自实际发现结果，名称加 `mcp_demo_` 前缀后注册；HTTP 测试服务完成握手、发现、调用和关闭。HTTP 工具已复用同一注册与权限入口；紧邻下一步为 MCP resources/prompts；网页读取、搜索、resources/prompts 仍未开始。
+阶段 6 基础范围综合验收完成；阶段 7 已留档；阶段 8 已完成独立 stdio 服务通信及其宿主接入，以及独立 Streamable HTTP 测试服务验收。stdio 工具定义来自实际发现结果，名称加 `mcp_demo_` 前缀后注册；HTTP 测试服务完成握手、发现、调用和关闭。HTTP 工具已复用同一注册与权限入口；resources/prompts 已提供用户显式选择入口；紧邻下一步为受限网页读取，搜索尚未开始。
 教学代码与修改片段只在对话展示，本节原地更新当前状态，不按每次推进追加章节。
 
 - 扩展初始化和事件监听器保持同步；命令与工具执行支持异步及协作取消。卸载会撤销注册项并执行 onDispose 登记的同步清理；资源创建后应立即登记。回调必须同步，不等待 Promise；MCP 另由宿主等待异步 dispose，不改变同步 onDispose 契约。清理失败继续处理其余项并汇总错误，每项最多执行一次，不保证失败资源已释放。进程内扩展必须可信，注册 API 不是沙箱。
@@ -425,12 +425,13 @@ Pi 的 `commit/discard` 不能撤销扩展自行造成的文件和网络副作�
 
 ## 验收记录
 
-当前通过 `npm test` 构建并运行 `tests/mcp-stdio.mjs`、`tests/mcp-http.mjs` 与 `tests/mcp-failures.mjs`；此前 `tests/branch.mjs`、 `tests/memory.mjs`、 `tests/compaction.mjs`、`tests/prompts.mjs`、`tests/skills.mjs` 与 `tests/session-persistence.py` 保留但不再作为当前测试入口。运行方式见 [README](../README.md#当前阶段验收)。
+当前通过 `npm test` 构建并运行 `tests/mcp-stdio.mjs`、`tests/mcp-http.mjs` 、`tests/mcp-failures.mjs` 与 `tests/mcp-content.mjs`；此前 `tests/branch.mjs`、 `tests/memory.mjs`、 `tests/compaction.mjs`、`tests/prompts.mjs`、`tests/skills.mjs` 与 `tests/session-persistence.py` 保留但不再作为当前测试入口。运行方式见 [README](../README.md#当前阶段验收)。
 2026-09-27 阶段 8 stdio 基础：`npm run check`、`npm test`（含构建）、`git diff --check` 通过。先复现演示文本改成“第二版”引起的断言失败，再恢复“本地 MCP 服务已连通”并复验通过。SDK 固定 1.30.1，包内最新协议常量为 2025-11-25；实际发现 demo_status，inputSchema 为 `{ "type": "object", "properties": {} }`。临时 Node 检查确认正常关闭后子进程退出、服务初始化前退出导致连接失败，脚本未入库。未接入 Agent、模型权限、HTTP 服务、resources/prompts，也未验证调用中取消、断连、超时或异常关闭回收，不勾选阶段 8 的组合清单。
 2026-09-28 阶段 8 本地宿主接入：`LCN_AGENT_MCP_DEMO=1 npm start` 真实终端输出显示发现 `mcp_demo_demo_status`；用户输入 `y` 后实际调用返回“本地 MCP 服务已连通”，工具结果按调用 ID 回填，第二轮模型回答引用该结果并正常结束。此前修复了宿主名称未加入 `names` 集合导致默认拒绝的问题；`npm run check`、`npm test`、`git diff --check` 通过。HTTP、断连/超时异常、resources/prompts 和网页能力仍未完成。
 2026-09-28 Streamable HTTP 测试服务：新增 `src/mcp-http-demo-server.ts` 和 `tests/mcp-http.mjs`，使用 SDK `StreamableHTTPServerTransport` 与 `StreamableHTTPClientTransport`，真实本地 HTTP 服务完成握手、发现 `http_status`、调用固定文本和关闭子进程验收。服务绑定 `127.0.0.1` 的随机端口，使用单个内存会话；未接入宿主工具注册，也未验证鉴权、重连、resources/prompts 和网页能力。
 2026-09-28 HTTP 宿主接入：用户确认新增 `LCN_AGENT_MCP_HTTP_URL`，只接受本机完整 /mcp 地址，禁止重定向；共用 stdio 的发现、注册、Schema、结果处理和回滚，HTTP 使用 mcp_http_ 前缀。仓库脚本验证非法地址、Schema 先于审批、拒绝/允许、取消前置拦截、两种传输共存、重复清理、DELETE 终止会话和测试子进程正常退出。临时隔离项目与模拟模型/PTY 验证真实入口的允许/拒绝、规划模式、审批中取消、未启用、按 ID 回填及诊断，全部通过；脚本未入库，未请求真实模型，未验证调用中取消、重连或 HTTP 超时诊断。
 2026-09-28 MCP 故障诊断：新增 mcp-failures.mjs，经真实本机 HTTP/SDK 验证调用中用户取消和预算信号、服务收到取消通知、5 秒无响应头超时、连接断开、业务 isError、无自动重放、失败后卸载、初始化错误正文脱敏及 DELETE 失败后的注册清理与幂等。先复现超时仅显示通用失败、初始化打印远端正文，再修复并通过测试。临时隔离项目/PTY/模拟模型验证调用中取消、真实 30 秒宿主预算超时、后续工具不执行、按 ID 配对及 cancelled/timeout 诊断；临时脚本未入库，未请求真实模型。SSE 中断可能延后至 30 秒期限才结束；不承诺即时断连检测、远端副作用撤销或自动重连。
+2026-09-28 MCP resources/prompts：两个演示服务新增 demo://notes 与 demo_summary。用户命令按服务列清单、读取资源；/mcp_prompt 先预览再确认，将来源和角色作为数据随普通 user 消息发送。npm test 新增内容脚本，覆盖精确选择、参数、取消、卸载、能力缺失、分页/非文本/大小拒绝，HTTP 脚本同时验证内容读取。临时隔离项目/PTY/模拟模型检查资源不请求模型、提示拒绝/取消不建会话、允许后请求与持久内容一致、规划模式保持；临时脚本未入库，未请求真实模型。响应后 JSON 上限 64 KiB，不代表网络下载上限；未支持资源模板、分页、二进制资源、非文本提示。
 2026-09-28 接手与教学准备：本机缺少已声明依赖，按锁文件执行 `npm ci --ignore-scripts` 后，当前仓库的 `npm run check`、`npm test`、`git diff --check` 通过。另在临时源码副本验证下一步教学片段：注册、Schema 先于审批、允许/拒绝、重名及无效 Schema 回滚、分页拒绝、错误/非文本/结构化结果拒绝、断连、初始化失败、重复清理通过；本地模拟模型与 PTY 验证定义发现、按 ID 回填、规划模式、审批中及调用中取消、真实 30 秒超时、取消后剩余调用不执行、诊断分类、未启用不启动及退出 PID 回收。临时脚本未入库，未请求真实模型；仓库宿主接入仍未实现，用户手敲后须重新验收。
 2026-09-27 快照整理：阶段 0～7 从 `src/stage-xx.ts` 迁至 `src/stage/stage-xx.ts`，逐文件比对确认仅相对导入从 `./core`、`./extensions` 改为 `../core`、`../extensions`，没有逻辑变化；全量类型检查通过。
 2026-09-27 阶段 7 留档：当时将 `src/index.ts` 原样复制为 `src/stage-07.ts`，`cmp` 确认字节一致；后迁移到 `src/stage/stage-07.ts` 并调整相对导入，随后 `npm run check`、`npm test`（含构建）及 `git diff --check` 通过。

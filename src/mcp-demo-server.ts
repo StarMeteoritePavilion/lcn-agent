@@ -16,6 +16,14 @@ const server = new McpServer({
   version: "1.0.0",
 });
 
+// 本项目新增演示内容：固定资源和无参数提示，用于验证用户显式选择。
+server.registerResource("demo_notes", "demo://notes", { mimeType: "text/plain" }, async (uri) => ({
+  contents: [{ uri: uri.href, text: "MCP 演示资料：工具调用必须经过宿主审批。" }],
+}));
+server.registerPrompt("demo_summary", { description: "总结 MCP 演示资料" }, async () => ({
+  messages: [{ role: "user", content: { type: "text", text: "请解释 MCP 资源、提示与工具的区别。" } }],
+}));
+
 server.registerTool(
   // 参数 1 name: 工具名，宿主把它登记成可被模型调用的名字。
   "demo_status",

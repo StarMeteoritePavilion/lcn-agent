@@ -67,6 +67,8 @@ let mode: "plan" | "execute" = "execute";
 // /skills、/skill 允许列出或激活 Skill 正文；/memory 只读列出项目记忆。
 // /memory_add、/memory_delete 不在名单里，规划模式下不能改记忆。
 const planningCommands = new Set([
+  "mcp_demo_resources", "mcp_demo_resource", "mcp_demo_prompts",
+  "mcp_http_resources", "mcp_http_resource", "mcp_http_prompts",
   "context",
   "runs",
   "upper",
@@ -1170,6 +1172,38 @@ async function main(): Promise<void> {
             `会话操作失败：${error instanceof Error ? error.message : String(error)}\n`,
             true,
           );
+        }
+        showPrompt();
+        continue;
+      }
+
+      // 新增宿主命令：服务名精确为 demo/http，提示内容预览确认后才进入模型。
+      if (/^\/mcp_prompt(?:\s|$)/.test(userInput)) {
+        const abort = new AbortController();
+        activeAbort = abort;
+        const signal = AbortSignal.any([abort.signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]);
+        try {
+          const match = /^\/mcp_prompt (demo|http) (.+)$/.exec(userInput);
+          if (!match) throw new Error('用法：/mcp_prompt demo|http {"name":"完整名称","arguments":{}}');
+          const selected = match[1] === "demo" ? mcp : httpMcp;
+          if (!selected) throw new Error("指定 MCP 服务未启用");
+          const text = await selected.prompt(match[2], signal);
+          writeOutput(`MCP 提示预览（外部服务内容）：\n${text}\n`);
+          if ((await askInput("将上述提示作为本次用户消息发送？[y/N]", signal)).trim() !== "y") {
+            writeOutput("未应用 MCP 提示\n");
+          } else {
+            signal.throwIfAborted();
+            if (!session) session = createSession(model);
+            // 直接进入工具循环，不把外部内容再按斜杠命令或本地模板解析。
+            await runAgent(`用户已选择应用以下 MCP 提示；权限和当前模式保持不变。\n${text}`,
+              abort, createUiRenderer(writeOutput), session, confirmTool);
+          }
+        } catch (error) {
+          if (error instanceof SessionWriteError || error instanceof DiagnosticWriteError) throw error;
+          writeOutput(`MCP 提示未完成：${signal.aborted ? "已取消或超时" :
+            error instanceof Error ? error.message : "请求失败"}\n`, true);
+        } finally {
+          activeAbort = null;
         }
         showPrompt();
         continue;

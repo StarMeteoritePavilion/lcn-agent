@@ -309,6 +309,7 @@ export function createToolRegistry(permit: ToolPermission = () => false): ToolRe
     "prompt",
     "compact",
     "fork",
+    "mcp_prompt",
   ]);
 
   // 运行结束事件的订阅者集合。Set 会保持插入顺序，因此通知顺序即订阅顺序。

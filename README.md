@@ -275,6 +275,26 @@ HTTP 演示服务只承载一个内存会话；宿主退出时发送 DELETE 终�
 服务 isError 单独标记为业务失败。初始化错误不打印服务响应正文，清理失败也会撤销注册项。
 本步不支持远程地址、鉴权、多会话重连、分页或非文本结果。
 
+## MCP 资源与提示
+
+启用服务后使用以下用户命令（`demo` 对应 stdio，`http` 对应 HTTP）：
+
+| 命令 | 用途 |
+| --- | --- |
+| `/mcp_demo_resources`、`/mcp_http_resources` | 列出资源的准确 URI |
+| `/mcp_demo_resource 完整URI`、`/mcp_http_resource 完整URI` | 读取并展示文本资源，不发送模型 |
+| `/mcp_demo_prompts`、`/mcp_http_prompts` | 列出提示名称、说明与参数 |
+| `/mcp_prompt demo {"name":"demo_summary","arguments":{}}` | 获取 stdio 提示，预览后输入 y 才应用 |
+| `/mcp_prompt http {"name":"demo_summary","arguments":{}}` | 同样选择 HTTP 提示 |
+
+演示资源为 `demo://notes`，提示为 `demo_summary`。名称、URI 和参数键区分大小写，不做补全。
+提示参数只接受已声明的字符串字段；资源模板、分页、二进制资源和非文本提示尚不支持。
+展示或应用内容的 JSON 上限为 64 KiB（收到响应后检查，不是网络下载上限）。
+所有内容操作有 5 秒 SDK 请求期限；预览确认共享 30 秒预算，并支持 Ctrl+C。
+确认后的提示带来源和角色说明，作为普通 user 消息进入历史，不插入 system 指令或伪造 assistant 历史。
+资源内容不自动注入模型，列目录不自动读取正文，应用提示仍遵守现有工具审批和规划模式。
+提示应用仅支持交互入口；拒绝、取消、取回失败均不保存新的用户消息，不触发模型。
+
 ## 当前阶段验收
 
 ```bash
@@ -283,7 +303,7 @@ npm test
 ```
 
 `npm run check` 对当前实现和阶段留档进行类型检查。
-`npm test` 先编译当前源码，再运行 `tests/mcp-stdio.mjs`、`tests/mcp-http.mjs` 和 `tests/mcp-failures.mjs`，分别启动本地 stdio 与 Streamable HTTP 演示子进程，验证握手、工具发现、固定文本调用及关闭流程。需要 Node.js 与已安装依赖，不请求真实模型。
+`npm test` 先编译当前源码，再运行 `tests/mcp-stdio.mjs`、`tests/mcp-http.mjs` 、`tests/mcp-failures.mjs` 和 `tests/mcp-content.mjs`，分别启动本地 stdio 与 Streamable HTTP 演示子进程，验证握手、工具发现、固定文本调用及关闭流程。需要 Node.js 与已安装依赖，不请求真实模型。
 此前脚本 `tests/branch.mjs`、`tests/memory.mjs`、`tests/compaction.mjs`、`tests/prompts.mjs`、`tests/skills.mjs` 和 `tests/session-persistence.py` 保留，当前测试入口不运行它们；本次额外的终端与请求集成验证范围见学习计划验收记录。
 
 项目按阶段学习：`src/index.ts` 是当前入口，`src/stage/stage-xx.ts` 保存已完成阶段。

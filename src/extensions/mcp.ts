@@ -1,3 +1,4 @@
+import { createMcpContent } from "./mcp-content.js";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -159,12 +160,9 @@ async function mountMcp(registry: ToolRegistry, transport: Transport, prefix: st
   try {
     // 发起连接与协议握手，设置 5 秒超时时间，避免服务不存在或无响应时一直阻塞。
     await client.connect(transport, { timeout: 5000 });
-    // 校验服务端的能力声明（Capabilities），必须声明具备 tools 特性才继续。
-    if (!client.getServerCapabilities()?.tools) {
-      throw new Error("MCP 服务未声明工具能力");
-    }
     // 获取服务端提供的所有工具清单；同样配置 5 秒超时保护。
-    const discovered = await client.listTools(undefined, { timeout: 5000 });
+    const discovered = client.getServerCapabilities()?.tools
+      ? await client.listTools(undefined, { timeout: 5000 }) : { tools: [], nextCursor: undefined };
 
     // ponytail: 本步仅接固定演示服务；收到分页明确拒绝，接通用服务时再遍历游标。
     if (discovered.nextCursor !== undefined) {
@@ -174,6 +172,7 @@ async function mountMcp(registry: ToolRegistry, transport: Transport, prefix: st
     const names: string[] = [];
 
     // mountExtension 会管理扩展在宿主中的注册生命周期，返回的 unmount 函数可一次性注销该扩展的所有工具。
+    const content = createMcpContent(client, prefix, () => disposal === undefined);
     unmount = mountExtension(registry, (api) => {
       for (const tool of discovered.tools) {
         // 宿主命名规范：stdio 使用 mcp_demo_，HTTP 使用 mcp_http_；原名称不变。
@@ -258,9 +257,10 @@ async function mountMcp(registry: ToolRegistry, transport: Transport, prefix: st
         });
         names.push(name);
       }
+      content.register(api);
     });
 
-    return { names: Object.freeze(names), dispose };
+    return { names: Object.freeze(names), dispose, prompt: content.prompt };
   } catch (error) {
     // 事务性安全保证：初始化期间无论在握手、发现还是注册环节出现任何异常，
     // 都必须自动执行反向清理并等待关闭，杜绝子进程遗留或半注册状态。
