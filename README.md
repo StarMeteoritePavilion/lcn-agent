@@ -268,6 +268,11 @@ HTTP：先执行 `npm run build`，再在一个终端运行 `node dist/mcp-http-
 HTTP 演示服务只承载一个内存会话；宿主退出时发送 DELETE 终止会话，不停止服务进程。
 再次连接前需在服务终端退出并重启服务，读取新端口。HTTP 请求受 5 秒传输预算限制；
 传输失败记为工具错误，宿主 30 秒预算和用户取消仍由原有执行循环处理。
+调用中取消会发送 MCP 取消通知；服务需协作响应，不保证撤销已发生的副作用。
+请求未收到响应头而触发 5 秒期限时提示“HTTP 请求超时”，连接错误提示“HTTP 连接失败”；
+已开始的 SSE 流中断仍可能等待 MCP 请求或宿主 30 秒期限后结束，不承诺立即识别。
+宿主取消/预算超时会停止后续轮次；传输错误按工具 error 记录受控原因，可回填给模型。
+服务 isError 单独标记为业务失败。初始化错误不打印服务响应正文，清理失败也会撤销注册项。
 本步不支持远程地址、鉴权、多会话重连、分页或非文本结果。
 
 ## 当前阶段验收
@@ -278,7 +283,7 @@ npm test
 ```
 
 `npm run check` 对当前实现和阶段留档进行类型检查。
-`npm test` 先编译当前源码，再运行 `tests/mcp-stdio.mjs` 和 `tests/mcp-http.mjs`，分别启动本地 stdio 与 Streamable HTTP 演示子进程，验证握手、工具发现、固定文本调用及关闭流程。需要 Node.js 与已安装依赖，不请求真实模型。
+`npm test` 先编译当前源码，再运行 `tests/mcp-stdio.mjs`、`tests/mcp-http.mjs` 和 `tests/mcp-failures.mjs`，分别启动本地 stdio 与 Streamable HTTP 演示子进程，验证握手、工具发现、固定文本调用及关闭流程。需要 Node.js 与已安装依赖，不请求真实模型。
 此前脚本 `tests/branch.mjs`、`tests/memory.mjs`、`tests/compaction.mjs`、`tests/prompts.mjs`、`tests/skills.mjs` 和 `tests/session-persistence.py` 保留，当前测试入口不运行它们；本次额外的终端与请求集成验证范围见学习计划验收记录。
 
 项目按阶段学习：`src/index.ts` 是当前入口，`src/stage/stage-xx.ts` 保存已完成阶段。

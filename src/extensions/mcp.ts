@@ -1,9 +1,13 @@
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { McpError, ErrorCode } from "@modelcontextprotocol/sdk/types.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { mountExtension, type ToolRegistry } from "../core/tools.js";
+
+/** 只携带宿主生成的传输错误说明，不透传远端正文。 */
+class McpHttpError extends Error {}
 
 /**
  * @file 本地 stdio MCP（Model Context Protocol）扩展接入模块。
@@ -59,13 +63,26 @@ export async function mountHttpMcp(registry: ToolRegistry, address: string) {
   const transport = new StreamableHTTPClientTransport(url, {
     requestInit: { redirect: "error" },
     // 每个 HTTP 请求有上限，尤其是没有 RequestOptions 的 DELETE 会话终止请求。
-    fetch: (input, init) => fetch(input, {
-      ...init,
-      redirect: "error",
-      signal: AbortSignal.any([...(init?.signal ? [init.signal] : []), AbortSignal.timeout(5000)]),
-    }),
+    fetch: async (input, init) => {
+      const timeout = AbortSignal.timeout(5000);
+      try {
+        return await fetch(input, {
+          ...init,
+          redirect: "error",
+          signal: AbortSignal.any([...(init?.signal ? [init.signal] : []), timeout]),
+        });
+      } catch (cause) {
+        const message = timeout.aborted ? "MCP HTTP 请求超时（5 秒）" : "MCP HTTP 连接失败";
+        throw new McpHttpError(message, { cause });
+      }
+    },
   });
-  return mountMcp(registry, transport, "mcp_http_", () => transport.terminateSession());
+  try {
+    return await mountMcp(registry, transport, "mcp_http_", () => transport.terminateSession());
+  } catch (cause) {
+    // SDK HTTP 错误含响应正文；启动错误同样不能把它直接打印到终端。
+    throw new Error("MCP HTTP 初始化失败，请检查服务状态与地址", { cause });
+  }
 }
 
 /** 两种传输共用发现、注册、权限后的执行与回滚；HTTP 在关闭连接前终止会话。 */
@@ -206,7 +223,12 @@ async function mountMcp(registry: ToolRegistry, transport: Transport, prefix: st
               // 若本次调用是被主动取消打断，优先响应 AbortError。
               context.signal.throwIfAborted();
               // 错误脱敏：外部进程或网络异常可能包含内部敏感路径或未格式化堆栈，统一转换为受控业务错误。
-              throw new Error(`MCP 调用失败：${name}`, { cause });
+              const reason = cause instanceof McpHttpError
+                ? cause.message
+                : cause instanceof McpError && cause.code === ErrorCode.RequestTimeout
+                  ? "MCP 请求超时（30 秒）"
+                  : "MCP 调用失败";
+              throw new Error(`${reason}：${name}；已发生的副作用不保证撤销`, { cause });
             }
 
             // 调用返回后再次检查取消信号，避免在取消后仍向下解析和返回结果。
