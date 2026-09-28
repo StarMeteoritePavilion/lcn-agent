@@ -1,0 +1,45 @@
+tests/network-fixture.mjs
+  s_4bb043633b259c::t_0708f320d03b28 4-7,18-32,37-44,85-92
+  h_cc77f976c0845e 1-3,8-17,45-65,67-72,77-84,93-100,102-104,117-134,136-142,146-147,149
+  s_4bb043633b259c::t_0f28cd9a1eeb0e 33-36,66,73-76,101,105-116,135,143-145,148
+README.md
+  s_4bb043633b259c::t_6a263f90f402bd 316-317
+  s_4bb043633b259c::t_65345d29d0fa47 318
+  s_4bb043633b259c::t_dae886c223f5bf 314-315
+  s_4bb043633b259c::t_5fc82ea8384fb5 5,319,332
+docs/agent-handoff.md
+  s_4bb043633b259c::t_8eb20482c19462 105-106
+  s_4bb043633b259c::t_dae886c223f5bf 90
+  s_4bb043633b259c::t_6a263f90f402bd 84-89
+  s_4bb043633b259c::t_864ea791a6a10e 6-14,19,41,53,62,91,94,104,107-129
+docs/agent-development-learning-plan.md
+  s_4bb043633b259c::t_8eb20482c19462 434
+  s_4bb043633b259c::t_6a263f90f402bd 33,303,306
+  s_4bb043633b259c::t_dbc38cfdef75de 11,18,30,408,435-437
+src/stage/stage-08.ts
+  s_4bb043633b259c::t_114b034acb97db 1-1438
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "7ac5dcb1a66bb2e0a373bff225f8b78675db34d1",
+  "prompts": {},
+  "humans": {
+    "h_cc77f976c0845e": {
+      "author": "lcx29 <can@MacBook-Air-M5.local>"
+    }
+  },
+  "sessions": {
+    "s_4bb043633b259c": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0e5cc-ac45-7142-a73e-98ed7a875339",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "lcx29 <can@MacBook-Air-M5.local>",
+      "custom_attributes": {
+        "employee_email": "licanxin@gofo.com"
+      }
+    }
+  }
+}
