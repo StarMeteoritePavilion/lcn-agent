@@ -79,6 +79,10 @@ const planningCommands = new Set([
   "memory",
 ]);
 
+// 保存成功挂载的本地 MCP 扩展实例（包含注册的工具别名列表与异步清理函数）。
+// 语法说明：Awaited<ReturnType<typeof mountDemoMcp>> 利用 TS 类型推导自动获取异步函数 mountDemoMcp
+// 的实际返回值结构 { names: string[], dispose: () => Promise<void> }，类似 Java 提取 Future<T> 内部类型 T。
+// 供权限策略统一进行名称匹配，并在进程退出时执行异步反向清理。
 let mcp: Awaited<ReturnType<typeof mountDemoMcp>> | undefined;
 
 // 注册表由入口持有；扩展在启动时登记，Agent 循环统一查找和执行。
@@ -96,6 +100,7 @@ const toolRegistry = createToolRegistry((name, argumentsJson, context) => {
     return true;
   }
   if (
+    // MCP 工具运行在外部子进程中，具备潜在副作用，默认必须由用户在终端输入 y 逐次确认。
     mcp?.names.includes(name) ||
     name === "delay_echo" ||
     name === "todo_add" ||
@@ -1321,12 +1326,14 @@ try {
   client = new OpenAI({ apiKey: config.apiKey, baseURL: config.baseURL });
   model = config.model;
 
-  // 新增约定：只有精确的 1 启用仓库内演示服务，未设置则不启动。
+  // 阶段 8 约定：只有精确设置 LCN_AGENT_MCP_DEMO=1 时才启动本地 MCP 演示服务子进程。
+  // 未设置则默认不启用，避免无故增加进程开销；设置非法值时明确抛错，防止拼写错误掩盖意图。
   const mcpDemo = process.env.LCN_AGENT_MCP_DEMO;
   if (mcpDemo !== undefined && mcpDemo !== "1") {
     throw new Error("LCN_AGENT_MCP_DEMO 仅接受 1 或不设置");
   }
 
+  // 若开启开关，则启动子进程并完成握手、工具发现、宿主注册；输出接入日志提示用户。
   if (mcpDemo === "1") {
     mcp = await mountDemoMcp(toolRegistry);
     console.log(`已接入本地 MCP 工具：${mcp.names.join(", ")}`);
@@ -1353,8 +1360,10 @@ try {
     process.exitCode = 1;
   }
 } finally {
-  // 按装载逆序逐个清理；一个扩展失败不能跳过其他扩展。
-  // 按装载逆序逐个清理；等待 MCP 连接关闭，一个失败仍继续清理其他扩展。
+  // 按装载逆序逐个清理（后装载的先清理，保证依赖正确释放）。
+  // 语法说明：dispose?.() 为可选链调用，若项为 undefined 则跳过，若存在则调用；
+  // MCP 扩展包含外部子进程连接，dispose 返回 Promise，因此使用 await 异步等待其关闭；
+  // 某个扩展清理失败继续清理其余项，并最终记录异常退出码。
   for (const dispose of [mcp?.dispose, disposeExternal, disposeExtension]) {
     try {
       await dispose?.();
