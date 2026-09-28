@@ -2,77 +2,81 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { fileURLToPath } from "node:url";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { createToolRegistry } from "../dist/core/tools.js";
+import { mountDemoMcp, mountHttpMcp } from "../dist/extensions/mcp.js";
 
 const serverPath = fileURLToPath(new URL("../dist/mcp-http-demo-server.js", import.meta.url));
-
-const child = spawn(process.execPath, [serverPath], {
-  stdio: ["ignore", "pipe", "inherit"],
-});
-
-let port;
-let output = "";
-const client = new Client({
-  name: "lcn-http-check",
-  version: "1.0.0",
-});
-let transport;
-
-child.stdout.setEncoding("utf8");
-
-const onData = (chunk) => {
-  output += chunk;
-  const match = /MCP_HTTP_PORT=(\d+)/.exec(output);
-  if (match) port = Number(match[1]);
-};
-
-child.stdout.on("data", onData);
-
+const child = spawn(process.execPath, [serverPath], { stdio: ["ignore", "pipe", "inherit"] });
+// 提前登记关闭事件，避免退出发生在等待之前；正常与失败路径均有截止时间。
+const exited = once(child, "close");
+void exited.catch(() => {});
+let mcp;
+let stdio;
+let timer;
 try {
-  await Promise.race([
-    once(child.stdout, "data"),
-    new Promise((_, reject) => {
-      setTimeout(() => reject(new Error("HTTP MCP 服务启动超时")), 5000);
-    }),
-  ]);
-
-  while (port === undefined) {
-    await once(child.stdout, "data");
-  }
-
-  transport = new StreamableHTTPClientTransport(
-    new URL(`http://127.0.0.1:${port}/mcp`),
-  );
-  await client.connect(transport, { timeout: 5000 });
-
-  const discovered = await client.listTools(undefined, { timeout: 5000 });
-  assert.equal(discovered.nextCursor, undefined);
-  assert.equal(discovered.tools.length, 1);
-  assert.equal(discovered.tools[0].name, "http_status");
-  assert.deepEqual(discovered.tools[0].inputSchema, {
-    type: "object",
-    properties: {},
+  const port = await new Promise((resolve, reject) => {
+    let output = "";
+    timer = setTimeout(() => reject(new Error("HTTP MCP 服务启动超时")), 5000);
+    child.once("error", reject);
+    child.once("exit", () => reject(new Error("HTTP MCP 服务提前退出")));
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      output += chunk;
+      const match = /^MCP_HTTP_PORT=(\d+)\r?\n/m.exec(output);
+      if (match) resolve(Number(match[1]));
+    });
   });
-
-  const result = await client.callTool(
-    { name: "http_status", arguments: {} },
-    undefined,
-    { timeout: 5000 },
+  clearTimeout(timer);
+  const address = `http://127.0.0.1:${port}/mcp`;
+  let allowed = false;
+  let confirmations = 0;
+  const registry = createToolRegistry((name, json, context) =>
+    context.confirm(name, json, context.callId, context.signal),
   );
-  assert.notEqual(result.isError, true);
-  assert.deepEqual(result.content, [
-    {
-      type: "text",
-      text: "本地 MCP Streamable HTTP 服务已连通",
-    },
-  ]);
-
-  console.log(`HTTP MCP 服务已监听：${port}`);
-  console.log("HTTP MCP 工具发现和调用检查通过");
+  const context = {
+    cwd: process.cwd(), model: "local-test", sessionFile: "http-check.jsonl", callId: "http_1",
+    signal: new AbortController().signal,
+    confirm: async () => { confirmations++; return allowed; },
+  };
+  for (const invalid of ["", "https://127.0.0.1:80/mcp", "http://localhost:80/mcp", `${address}?key=secret`]) {
+    await assert.rejects(mountHttpMcp(registry, invalid), /MCP HTTP 地址/);
+  }
+  stdio = await mountDemoMcp(registry);
+  mcp = await mountHttpMcp(registry, address);
+  assert.deepEqual(mcp.names, ["mcp_http_http_status"]);
+  assert.equal(registry.definitions().length, 2);
+  assert.deepEqual(registry.definitions()[1].function.parameters, { type: "object", properties: {} });
+  await assert.rejects(registry.execute(mcp.names[0], [], context), /Schema/);
+  assert.equal(confirmations, 0);
+  await assert.rejects(registry.execute(mcp.names[0], {}, context), /未获授权/);
+  allowed = true;
+  assert.equal(await registry.execute(mcp.names[0], {}, context), "本地 MCP Streamable HTTP 服务已连通");
+  assert.equal(await registry.execute(stdio.names[0], {}, context), "本地 MCP 服务已连通");
+  const count = confirmations;
+  await assert.rejects(registry.execute(mcp.names[0], {}, { ...context, signal: AbortSignal.abort() }));
+  assert.equal(confirmations, count);
+  const disposal = mcp.dispose();
+  assert.equal(mcp.dispose(), disposal);
+  await disposal;
+  assert.equal(registry.definitions().length, 1);
+  // DELETE 后单会话演示服务返回 404，但监听进程仍由测试自己管理。
+  const response = await fetch(address, { signal: AbortSignal.timeout(5000) });
+  assert.equal(response.status, 404);
+  await response.body?.cancel();
+  console.log("HTTP MCP 宿主发现、Schema、审批、调用、stdio 共存与会话终止检查通过");
 } finally {
-  await client.close();
-  await transport?.close();
-  if (child.exitCode === null) child.kill("SIGTERM");
-  if (child.exitCode === null) await once(child, "exit");
+  clearTimeout(timer);
+  try {
+    try { await mcp?.dispose(); } finally { await stdio?.dispose(); }
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
+    const killTimer = setTimeout(() => child.kill("SIGKILL"), 5000);
+    try {
+      const [code, signal] = await exited;
+      assert.equal(code, 0);
+      assert.equal(signal, null);
+    } finally {
+      clearTimeout(killTimer);
+    }
+  }
 }

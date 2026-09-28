@@ -47,13 +47,7 @@ const transport = new StreamableHTTPServerTransport({
 // 将传输层连接到 MCP Server，完成底层消息分发与协议绑定的初始化
 await server.connect(transport);
 
-// 创建原生的 Node.js HTTP 服务器，承载外部传入的 HTTP 请求并转发给 MCP 传输层
-async function readBody(request: AsyncIterable<Buffer>): Promise<unknown> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of request) chunks.push(chunk);
-  return JSON.parse(Buffer.concat(chunks).toString("utf8"));
-}
-
+// SDK 自行读取并限制请求体，避免手工解析绕过其体积限制。
 const httpServer = createServer(async (request, response) => {
   // 简单路由隔离：仅处理挂载在 /mcp 路径下的请求，其他路径统一返回 404 Not Found
   if (request.url !== "/mcp") {
@@ -62,15 +56,21 @@ const httpServer = createServer(async (request, response) => {
     return;
   }
 
+  const address = httpServer.address();
+  const host = address && typeof address !== "string" ? `127.0.0.1:${address.port}` : "";
+  if (request.headers.host !== host || request.headers.origin !== undefined) {
+    response.writeHead(403).end("Forbidden");
+    return;
+  }
   try {
-    const body = request.method === "POST" ? await readBody(request) : undefined;
-    // 将 Node.js 请求、响应与已解析的请求体交给 MCP 传输层处理。
-    await transport.handleRequest(request, response, body);
+    await transport.handleRequest(request, response);
   } catch {
     // 异常容错保护：若发生未处理异常且响应头尚未发送（headersSent 为 false），则安全返回 500
     if (!response.headersSent) {
       response.statusCode = 500;
       response.end("MCP 请求失败");
+    } else {
+      response.destroy();
     }
   }
 });
@@ -109,9 +109,17 @@ async function close(): Promise<void> {
 // 注册操作系统终止信号监听，在收到退出指令时先执行异步优雅关闭，再正常退出进程：
 // 语法说明：`void close()` 中 void 运算符用于显式忽略异步 Promise 的返回值，表明无需在此处 await。
 process.once("SIGTERM", () => {
-  void close().finally(() => process.exit(0));
+  void close().catch(() => {
+    console.error("HTTP MCP 服务关闭失败");
+    process.exitCode = 1;
+    httpServer.closeAllConnections();
+  });
 });
 
 process.once("SIGINT", () => {
-  void close().finally(() => process.exit(0));
+  void close().catch(() => {
+    console.error("HTTP MCP 服务关闭失败");
+    process.exitCode = 1;
+    httpServer.closeAllConnections();
+  });
 });

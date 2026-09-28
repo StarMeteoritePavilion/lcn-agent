@@ -1,5 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { mountExtension, type ToolRegistry } from "../core/tools.js";
 
@@ -12,7 +14,7 @@ import { mountExtension, type ToolRegistry } from "../core/tools.js";
  * 2. 动态工具发现：连接后通过协议握手获取服务端声明的能力，调用 `listTools` 动态获取
  *    服务端提供的工具名称、描述和参数 Schema，无需在客户端硬编码工具定义。
  * 3. 宿主注册与命名隔离：为避免外部工具与宿主内置工具同名冲突，为发现的工具名统一添加
- *    `mcp_demo_` 前缀后注册进宿主 ToolRegistry；而在实际向服务发起调用时，还原为原始名称。
+ *    来源前缀后注册进宿主 ToolRegistry；而在实际向服务发起调用时，还原为原始名称。
  * 4. 健壮的生命周期与回滚：提供异步 `dispose()` 实现幂等安全清理（注销工具 → 关闭 Client →
  *    关闭 Transport 并等待子进程退出）。若初始化握手或发现失败，自动触发反向清理回滚。
  */
@@ -32,7 +34,6 @@ import { mountExtension, type ToolRegistry } from "../core/tools.js";
  * @throws {Error} 握手超时、服务未提供工具能力、存在不支持的分页或后台任务、名称不合法、或初始化失败
  */
 export async function mountDemoMcp(registry: ToolRegistry) {
-  const client = new Client({ name: "lcn-agent", version: "1.0.0" });
 
   // 建立基于标准输入输出（stdio）的传输层通道：
   // - command: 使用当前 Node.js 运行时可执行文件路径，确保跨平台环境一致性；
@@ -46,6 +47,30 @@ export async function mountDemoMcp(registry: ToolRegistry) {
     stderr: "inherit",
   });
 
+  return mountMcp(registry, transport, "mcp_demo_");
+}
+
+/** 只连接显式指定的本机演示地址，不跟随重定向，不发送模型凭据。 */
+export async function mountHttpMcp(registry: ToolRegistry, address: string) {
+  if (!/^http:\/\/127\.0\.0\.1:([1-9][0-9]{0,4})\/mcp$/.test(address)) {
+    throw new Error("MCP HTTP 地址必须是 http://127.0.0.1:<端口>/mcp");
+  }
+  const url = new URL(address);
+  const transport = new StreamableHTTPClientTransport(url, {
+    requestInit: { redirect: "error" },
+    // 每个 HTTP 请求有上限，尤其是没有 RequestOptions 的 DELETE 会话终止请求。
+    fetch: (input, init) => fetch(input, {
+      ...init,
+      redirect: "error",
+      signal: AbortSignal.any([...(init?.signal ? [init.signal] : []), AbortSignal.timeout(5000)]),
+    }),
+  });
+  return mountMcp(registry, transport, "mcp_http_", () => transport.terminateSession());
+}
+
+/** 两种传输共用发现、注册、权限后的执行与回滚；HTTP 在关闭连接前终止会话。 */
+async function mountMcp(registry: ToolRegistry, transport: Transport, prefix: string, terminate?: () => Promise<void>) {
+  const client = new Client({ name: "lcn-agent", version: "1.0.0" });
   let unmount: (() => void) | undefined;
   let disposal: Promise<void> | undefined;
 
@@ -62,7 +87,7 @@ export async function mountDemoMcp(registry: ToolRegistry) {
    * 清理顺序严格按照依赖的反向执行：
    * 1. unmount?.(): 可选链调用（Optional Chaining），若 unmount 存在才执行，等价于 if (unmount) unmount()；
    *    从宿主注册表中注销所有已注册的 MCP 工具，防止 Agent 继续调用；
-   * 2. client.close(): 向服务端发送协议级断开连接通知；
+   * 2. client.close(): 关闭当前 transport（并不发送通用的断开通知）；
    * 3. transport.close(): 关闭 stdio 数据流管道，向子进程发送终止信号。
    *
    * 容错设计：每一步均采用独立 try-catch 包裹，确保前一步失败不会阻断后续资源的释放；
@@ -70,7 +95,7 @@ export async function mountDemoMcp(registry: ToolRegistry) {
    */
   async function cleanup(): Promise<void> {
     const errors: unknown[] = [];
-    for (const action of [() => unmount?.(), () => client.close(), () => transport.close()]) {
+    for (const action of [() => unmount?.(), () => terminate?.(), () => client.close(), () => transport.close()]) {
       try {
         await action();
       } catch (error) {
@@ -86,7 +111,7 @@ export async function mountDemoMcp(registry: ToolRegistry) {
       await Promise.race([
         closed,
         new Promise<never>((_, reject) => {
-          timer = setTimeout(() => reject(new Error("未确认 MCP 子进程关闭")), 5000);
+          timer = setTimeout(() => reject(new Error("未确认 MCP 传输关闭")), 5000);
         }),
       ]);
     } catch (error) {
@@ -134,9 +159,9 @@ export async function mountDemoMcp(registry: ToolRegistry) {
     // mountExtension 会管理扩展在宿主中的注册生命周期，返回的 unmount 函数可一次性注销该扩展的所有工具。
     unmount = mountExtension(registry, (api) => {
       for (const tool of discovered.tools) {
-        // 宿主命名规范：添加固定前缀 mcp_demo_，避免不同 MCP 服务的工具或内置工具发生重名冲突。
+        // 宿主命名规范：stdio 使用 mcp_demo_，HTTP 使用 mcp_http_；原名称不变。
         // 调用远程服务时，依然透传服务原名 tool.name。
-        const name = `mcp_demo_${tool.name}`;
+        const name = `${prefix}${tool.name}`;
         // 校验工具名是否满足 OpenAI Function Calling 及宿主的命名安全字符集限制（字母数字下划线减号，1-64 位）。
         if (!/^[a-zA-Z0-9_-]{1,64}$/.test(name)) {
           throw new Error("MCP 工具名不符合宿主命名限制");
@@ -213,7 +238,7 @@ export async function mountDemoMcp(registry: ToolRegistry) {
       }
     });
 
-    return { names, dispose };
+    return { names: Object.freeze(names), dispose };
   } catch (error) {
     // 事务性安全保证：初始化期间无论在握手、发现还是注册环节出现任何异常，
     // 都必须自动执行反向清理并等待关闭，杜绝子进程遗留或半注册状态。

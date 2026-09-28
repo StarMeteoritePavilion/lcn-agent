@@ -12,7 +12,7 @@ import { expandPrompt, listPrompts } from "./core/prompts.js";
 import { compactIfNeeded, compactSession, contextMessages } from "./core/compaction.js";
 import { memoryPrompt } from "./core/memory.js";
 import { forkSession } from "./core/branch.js";
-import { mountDemoMcp } from "./extensions/mcp.js";
+import { mountDemoMcp, mountHttpMcp } from "./extensions/mcp.js";
 
 import {
   createSession,
@@ -84,6 +84,7 @@ const planningCommands = new Set([
 // 的实际返回值结构 { names: string[], dispose: () => Promise<void> }，类似 Java 提取 Future<T> 内部类型 T。
 // 供权限策略统一进行名称匹配，并在进程退出时执行异步反向清理。
 let mcp: Awaited<ReturnType<typeof mountDemoMcp>> | undefined;
+let httpMcp: Awaited<ReturnType<typeof mountHttpMcp>> | undefined;
 
 // 注册表由入口持有；扩展在启动时登记，Agent 循环统一查找和执行。
 // 宿主控制自动允许与逐次确认，扩展注册本身不代表获得授权。
@@ -100,8 +101,9 @@ const toolRegistry = createToolRegistry((name, argumentsJson, context) => {
     return true;
   }
   if (
-    // MCP 工具运行在外部子进程中，具备潜在副作用，默认必须由用户在终端输入 y 逐次确认。
+    // MCP 工具由外部服务执行，具备潜在副作用，默认必须由用户在终端输入 y 逐次确认。
     mcp?.names.includes(name) ||
+    httpMcp?.names.includes(name) ||
     name === "delay_echo" ||
     name === "todo_add" ||
     name === "todo_done" ||
@@ -1339,6 +1341,12 @@ try {
     console.log(`已接入本地 MCP 工具：${mcp.names.join(", ")}`);
   }
 
+  const httpAddress = process.env.LCN_AGENT_MCP_HTTP_URL;
+  if (httpAddress !== undefined) {
+    httpMcp = await mountHttpMcp(toolRegistry, httpAddress);
+    console.log(`已接入 HTTP MCP 工具：${httpMcp.names.join(", ")}`);
+  }
+
   // 有命令行文本时单次运行，否则进入 readline 交互模式。
   // lockSessions 防止两个进程同时改同一套会话文件；返回的 unlock 必须在结束时调用。
   const unlock = lockSessions();
@@ -1364,7 +1372,7 @@ try {
   // 语法说明：dispose?.() 为可选链调用，若项为 undefined 则跳过，若存在则调用；
   // MCP 扩展包含外部子进程连接，dispose 返回 Promise，因此使用 await 异步等待其关闭；
   // 某个扩展清理失败继续清理其余项，并最终记录异常退出码。
-  for (const dispose of [mcp?.dispose, disposeExternal, disposeExtension]) {
+  for (const dispose of [httpMcp?.dispose, mcp?.dispose, disposeExternal, disposeExtension]) {
     try {
       await dispose?.();
     } catch {
