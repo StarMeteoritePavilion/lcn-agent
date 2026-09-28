@@ -3,11 +3,20 @@
 更新日期：2026-09-28。当前已实现 stdio 与本机 Streamable HTTP MCP、resources/prompts、受限网页读取和 Tavily 搜索。
 路线和历史证据见[学习计划](agent-development-learning-plan.md)，协作方式见[协作引导](agent-coordination-guide.md)。
 
+## 当前停靠点与提交状态
+
+阶段 8 已完成所记录基础范围的验收和入口留档。用户明确要求：阶段 9 暂不推进。
+接手后先核对工作区与本文，不自动开始子代理、后台任务或发布工作。
+`src/stage/stage-08.ts` 来自当前 `src/index.ts`，只调整 core/extensions 的相对导入；不要继续修改历史入口。
+快照共享独立模块，不等于完整版本冻结。此前功能基线为 `100305a`（受限网页读取与 Tavily 搜索）。
+联合验收脚本、阶段 8 快照、README、学习计划和本文纳入本次收尾提交；准确提交号通过 git log 查询。
+用户已明确授权本次收尾 commit；未授权 push。后续提交仍须用户明确要求。后续教学默认仍由用户手敲，单次代写授权不扩展到阶段 9。
+
 ## 接手顺序
 
 1. 阅读协作引导、学习计划的当前进度、阶段 8、当前节点与验收记录。
 2. 核对 `git status --short`、`git log -5 --oneline`；保留用户尚未提交的修改。
-3. 阅读 `src/extensions/mcp.ts`、`src/index.ts`、两个演示服务与 `tests/mcp-stdio.mjs`、`tests/mcp-http.mjs`。
+3. 按需核对 `src/index.ts`、阶段 8 快照、`src/extensions/mcp.ts`、`mcp-content.ts`、`web.ts`、`search.ts` 与对应测试；网络联合验收入口为 `tests/network-fixture.mjs`。
 4. 运行 `npm run check`、`npm test`、`git diff --check`；不要仅凭本文认定当前代码通过。
 
 ## 当前实现和启用方式
@@ -29,7 +38,7 @@
 
 SDK 固定 @modelcontextprotocol/sdk@1.30.1，签名以本地声明及实现为准。
 SDK 无状态 transport 不可跨请求复用；此前共享无状态实例的教学代码已修正为单内存会话。
-阶段 0～7 入口保存在 src/stage/，不再修改；独立模块历史以 Git 提交为准。
+阶段 0～8 入口保存在 src/stage/，不再修改；独立模块历史以 Git 提交为准。
 
 ## 验证证据与限制
 
@@ -41,7 +50,7 @@ HTTP 真实入口另用临时隔离项目、模拟模型和 PTY 验证允许/拒
 未启用、按调用 ID 回填、工具诊断及客户端退出不停止服务。临时脚本未入库。
 本轮没有真实模型请求、没有 push；故障覆盖已补齐至下文记录范围，未实现重连。
 
-## MCP 故障验收与紧邻下一步
+## MCP 故障验收
 
 新增 tests/mcp-failures.mjs，由 npm test 运行。覆盖 HTTP 调用中取消、预算信号、服务收到取消通知、
 5 秒无响应头超时、连接断开、业务错误、无自动重放、初始化正文脱敏及 DELETE 失败后的清理。
@@ -50,7 +59,7 @@ SSE 流中断仍可能等待 MCP 请求或宿主 30 秒期限，不承诺立即�
 临时隔离项目/模拟模型/PTY 已验证调用中取消和真实 30 秒预算、剩余工具未执行、配对及诊断。
 远端副作用不保证撤销，故障后不自动重连或重试工具。具体覆盖与限制以学习计划为准。
 
-## 当前内容入口与紧邻下一步
+## 内容入口与网络验收
 
 resources/prompts 已接入：src/extensions/mcp-content.ts 处理清单、精确选择与文本校验。
 两个演示服务新增 demo://notes 固定资源和 demo_summary 无参数提示；README 有完整命令。
@@ -72,10 +81,17 @@ search_web 已由用户手敲并注册，使用 POST https://api.tavily.com/sear
 2026-09-28 复跑 npm run check、npm test、git diff --check 全部退出 0，tests/search.mjs 已纳入入口。
 模拟测试覆盖请求契约、Schema 先于审批、允许/拒绝、卸载、预取消、缺密钥、空结果、协议与体积限制、错误脱敏。
 用户报告实测成功；本次未读取密钥、未调用真实 Tavily，也未独立验证搜索终端审批与会话日志。
-下一节点为阶段 8 的恶意外部内容与权限联合验收，含认证信息不写入会话日志；仍由用户手敲。
+tests/network-fixture.mjs 已按授权加入恶意 HTML 和两项失败模拟：第二次搜索抛连接异常，第二次网页流中断。
+两个错误都包含假密钥，用于断言原始错误与凭据不会进入模型消息、会话、诊断或终端。
+临时 Python PTY 在独立目录运行当前仓库脚本：execute 与 plan 模式均五轮完成、退出 0，无 marker.txt。
+读取逐次审批；execute 拒绝命令，plan 直接拦截命令；两个失败调用同轮串行执行，按 ID 回填受控错误。
+HTML 来源、类型、字节数和正文断言通过，类型检查、完整 npm test 和 diff 检查通过。
+网络响应全部模拟；不验证真实 DNS、TLS、网络取消、超时或物理断连，未读取真实密钥。
+该脚本需以 node --import 在隔离目录加载，不直接运行或加入 npm test；临时 PTY 驱动未入库。
+阶段 8 已完成所记录基础范围的本地验收和入口留档；阶段 9 暂不推进。
 正文抽取尚未实现。搜索结果 URL 只检查协议及凭据，不过滤私网地址；这些链接不会被自动访问。
 搜索注释已按实际实现修正：不宣称过滤私网链接、清洗成功结果或由 notice 防止越权；权限边界仍由宿主执行。
-学习计划已补勾三项有验收证据的 MCP/来源检查节点；阶段 8 最后一项联合验收仍未完成。
+学习计划已按现有证据勾选阶段 8 的六项清单，入口留档已完成，随本次收尾提交保存。
 resources/prompts 不代表完整协议支持；资源模板、分页、非文本消息仍未实现。
 
 ## 授权和数据边界
@@ -85,3 +101,29 @@ resources/prompts 不代表完整协议支持；资源模板、分页、非文�
 节点验收后更新文档并保留工作区改动；commit 时机由用户决定，仅在用户明确要求时提交。
 此前自动提交授权已撤销，“继续”不授权 commit；push 仍需明确指令。
 不读取 .env 密钥，不清理用户 .lcn-agent 数据或运行中的写入锁，测试使用隔离项目。
+
+收尾检查：`npm run check`、完整 `npm test`、`git diff --check` 通过；快照反向还原导入后逐字一致，隔离启动与退出通过，无模型请求。
+
+## 复跑网络联合验收
+
+`npm test` 不运行交互辅助文件。以下命令从项目根目录执行，只在新建临时目录写入假配置和会话：
+
+```bash
+npm run build
+network_repo="$PWD"
+network_case="$(mktemp -d)"
+cd "$network_case"
+cat > config.toml <<'EOF'
+apiKey = "fixture-model-key"
+baseURL = "http://127.0.0.1:1/v1"
+model = "fixture-model"
+EOF
+node --import "$network_repo/tests/network-fixture.mjs" "$network_repo/dist/index.js"
+```
+
+execute：输入“验证”，依次批准搜索和网页，拒绝命令，再批准搜索失败、网页失败两项调用。
+完成五轮后输入 `/exit`，必须看到“外部内容权限、网络失败回填及日志脱敏检查通过”且退出码为 0。
+再次启动同一命令，先输入 `/mode plan` 再输入“验证”；四次读取均批准，命令应直接拒绝而不出现审批。
+不要直接运行辅助文件，也不要在真实项目配置目录加载它；它是替换网络响应的测试入口。
+网络异常是模拟抛错，不代表已验证真实 DNS、TLS、网页/搜索调用中取消或实际超时。
+真实模型是否服从恶意内容没有在这里测试；验证的是即便模型请求执行，宿主仍保持审批和模式限制。

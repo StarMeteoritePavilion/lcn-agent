@@ -2,7 +2,7 @@
 
 从零开始构建的可扩展终端 AI Agent。目前实现流式模型、工具循环、基础终端交互、JSONL 会话保存与恢复、运行诊断，以及工具扩展注册、清理和外部 JavaScript 模块加载。
 
-> **项目状态：** 阶段 0～7 已完成所记录基础范围的本地验收，阶段 7 已留档。阶段 8 已接入 stdio 与本机 Streamable HTTP MCP、resources/prompts、受限网页读取及 Tavily 搜索，并完成记录范围的验证；下一节点为恶意外部内容、权限与会话日志联合验收，阶段 8 整体尚未完成。
+> **项目状态：** 阶段 0～7 已完成所记录基础范围的本地验收，阶段 7 已留档。阶段 8 已接入 stdio 与本机 Streamable HTTP MCP、resources/prompts、受限网页读取及 Tavily 搜索，并完成记录范围的验证；恶意搜索结果、HTML 与两项模拟网络失败的权限和日志联合验收已通过。阶段 8 已完成所记录基础范围的本地验收，入口已留档为 `src/stage/stage-08.ts`；阶段 9 按用户要求暂不推进。
 
 ## 目标特性
 
@@ -311,6 +311,12 @@ read_web 已默认注册，只接受 https://nodejs.org/api/ 下无凭据、查�
 结果链接仅校验 HTTP/HTTPS 协议及无 URL 凭据，不保证链接指向公网；外部内容不授予工具权限。
 `tests/search.mjs` 使用模拟响应检查请求契约、审批与错误边界，不需要真实密钥或消耗搜索额度。
 
+`tests/network-fixture.mjs` 是交互验收辅助文件，不属于 `npm test`。
+在隔离临时目录配置假模型凭据后，以 `node --import` 加载它再启动当前构建的入口，
+可模拟恶意搜索结果、HTML、搜索连接异常和网页流中断，检查 execute/plan 权限、来源及错误脱敏。
+共五轮：批准搜索、网页读取；execute 模式拒绝命令（plan 直接拒绝）；再批准两项失败调用，最后 /exit 检查日志。
+它接管 fetch 与 https.request，不调用真实模型、Tavily 或网站；不验证 DNS、TLS 或网络取消。
+
 ## 当前阶段验收
 
 ```bash
@@ -323,7 +329,7 @@ npm test
 此前脚本 `tests/branch.mjs`、`tests/memory.mjs`、`tests/compaction.mjs`、`tests/prompts.mjs`、`tests/skills.mjs` 和 `tests/session-persistence.py` 保留，当前测试入口不运行它们；本次额外的终端与请求集成验证范围见学习计划验收记录。
 
 项目按阶段学习：`src/index.ts` 是当前入口，`src/stage/stage-xx.ts` 保存已完成阶段。
-阶段 7 已原样留档为 `src/stage/stage-07.ts`；独立模块完整版本由阶段收尾提交保存。
+阶段 8 入口已留档为 `src/stage/stage-08.ts`，仅调整相对导入。独立模块仍共享当前代码；完整版本由本次阶段收尾提交保存。
 测试只维护当前学习节点；阶段完成后记录验收结论，旧测试可移除，下一阶段更换 `npm test` 入口。
 若阶段依赖独立模块，仅复制入口不能冻结完整实现，应使用 Git 提交标记该阶段的完整状态。
 历史结论和覆盖限制见 [学习计划](docs/agent-development-learning-plan.md#验收记录)。
