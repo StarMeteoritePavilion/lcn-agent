@@ -1,0 +1,61 @@
+src/core/model.ts
+  s_a70d5123b0259b::t_fd5e1a9d7e2738 3-132,138-168
+  s_2568fef00a33ca::t_03aaadc65d80b1 134,170
+  s_a70d5123b0259b::t_249ce9b0f79f47 1-2
+  s_2568fef00a33ca::t_b96f2e39be36d4 171-173
+  s_a70d5123b0259b::t_1bf0194704ebb0 133,135-137,169,174
+docs/agent-handoff.md
+  s_2568fef00a33ca::t_5f832a2f2908bb 11-12
+  s_2568fef00a33ca::t_29098f4c986845 3,8,95
+  s_2568fef00a33ca::t_f67c3200c8a771 9-10,13-14,17,103,109
+docs/agent-development-learning-plan.md
+  s_2568fef00a33ca::t_5f832a2f2908bb 434
+  s_2568fef00a33ca::t_42095919576b6b 11,408,435,444
+src/index.ts
+  s_a70d5123b0259b::t_4c1ab1e5930f50 412-423
+  s_a70d5123b0259b::t_aefa51501b4e88 424-425
+  s_a70d5123b0259b::t_8be522bb498db5 1,384
+tests/model.mjs
+  s_a70d5123b0259b::t_ae596d3025d5f6 4-147
+  s_a70d5123b0259b::t_ed20652c6fc62e 1-3
+  s_a70d5123b0259b::t_0619af75ad7906 148
+README.md
+  s_2568fef00a33ca::t_47071152cc0be8 5,328
+package.json
+  s_2568fef00a33ca::t_9306770705e738 10-12
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "18c16ab209419d44cc0a107f17ded8dc458470d8",
+  "prompts": {},
+  "humans": {
+    "h_cc77f976c0845e": {
+      "author": "lcx29 <can@MacBook-Air-M5.local>"
+    }
+  },
+  "sessions": {
+    "s_2568fef00a33ca": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0eae6-3da3-7ec0-8c46-6163cc631d2c",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "lcx29 <can@MacBook-Air-M5.local>",
+      "custom_attributes": {
+        "employee_email": "licanxin@gofo.com"
+      }
+    },
+    "s_a70d5123b0259b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "853d14e2-48be-48b0-b58d-c7df2f995f23",
+        "model": "gemini-3.8-flash"
+      },
+      "human_author": "lcx29 <can@MacBook-Air-M5.local>",
+      "custom_attributes": {
+        "employee_email": "licanxin@gofo.com"
+      }
+    }
+  }
+}
