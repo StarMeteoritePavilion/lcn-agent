@@ -17,22 +17,29 @@
 设置写入 `.lcn-agent/extensions.json`，只在重启后生效；plan 不允许修改，演示限制不能被设置绕过。
 禁用 workflow/skills 时对应的上下文注入也停止；不删除会话、待办或后台任务记录。
 `npm run check`、完整 `npm test`、`git diff --check` 及隔离目录 PTY 均通过，具体范围见学习计划。
-当前节点为安装包和启动说明：`npm pack` 生成本地 `.tgz`，`lcn-agent` 使用当前工作目录，
+安装包和启动说明已提交为 `5b3c2e7`：`npm pack` 生成本地 `.tgz`，`lcn-agent` 使用当前工作目录，
 `--help` / `--version` 不初始化宿主；发布文件使用白名单，打包前清理并重建 dist。
 `npm run check`、完整 `npm test`、`npm run test:package` 和 diff 检查通过；
 临时安装后的 CLI、子代理/MCP 路径与退出清理已验证，不修改全局安装或发布 registry。
-用户已完成安装包节点 Review，并明确要求先 commit 再推进，本次提交保存基线；下一节点为最终十二项产品联合验收。
+最终十二项联合验收已完成：新增 `tests/acceptance.py`，通过真实 PTY、SDK、磁盘和子进程串起产品流程。
+统一入口 `npm run test:acceptance` 包含类型检查、完整回归、PTY/Skills/压缩及安装包验证。
+十二项本地模拟范围通过，具体输入、事件、副作用与证据见学习计划第 7 节；未请求真实模型、Tavily 或公网网页；安装测试可能访问 npm registry。
+外部扩展按重启装载契约验证，不包含运行中热重载；macOS 实测，其他平台未验。
+阶段 9 入口现已留档为 `src/stage/stage-09.ts`，仅调整 core/extensions 相对导入，反向还原后与主入口逐字一致。
+快照已通过类型检查、构建及隔离目录 --demo 工具调用/退出/锁释放检查。
+阶段 0～9 所记录范围的本地验收及入口留档完成；用户已明确授权 commit，本次提交保存联合验收与阶段 9 收尾基线，不 push。
+当前学习路线已收尾；真实模型抽查、其他平台和 registry 发布均未执行，后续按用户新需求推进。
 `src/stage/stage-08.ts` 来自阶段 8 收尾时的 `src/index.ts`，只调整 core/extensions 的相对导入；不要继续修改历史入口。
 快照共享独立模块，不等于完整版本冻结。此前功能基线为 `100305a`（受限网页读取与 Tavily 搜索）。
-联合验收脚本、阶段 8 快照、README、学习计划和本文纳入本次收尾提交；准确提交号通过 git log 查询。
-进入下一节点前先保存本节点基线；本次已先提交扩展配置，再推进安装包；后续提交仍需用户明确指令，不执行 push。
+此前安装包基线为 `5b3c2e7`；联合验收脚本、阶段 9 快照和文档由本次收尾提交保存，准确提交号通过 git log 查询。
+进入下一节点前先保存本节点基线；本次已先提交安装包，再推进联合验收；后续提交仍需用户明确指令，不执行 push。
 
 ## 接手顺序
 
 1. 阅读协作引导、学习计划的当前进度、阶段 9、当前节点与验收记录。
 2. 核对 `git status --short`、`git log -5 --oneline`；保留用户尚未提交的修改。
-3. 当前先核对 `src/cli.ts`、`package.json`、`package-lock.json`、`config.example.toml` 与 `tests/package.mjs`；子代理相关文件为 `src/core/subagent.ts`、`src/core/subagent-process.ts`、`src/subagent-worker.ts`、`src/extensions/tasks.ts`、`tests/subagent-process.mjs`、`tests/subagent-concurrency.mjs` 及宿主退出清理；再按需核对 `src/index.ts`、阶段 8 快照、`src/extensions/mcp.ts`、`mcp-content.ts`、`web.ts`、`search.ts` 与对应测试；网络联合验收入口为 `tests/network-fixture.mjs`。
-4. 运行 `npm run check`、`npm test`、`git diff --check`；不要仅凭本文认定当前代码通过。
+3. 当前先核对 `tests/acceptance.py`、`tests/network-fixture.mjs`、`package.json` 的 test:acceptance 及学习计划十二项表；安装包见 `src/cli.ts` 和 `tests/package.mjs`；子代理相关文件为 `src/core/subagent.ts`、`src/core/subagent-process.ts`、`src/subagent-worker.ts`、`src/extensions/tasks.ts`、`tests/subagent-process.mjs`、`tests/subagent-concurrency.mjs` 及宿主退出清理；再按需核对 `src/index.ts`、阶段 8 快照、`src/extensions/mcp.ts`、`mcp-content.ts`、`web.ts`、`search.ts` 与对应测试；网络联合验收入口为 `tests/network-fixture.mjs`。
+4. 运行 `npm run test:acceptance`、`git diff --check`；不要仅凭本文认定当前代码通过。
 
 ## 当前实现和启用方式
 
@@ -53,7 +60,7 @@
 
 SDK 固定 @modelcontextprotocol/sdk@1.30.1，签名以本地声明及实现为准。
 SDK 无状态 transport 不可跨请求复用；此前共享无状态实例的教学代码已修正为单内存会话。
-阶段 0～8 入口保存在 src/stage/，不再修改；独立模块历史以 Git 提交为准。
+阶段 0～9 入口保存在 src/stage/，不再修改；独立模块历史以 Git 提交为准。
 
 ## 验证证据与限制
 
@@ -111,7 +118,7 @@ resources/prompts 不代表完整协议支持；资源模板、分页、非文�
 
 ## 授权和数据边界
 
-用户已要求“你直接修改，我 review”，随后要求先 commit 再推进；模型通信已提交，子代理及后台任务由 Agent 实现并验收，前两个节点已完成 Review 并提交；并发节点已提交，演示模式已完成 Review 并提交，扩展配置节点已完成 Review 并按用户明确授权提交；当前安装包节点已完成 Review，用户已明确授权本次提交后推进联合验收。
+用户已要求“你直接修改，我 review”，随后要求先 commit 再推进；模型通信已提交，子代理及后台任务由 Agent 实现并验收，前两个节点已完成 Review 并提交；并发节点已提交，演示模式已完成 Review 并提交，扩展配置节点已完成 Review 并按用户明确授权提交；安装包节点已按用户明确授权提交；当前联合验收与阶段 9 留档收尾已完成，用户已明确授权本次 commit。
 当前直接修改后 Review 的协作方式沿用本次用户授权；后续按用户最新指令推进。
 节点验收后更新文档并保留工作区改动；commit 时机由用户决定，仅在用户明确要求时提交。
 此前自动提交授权已撤销，“继续”不授权 commit；push 仍需明确指令。

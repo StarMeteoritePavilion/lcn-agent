@@ -15,7 +15,9 @@
     "test:demo": "node tests/demo.mjs && node tests/extensions.mjs",
     "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
     "prepack": "npm run clean && npm run build",
-    "test:package": "npm run build && node tests/package.mjs"
+    "test:package": "npm run build && node tests/package.mjs",
+    "test:journeys": "python3 tests/acceptance.py && node tests/skills.mjs && node tests/compaction.mjs",
+    "test:acceptance": "npm run check && npm test && npm run test:journeys && npm run test:package"
   },
   "keywords": [],
   "author": "",
