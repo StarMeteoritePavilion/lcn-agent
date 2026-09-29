@@ -1,0 +1,44 @@
+src/stage/stage-09.ts
+  s_2568fef00a33ca::t_4a73891fb1e3d7 1-1445
+tests/acceptance.py
+  s_2568fef00a33ca::t_4a31d8dc8eea4a 291,294-295
+  s_2568fef00a33ca::t_2cb5696bcf3232 62
+  s_2568fef00a33ca::t_42505b1413b9b2 1-61,63-290,292-293,296-329
+README.md
+  s_2568fef00a33ca::t_cddb2dd18b54d0 5,496-497,505-509,512-513
+docs/agent-development-learning-plan.md
+  s_2568fef00a33ca::t_68f80c9cf553ac 408
+  s_2568fef00a33ca::t_cddb2dd18b54d0 11,31,33,417-421,423-424
+  s_2568fef00a33ca::t_00be3319528371 422
+  s_2568fef00a33ca::t_27e36b75e01793 332,389-407,409-413
+package.json
+  s_2568fef00a33ca::t_a3336bf54fc652 18-20
+docs/agent-handoff.md
+  s_2568fef00a33ca::t_cddb2dd18b54d0 24,28-31,34-35,41-42,63,121
+  s_2568fef00a33ca::t_68f80c9cf553ac 26
+  s_2568fef00a33ca::t_bd1e0f62d9e4ae 20,25,27
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "c793c2ac325ca44df7f3a5728cd07a7332d5a5d0",
+  "prompts": {},
+  "humans": {
+    "h_cc77f976c0845e": {
+      "author": "lcx29 <can@MacBook-Air-M5.local>"
+    }
+  },
+  "sessions": {
+    "s_2568fef00a33ca": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0eae6-3da3-7ec0-8c46-6163cc631d2c",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "lcx29 <can@MacBook-Air-M5.local>",
+      "custom_attributes": {
+        "employee_email": "licanxin@gofo.com"
+      }
+    }
+  }
+}
