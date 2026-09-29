@@ -85,17 +85,22 @@ export class DiagnosticWriteError extends Error {}
 /**
  * 为指定会话创建诊断记录器。
  *
+ * 语法说明：Pick<Session, "file" | "model"> 是 TypeScript 内置工具类型，
+ * 表示从 Session 类型中仅挑出 "file" 与 "model" 属性，构造一个轻量对象类型。
+ * 这样主会话和子代理（Subagent）都能使用本函数：子代理无需构造虚拟的完整 Session 实例，
+ * 仅提供所属会话文件名和模型名即可创建独立的诊断运行日志。
+ *
  * 在 `.lcn-agent/diagnostics/<会话文件名>/` 目录下新建一个以 UUID 命名的 JSONL 文件，
  * 第一行写入运行头信息 `{ type: "run", version: 1, session, model, at }`，
  * 后续通过返回的 Diagnostics 接口方法逐条追加 start / end / finish 记录。
  *
- * 每个会话可能包含多次运行（多个 JSONL 文件），例如恢复会话后继续对话时会生成新的诊断文件。
+ * 每个会话可能包含多次运行（多个 JSONL 文件），例如恢复会话后继续对话或执行子代理时会生成独立的诊断文件。
  *
- * @param session 当前会话对象，用于获取会话文件名和模型名称
+ * @param session 会话轻量对象，用于获取会话文件名和模型名称
  * @returns Diagnostics 接口对象，包含 start / end / finish / close 四个方法
  * @throws {DiagnosticWriteError} 运行头写入失败时抛出（文件描述符会在抛出前关闭）
  */
-export function createDiagnostics(session: Session): Diagnostics {
+export function createDiagnostics(session: Pick<Session, "file" | "model">): Diagnostics {
   // 以会话文件名作为子目录名，同一会话的多次运行记录集中存放。
   const folder = join(directory, session.file);
   // 确保诊断目录存在（mkdirSync 参数说明见 session.ts createSession，此处跳过）。

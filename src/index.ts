@@ -5,6 +5,9 @@ import { clearScreenDown, cursorTo, moveCursor } from "node:readline";
 import { AgentEndEvent, createToolRegistry, loadExtension, mountExtension } from "./core/tools.js";
 import { registerEcho } from "./extensions/echo.js";
 import registerWorkflow from "./extensions/workflow.js";
+import { registerSubagent } from "./extensions/subagent.js";
+import { createProcessSubagent } from "./core/subagent-process.js";
+import { registerTasks } from "./extensions/tasks.js";
 import { createInterface } from "node:readline/promises";
 import { loadConfig } from "./core/config.js";
 import { createDiagnostics, DiagnosticWriteError, showDiagnostics } from "./core/diagnostics.js";
@@ -46,6 +49,7 @@ const allowedTools = new Set(["echo", "upper", "todo_list", "plan_show"]);
 // 这是宿主维护的名单，不接受扩展自报“只读”作为依据。
 // 允许读文件/搜索/列目录/预览编辑，以及把 Skill 正文注入会话（skill_activate）；
 // 允许受限网页读取（read_web）与受限网页搜索（search_web）：属于无本地持久化副作用的只读外部参考资料查阅。
+// run_subagent 只开放三项文件读取能力，委派与内部读取均须逐次确认。
 // apply_edit、run_command、plan_set、todo_add / todo_done、delay_echo 都不在名单里。
 const planningTools = new Set([
   "echo",
@@ -59,6 +63,7 @@ const planningTools = new Set([
   "skill_activate",
   "read_web",
   "search_web",
+  "run_subagent",
 ]);
 
 // 模式属于当前进程，不随会话保存；启动时沿用现有执行模式。
@@ -71,6 +76,12 @@ let mode: "plan" | "execute" = "execute";
 // /skills、/skill 允许列出或激活 Skill 正文；/memory 只读列出项目记忆。
 // /memory_add、/memory_delete 不在名单里，规划模式下不能改记忆。
 const planningCommands = new Set([
+  "task_start",
+  "tasks",
+  "task_show",
+  "task_approve",
+  "task_reject",
+  "task_cancel",
   "mcp_demo_resources",
   "mcp_demo_resource",
   "mcp_demo_prompts",
@@ -127,7 +138,8 @@ const toolRegistry = createToolRegistry((name, argumentsJson, context) => {
     name === "skill_activate" ||
     // read_web 与 search_web 涉及向外部发起实际网络请求，且参数由模型生成，默认必须由用户逐次确认。
     name === "read_web" ||
-    name === "search_web"
+    name === "search_web" ||
+    name === "run_subagent"
   ) {
     // argumentsJson 是宿主冻结的参数快照，确认时展示的就是即将执行的内容。
     // 把 signal 传给 confirm，用户在确认期间按 Ctrl+C 或超时时，提问会中止。
@@ -666,6 +678,7 @@ async function runAgent(
             }),
           );
         } catch (error) {
+          if (error instanceof DiagnosticWriteError) throw error;
           success = false;
           // 与命令一样按信号状态分类：只要信号已触发，就视为取消或超时，
           // 而不关心工具具体抛出了什么错误（AbortError 或其他）。
@@ -948,6 +961,7 @@ async function main(): Promise<void> {
   console.log(`模型: ${model}`);
   console.log("输入内容后回车，输入 /exit 退出。");
   console.log("/mode 查看模式，/mode plan 只读规划，/mode execute 恢复执行。");
+  console.log("/task_start 任务 启动后台只读任务，/tasks 查看，/task_show 编号 查看结果，/task_cancel 编号 取消。");
   console.log("/new 新建，/sessions 列出，/resume 完整文件名 恢复，/history 查看历史。");
   console.log("/diagnostics 查看当前诊断；/diagnostics 完整会话文件名 查看指定会话诊断。");
   // 这里的“生成中”也包括扩展命令执行中：两者都会登记 activeAbort。
@@ -1272,6 +1286,9 @@ async function runNonInteractive(userInput: string): Promise<void> {
 const nonInteractiveInput = process.argv.slice(2).join(" ").trim();
 let disposeExtension: (() => void) | undefined;
 let disposeExternal: (() => void) | undefined;
+let disposeSubagent: (() => void) | undefined;
+let subagents: ReturnType<typeof createProcessSubagent> | undefined;
+let backgroundTasks: ReturnType<typeof registerTasks> | undefined;
 
 try {
   // 先发现 Skills，再和 echo / workflow 一起装进同一份注册表；初始化失败统一回滚。
@@ -1291,6 +1308,15 @@ try {
   const config = loadConfig();
   client = new OpenAI({ apiKey: config.apiKey, baseURL: config.baseURL });
   model = config.model;
+
+  // 阶段 9 新增：挂载只读子代理工具（run_subagent）。
+  // 使用已加载的模型配置创建子进程执行器；工具仍在父进程经过注册表校验与审批，这不是沙箱。
+  subagents = createProcessSubagent(config, toolRegistry);
+  const runner = subagents.run;
+  disposeSubagent = mountExtension(toolRegistry, (api) => {
+    registerSubagent(api, runner);
+    backgroundTasks = registerTasks(api, runner);
+  });
 
   // 阶段 8 约定：只有精确设置 LCN_AGENT_MCP_DEMO=1 时才启动本地 MCP 演示服务子进程。
   // 未设置则默认不启用，避免无故增加进程开销；设置非法值时明确抛错，防止拼写错误掩盖意图。
@@ -1321,7 +1347,16 @@ try {
       await main();
     }
   } finally {
-    unlock();
+    try {
+      // 退出前先等待后台任务停止并保存状态，再关闭子进程执行器，最后释放会话锁。
+      try {
+        await backgroundTasks?.close();
+      } finally {
+        await subagents?.close();
+      }
+    } finally {
+      unlock();
+    }
   }
 } catch (error) {
   if (error instanceof OpenAI.APIUserAbortError) {
@@ -1332,11 +1367,22 @@ try {
     process.exitCode = 1;
   }
 } finally {
+  try {
+    // 异常退出时兜底停止后台任务并清理子进程资源。
+    try {
+      await backgroundTasks?.close();
+    } finally {
+      await subagents?.close();
+    }
+  } catch {
+    console.error("子代理清理或后台状态保存失败");
+    process.exitCode = 1;
+  }
   // 按装载逆序逐个清理（后装载的先清理，保证依赖正确释放）。
   // 语法说明：dispose?.() 为可选链调用，若项为 undefined 则跳过，若存在则调用；
   // MCP 扩展包含外部子进程连接，dispose 返回 Promise，因此使用 await 异步等待其关闭；
   // 某个扩展清理失败继续清理其余项，并最终记录异常退出码。
-  for (const dispose of [httpMcp?.dispose, mcp?.dispose, disposeExternal, disposeExtension]) {
+  for (const dispose of [httpMcp?.dispose, mcp?.dispose, disposeSubagent, disposeExternal, disposeExtension]) {
     try {
       await dispose?.();
     } catch {
