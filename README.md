@@ -2,7 +2,7 @@
 
 从零开始构建的可扩展终端 AI Agent。目前实现流式模型、工具循环、基础终端交互、JSONL 会话保存与恢复、运行诊断，以及工具扩展注册、清理和外部 JavaScript 模块加载。
 
-> **项目状态：** 阶段 0～7 已完成所记录基础范围的本地验收，阶段 7 已留档。阶段 8 已接入 stdio 与本机 Streamable HTTP MCP、resources/prompts、受限网页读取及 Tavily 搜索，并完成记录范围的验证；恶意搜索结果、HTML 与两项模拟网络失败的权限和日志联合验收已通过。阶段 8 已完成所记录基础范围的本地验收，入口已留档为 `src/stage/stage-08.ts`；阶段 9 已完成独立流式通信、只读子代理、独立子模型进程、后台任务和显式有界并发的本地模拟验收；无付费模型演示模式已通过本地验收；扩展组启停配置入口已实现；打包和最终联合验收尚未完成。
+> **项目状态：** 阶段 0～7 已完成所记录基础范围的本地验收，阶段 7 已留档。阶段 8 已接入 stdio 与本机 Streamable HTTP MCP、resources/prompts、受限网页读取及 Tavily 搜索，并完成记录范围的验证；恶意搜索结果、HTML 与两项模拟网络失败的权限和日志联合验收已通过。阶段 8 已完成所记录基础范围的本地验收，入口已留档为 `src/stage/stage-08.ts`；阶段 9 已完成独立流式通信、只读子代理、独立子模型进程、后台任务和显式有界并发的本地模拟验收；无付费模型演示模式已通过本地验收；扩展组启停配置和本地 npm 安装包已实现；最终联合验收尚未完成。
 
 ## 目标特性
 
@@ -32,13 +32,65 @@
 - Node.js >= 22
 - npm
 
-### 安装
+### 从源码运行
 
 ```bash
 git clone https://github.com/StarMeteoritePavilion/lcn-agent.git
 cd lcn-agent
-npm install
+npm ci
 ```
+
+### 构建和安装 CLI 包
+
+在源码仓库中执行：
+
+```bash
+npm ci
+npm pack
+```
+
+当前版本生成 `lcn-agent-1.0.0.tgz`。`prepack` 会先清理生成目录 `dist` 再编译，
+安装包只包含当前运行时 JavaScript、README、LICENSE 和配置示例；不包含真实 `.env`、
+`config.toml`、`.lcn-agent`、历史阶段、源码或测试。不要在 `dist` 中保存手写文件。
+包需要 Node.js >= 22，不内置 Node.js 和运行时依赖；首次安装通常需要访问 npm registry。
+
+以下为 macOS/Linux Shell 示例，安装已生成的本地包，不依赖同名在线包：
+
+```bash
+npm install -g ./lcn-agent-1.0.0.tgz
+lcn-agent --help
+lcn-agent --version
+
+mkdir demo-workspace
+cd demo-workspace
+lcn-agent --demo
+# 单次运行
+lcn-agent --demo "回显 你好"
+```
+
+安装后不需要 TypeScript 编译器或源码仓库。真实模型模式从**当前工作目录**读取配置：
+
+```bash
+# 只在没有相应文件时复制，已有配置不覆盖
+cp -n "$(npm root -g)/lcn-agent/config.example.toml" ./config.toml
+cp -n "$(npm root -g)/lcn-agent/.env.example" ./.env
+# 编辑 .env，填写自己的 API_KEY、BASE_URL 和 MODEL 后启动
+lcn-agent
+# 单次运行
+lcn-agent "介绍一下当前目录"
+```
+
+也可通过进程环境变量提供这三个值，具体优先级见下方模型配置。
+`--help`、`-h` 和 `--version` 不加载模型配置或扩展，也不创建会话与锁。
+`lcn-agent` 的输入语法、审批、演示限制和 `/命令` 与源码入口一致。
+会话和启停设置保存在工作目录 `.lcn-agent`；卸载命令不会删除这些项目数据：
+
+```bash
+npm uninstall -g lcn-agent
+```
+
+未向 npm registry 发布本项目，也不自动修改 shell 配置；命令找不到时检查 npm 全局可执行目录是否在 PATH 中。
+本次验证使用 macOS 临时安装目录，未修改本机全局安装；Windows 的命令 shim 尚未独立验收。
 
 ### 无付费模型演示
 
@@ -70,7 +122,7 @@ npm run demo -- "回显 你好"
 
 ### 模型配置
 
-从仓库根目录启动。`config.toml` 必须存在，默认引用以下变量：
+从需要处理的工作目录启动。真实模型模式要求该目录有 `config.toml`，默认引用以下变量：
 
 ```toml
 apiKey = "${API_KEY}"
@@ -111,8 +163,8 @@ npm start
 # 编译 TypeScript
 npx tsc
 
-# 运行
-node dist/index.js
+# 运行（也支持 --help / --version）
+node dist/cli.js
 
 # 编译并运行（组合命令）
 npx tsc && node dist/index.js
@@ -444,6 +496,9 @@ npm test
 ```
 
 `npm run check` 对当前实现和阶段留档进行类型检查。
+另执行 `npm run test:package` 验证分发：重新打包并检查文件清单，在临时目录安装生产依赖，
+检查已安装 CLI 的帮助/版本、无配置演示、配置示例、子代理审批与 stdio MCP 路径和退出清理。
+该测试可能访问 npm registry 下载依赖，不请求真实模型，也不修改全局安装。
 `npm test` 先编译当前源码，运行 `tests/demo.mjs` 验证无配置演示入口、SDK 流、真实子进程读取/拒绝、取消和本机服务边界，并用 `tests/extensions.mjs` 验证配置校验、真实宿主命令、重启启停和禁用后的上下文隔离，运行 `tests/model.mjs` 验证流式通信的独立请求、分片、用量、异常与取消信号透传，并运行 `tests/subagent.mjs` 验证子代理上下文、权限、预算、取消、卸载与诊断边界，以及 `tests/subagent-process.mjs` 验证真实子进程、后台审批、进度、状态与回收，`tests/subagent-concurrency.mjs` 验证共享名额、并发审批与状态隔离、取消和批量回收，再运行 `tests/mcp-stdio.mjs`、`tests/mcp-http.mjs` 、`tests/mcp-failures.mjs` 和 `tests/mcp-content.mjs`，分别启动本地 stdio 与 Streamable HTTP 演示子进程，验证握手、工具发现、固定文本调用及关闭流程。另运行 `tests/web.mjs` 与 `tests/search.mjs` 检查网页来源限制、搜索模拟请求及权限边界。需要 Node.js 与已安装依赖，不请求真实模型或 Tavily。
 此前脚本 `tests/branch.mjs`、`tests/memory.mjs`、`tests/compaction.mjs`、`tests/prompts.mjs`、`tests/skills.mjs` 和 `tests/session-persistence.py` 保留，当前测试入口不运行它们；本次额外的终端与请求集成验证范围见学习计划验收记录。
 
