@@ -10,6 +10,7 @@ import { createProcessSubagent } from "./core/subagent-process.js";
 import { registerTasks } from "./extensions/tasks.js";
 import { createInterface } from "node:readline/promises";
 import { loadConfig } from "./core/config.js";
+import { startDemoModel, demoTools } from "./core/demo.js";
 import { createDiagnostics, DiagnosticWriteError, showDiagnostics } from "./core/diagnostics.js";
 import { createSkills } from "./extensions/skills.js";
 import { expandPrompt, listPrompts } from "./core/prompts.js";
@@ -27,6 +28,9 @@ import {
   type Session,
   SessionWriteError,
 } from "./core/session.js";
+
+// --demo 只在首个参数位置生效，后续参数仍作为非交互用户输入。
+const isDemo = process.argv[2] === "--demo";
 
 // 在入口的错误边界内完成初始化，配置校验通过后才允许运行 Agent。
 let client: OpenAI;
@@ -110,9 +114,13 @@ let httpMcp: Awaited<ReturnType<typeof mountHttpMcp>> | undefined;
 
 // 注册表由入口持有；扩展在启动时登记，Agent 循环统一查找和执行。
 // 宿主控制自动允许与逐次确认，扩展注册本身不代表获得授权。
-// 策略分四路：规划模式先拦不在 planningTools 里的名字；
+// 策略分四路：演示模式只开放 demoTools；规划模式先拦不在 planningTools 里的名字；
 // 其余再按名单自动允许、指定名称交给用户确认、其他一律拒绝。
 const toolRegistry = createToolRegistry((name, argumentsJson, context) => {
+  // 演示模式硬性白名单：非演示工具直接拒绝，防止模型越权调用网络或写文件工具。
+  if (isDemo && !demoTools.has(name)) {
+    return false;
+  }
   // 必须先检查模式，再检查自动允许或逐次确认。
   // 规划模式禁止的工具直接拒绝，不通过用户输入 y 临时放行。
   if (mode === "plan" && !planningTools.has(name)) {
@@ -427,7 +435,8 @@ async function streamChat(
   // 实际的底层网络通信与流分片解析完全委托给独立的 model.ts（requestChat）执行。
   const visibleTools = toolRegistry
     .definitions()
-    .filter((tool) => mode === "execute" || planningTools.has(tool.function.name));
+    .filter((tool) => mode === "execute" || planningTools.has(tool.function.name))
+    .filter((tool) => !isDemo || demoTools.has(tool.function.name));
 
   return requestChat(
     client,
@@ -1285,12 +1294,13 @@ async function runNonInteractive(userInput: string): Promise<void> {
 }
 
 // slice(2) 去掉 node 路径和脚本路径，剩下的参数拼成一句非交互输入。
-const nonInteractiveInput = process.argv.slice(2).join(" ").trim();
+const nonInteractiveInput = process.argv.slice(isDemo ? 3 : 2).join(" ").trim();
 let disposeExtension: (() => void) | undefined;
 let disposeExternal: (() => void) | undefined;
 let disposeSubagent: (() => void) | undefined;
 let subagents: ReturnType<typeof createProcessSubagent> | undefined;
 let backgroundTasks: ReturnType<typeof registerTasks> | undefined;
+let demo: Awaited<ReturnType<typeof startDemoModel>> | undefined;
 
 try {
   // 先发现 Skills，再和 echo / workflow 一起装进同一份注册表；初始化失败统一回滚。
@@ -1304,10 +1314,14 @@ try {
   // 外部扩展（可选）：由环境变量 LCN_AGENT_EXTENSION 指定文件路径，运行时动态加载，
   // 例如 LCN_AGENT_EXTENSION=dist/extensions/delay.js；重复加载默认扩展会明确报重名。
   const extensionPath = process.env.LCN_AGENT_EXTENSION;
-  if (extensionPath) {
+  if (!isDemo && extensionPath) {
     disposeExternal = await loadExtension(toolRegistry, extensionPath);
   }
-  const config = loadConfig();
+  if (isDemo) {
+    demo = await startDemoModel();
+    console.log("演示模式：使用本地模拟模型，无需 API Key。可输入“读取 README.md”或“子任务 读取 README.md”。");
+  }
+  const config = demo ? demo.config : loadConfig();
   client = new OpenAI({ apiKey: config.apiKey, baseURL: config.baseURL });
   model = config.model;
 
@@ -1322,7 +1336,7 @@ try {
 
   // 阶段 8 约定：只有精确设置 LCN_AGENT_MCP_DEMO=1 时才启动本地 MCP 演示服务子进程。
   // 未设置则默认不启用，避免无故增加进程开销；设置非法值时明确抛错，防止拼写错误掩盖意图。
-  const mcpDemo = process.env.LCN_AGENT_MCP_DEMO;
+  const mcpDemo = isDemo ? undefined : process.env.LCN_AGENT_MCP_DEMO;
   if (mcpDemo !== undefined && mcpDemo !== "1") {
     throw new Error("LCN_AGENT_MCP_DEMO 仅接受 1 或不设置");
   }
@@ -1333,7 +1347,7 @@ try {
     console.log(`已接入本地 MCP 工具：${mcp.names.join(", ")}`);
   }
 
-  const httpAddress = process.env.LCN_AGENT_MCP_HTTP_URL;
+  const httpAddress = isDemo ? undefined : process.env.LCN_AGENT_MCP_HTTP_URL;
   if (httpAddress !== undefined) {
     httpMcp = await mountHttpMcp(toolRegistry, httpAddress);
     console.log(`已接入 HTTP MCP 工具：${httpMcp.names.join(", ")}`);
@@ -1384,7 +1398,15 @@ try {
   // 语法说明：dispose?.() 为可选链调用，若项为 undefined 则跳过，若存在则调用；
   // MCP 扩展包含外部子进程连接，dispose 返回 Promise，因此使用 await 异步等待其关闭；
   // 某个扩展清理失败继续清理其余项，并最终记录异常退出码。
-  for (const dispose of [httpMcp?.dispose, mcp?.dispose, disposeSubagent, disposeExternal, disposeExtension]) {
+  const disposers = [
+    httpMcp?.dispose,
+    mcp?.dispose,
+    disposeSubagent,
+    disposeExternal,
+    disposeExtension,
+    demo?.close,
+  ];
+  for (const dispose of disposers) {
     try {
       await dispose?.();
     } catch {

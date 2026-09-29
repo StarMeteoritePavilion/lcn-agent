@@ -8,21 +8,24 @@
 阶段 8 已完成所记录基础范围的验收和入口留档，收尾提交为 `7ac5dcb`。
 2026-09-29 用户要求先 commit 再推进；模型通信提取已提交为 `18c16ab`，没有 push。
 只读子代理与独立子模型进程、后台任务管理已在用户 Review 后共同提交为 `988f94b`，没有 push。
-用户再次要求继续，按“先 commit、再推进”的顺序收尾显式有界并发节点；本次提交保存该基线。
+显式有界并发已按“先 commit、再推进”的顺序提交为 `9b9e980`，没有 push。
 /task_limit 查看或调整前后台共享上限：默认 1、允许 1～4，跨会话保持，重启恢复 1；模型不能调整。
 满额拒绝启动，不排队；进程回收后释放名额。各后台任务按 UUID 独立审批、计时、用量和取消，
 存储故障停止全部后台任务。完整测试和临时 PTY 验证已通过，具体范围与限制见学习计划。
-下一节点为无付费模型演示模式，尚未实现；阶段 9 的产品配置、打包与最终联合验收仍未完成。
+当前节点为无付费模型演示模式：`npm run demo` 无需模型配置，复用 SDK、审批、会话和真实子进程。
+固定演示语法及边界见 README；新增 `src/core/demo.ts` 和 `tests/demo.mjs`，用户已完成 Review 并确认继续，本次先提交演示模式基线。
+`npm run check`、完整 `npm test`、`git diff --check` 及隔离目录 PTY 验证通过，范围见学习计划。
+下一节点为扩展配置入口；阶段 9 的产品配置、打包与最终联合验收仍未完成。
 `src/stage/stage-08.ts` 来自阶段 8 收尾时的 `src/index.ts`，只调整 core/extensions 的相对导入；不要继续修改历史入口。
 快照共享独立模块，不等于完整版本冻结。此前功能基线为 `100305a`（受限网页读取与 Tavily 搜索）。
 联合验收脚本、阶段 8 快照、README、学习计划和本文纳入本次收尾提交；准确提交号通过 git log 查询。
-沿用“先 commit、再推进”的顺序：当前 Review 完成后先保存本节点基线，再进入下一节点；不执行 push。
+进入下一节点前先保存本节点基线；用户已确认继续，本次先 commit，再推进下一节点，不执行 push。
 
 ## 接手顺序
 
 1. 阅读协作引导、学习计划的当前进度、阶段 9、当前节点与验收记录。
 2. 核对 `git status --short`、`git log -5 --oneline`；保留用户尚未提交的修改。
-3. 当前先核对 `src/core/subagent.ts`、`src/core/subagent-process.ts`、`src/subagent-worker.ts`、`src/extensions/tasks.ts`、`tests/subagent-process.mjs`、`tests/subagent-concurrency.mjs` 及宿主退出清理；再按需核对 `src/index.ts`、阶段 8 快照、`src/extensions/mcp.ts`、`mcp-content.ts`、`web.ts`、`search.ts` 与对应测试；网络联合验收入口为 `tests/network-fixture.mjs`。
+3. 当前先核对 `src/core/demo.ts`、`tests/demo.mjs` 与 `src/index.ts` 的演示分支；子代理相关文件为 `src/core/subagent.ts`、`src/core/subagent-process.ts`、`src/subagent-worker.ts`、`src/extensions/tasks.ts`、`tests/subagent-process.mjs`、`tests/subagent-concurrency.mjs` 及宿主退出清理；再按需核对 `src/index.ts`、阶段 8 快照、`src/extensions/mcp.ts`、`mcp-content.ts`、`web.ts`、`search.ts` 与对应测试；网络联合验收入口为 `tests/network-fixture.mjs`。
 4. 运行 `npm run check`、`npm test`、`git diff --check`；不要仅凭本文认定当前代码通过。
 
 ## 当前实现和启用方式
@@ -102,7 +105,7 @@ resources/prompts 不代表完整协议支持；资源模板、分页、非文�
 
 ## 授权和数据边界
 
-用户已要求“你直接修改，我 review”，随后要求先 commit 再推进；模型通信已提交，子代理及后台任务由 Agent 实现并验收，前两个节点已完成 Review 并提交；当前并发节点保留改动供 Review。
+用户已要求“你直接修改，我 review”，随后要求先 commit 再推进；模型通信已提交，子代理及后台任务由 Agent 实现并验收，前两个节点已完成 Review 并提交；并发节点已提交，当前演示模式已完成 Review，用户已确认继续，本次提交该节点。
 当前直接修改后 Review 的协作方式沿用本次用户授权；后续按用户最新指令推进。
 节点验收后更新文档并保留工作区改动；commit 时机由用户决定，仅在用户明确要求时提交。
 此前自动提交授权已撤销，“继续”不授权 commit；push 仍需明确指令。

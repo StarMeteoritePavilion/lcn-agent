@@ -6,9 +6,10 @@
   "scripts": {
     "build": "tsc",
     "start": "tsc && node dist/index.js",
+    "demo": "tsc && node dist/index.js --demo",
     "check": "tsc --noEmit",
     "test": "npm run build && npm run test:agents && npm run test:transports && npm run test:content",
-    "test:agents": "node tests/model.mjs && node tests/subagent.mjs && npm run test:processes",
+    "test:agents": "node tests/model.mjs && node tests/demo.mjs && node tests/subagent.mjs && npm run test:processes",
     "test:processes": "node tests/subagent-process.mjs && node tests/subagent-concurrency.mjs",
     "test:transports": "node tests/mcp-stdio.mjs && node tests/mcp-http.mjs && node tests/mcp-failures.mjs",
     "test:content": "node tests/mcp-content.mjs && node tests/web.mjs && node tests/search.mjs"
