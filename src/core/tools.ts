@@ -297,6 +297,8 @@ export function createToolRegistry(permit: ToolPermission = () => false): ToolRe
   // 含 /prompts、/prompt：列模板和展开模板由宿主处理，展开结果当作用户消息送给模型。
   // 含 /compact：压缩会话请求视图由宿主处理，扩展不能注册同名命令。
   // 含 /fork：从当前会话末尾复制出独立分支，由宿主处理。
+  // 含 /mcp_prompt：MCP 提示选择由宿主处理，扩展不能注册同名命令。
+  // 含 /extensions：项目级扩展启停管理由宿主处理，扩展不可覆盖抢占入口。
   const reserved = new Set([
     "exit",
     "new",
@@ -310,6 +312,7 @@ export function createToolRegistry(permit: ToolPermission = () => false): ToolRe
     "compact",
     "fork",
     "mcp_prompt",
+    "extensions",
   ]);
 
   // 运行结束事件的订阅者集合。Set 会保持插入顺序，因此通知顺序即订阅顺序。

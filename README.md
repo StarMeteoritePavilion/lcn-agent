@@ -2,7 +2,7 @@
 
 从零开始构建的可扩展终端 AI Agent。目前实现流式模型、工具循环、基础终端交互、JSONL 会话保存与恢复、运行诊断，以及工具扩展注册、清理和外部 JavaScript 模块加载。
 
-> **项目状态：** 阶段 0～7 已完成所记录基础范围的本地验收，阶段 7 已留档。阶段 8 已接入 stdio 与本机 Streamable HTTP MCP、resources/prompts、受限网页读取及 Tavily 搜索，并完成记录范围的验证；恶意搜索结果、HTML 与两项模拟网络失败的权限和日志联合验收已通过。阶段 8 已完成所记录基础范围的本地验收，入口已留档为 `src/stage/stage-08.ts`；阶段 9 已完成独立流式通信、只读子代理、独立子模型进程、后台任务和显式有界并发的本地模拟验收；无付费模型演示模式已通过本地验收；产品配置、打包和最终联合验收尚未完成。
+> **项目状态：** 阶段 0～7 已完成所记录基础范围的本地验收，阶段 7 已留档。阶段 8 已接入 stdio 与本机 Streamable HTTP MCP、resources/prompts、受限网页读取及 Tavily 搜索，并完成记录范围的验证；恶意搜索结果、HTML 与两项模拟网络失败的权限和日志联合验收已通过。阶段 8 已完成所记录基础范围的本地验收，入口已留档为 `src/stage/stage-08.ts`；阶段 9 已完成独立流式通信、只读子代理、独立子模型进程、后台任务和显式有界并发的本地模拟验收；无付费模型演示模式已通过本地验收；扩展组启停配置入口已实现；打包和最终联合验收尚未完成。
 
 ## 目标特性
 
@@ -142,6 +142,7 @@ npx prettier --write "src/**/*.ts"
 | `/exit` | 退出；生成中 Ctrl+C 取消当前请求，空闲时 Ctrl+C 退出 |
 | `/ask [问题]` | 提问并等待一行回答，需要交互终端 |
 | `/todo_add [内容]` | 新增待办；省略内容时交互询问，须先选择会话 |
+| `/extensions [enable\|disable 完整编号]` | 查看扩展组当前装载与下次设置，启停更改在重启后生效 |
 | `/mode、/mode plan、/mode execute` | 查看或切换当前进程模式；plan 禁止业务写入 |
 | `/plan` | 查看当前会话的目标与计划步骤 |
 | `/prompts` | 列出项目 `.agents/prompts/` 的直接子文件模板 |
@@ -401,6 +402,40 @@ read_web 已默认注册，只接受 https://nodejs.org/api/ 下无凭据、查�
 不根据旧 PID 发送信号。强杀宿主留下的会话写锁仍按前文说明人工处理。状态损坏时保留原文件并拒绝覆盖，
 运行中无法保存进度则停止全部后台任务并报告失败。当前没有后台自动重试、自动恢复执行或模型自动创建并发任务。
 
+## 扩展配置入口
+
+交互终端输入 `/extensions` 查看当前装载、下次启停设置和配置来源；无需先创建会话。
+这是按现有装载组提供的终端配置页，编号区分大小写：
+
+| 编号 | 范围 / 配置来源 |
+| --- | --- |
+| `echo` | 回显工具 |
+| `workflow` | 大写/提问、文件、命令、待办、计划、记忆、网页及搜索；整组启停 |
+| `skills` | Skills 发现、激活工具/命令及上下文注入 |
+| `subagent` | 只读子代理与后台任务命令 |
+| `external` | `LCN_AGENT_EXTENSION` 指定的可信模块 |
+| `mcp_demo` | `LCN_AGENT_MCP_DEMO=1` 启用的 stdio 服务 |
+| `mcp_http` | `LCN_AGENT_MCP_HTTP_URL` 指定的本机 HTTP 服务 |
+
+```text
+/extensions
+/extensions disable external
+/extensions enable external
+```
+
+设置原子保存到当前项目 `.lcn-agent/extensions.json`，不会修改 `.env` 或 `config.toml`。
+同一项目的真实模式和演示模式共用这份启停设置。文件不存在时沿用原有默认装载行为；启用可选扩展仍需原有来源配置，配置页只展示变量名，不展示凭据。
+文件结构为 `{"version":1,"disabled":["external"]}`；未知编号、重复编号、未知键、坏版本、
+非法 JSON/UTF-8、超过 64 KiB 或符号链接均拒绝，损坏文件不自动覆盖。
+无法启动时，先手工修复该配置文件，再启动程序查看配置页。
+
+更改仅在重启后生效，当前工具、后台任务和审批不受影响；`/new`、`/resume` 不重载扩展。
+禁用 workflow 同时停止项目记忆注入，禁用 skills 停止发现和注入；既有会话历史与磁盘状态不删除。
+禁用 workflow 后子代理仍可装载，但没有文件工具可用；这会在演示回答中明确说明未执行。
+plan 模式允许查看配置，修改需先切回 execute；模型没有修改配置的工具。
+`--demo` 始终禁止外部扩展与 MCP，启用设置不能绕过演示限制。
+当前支持重启装载，不支持运行中热卸载、热重载或逐个切换 workflow 内的工具。
+
 ## 当前阶段验收
 
 ```bash
@@ -409,7 +444,7 @@ npm test
 ```
 
 `npm run check` 对当前实现和阶段留档进行类型检查。
-`npm test` 先编译当前源码，运行 `tests/demo.mjs` 验证无配置演示入口、SDK 流、真实子进程读取/拒绝、取消和本机服务边界，运行 `tests/model.mjs` 验证流式通信的独立请求、分片、用量、异常与取消信号透传，并运行 `tests/subagent.mjs` 验证子代理上下文、权限、预算、取消、卸载与诊断边界，以及 `tests/subagent-process.mjs` 验证真实子进程、后台审批、进度、状态与回收，`tests/subagent-concurrency.mjs` 验证共享名额、并发审批与状态隔离、取消和批量回收，再运行 `tests/mcp-stdio.mjs`、`tests/mcp-http.mjs` 、`tests/mcp-failures.mjs` 和 `tests/mcp-content.mjs`，分别启动本地 stdio 与 Streamable HTTP 演示子进程，验证握手、工具发现、固定文本调用及关闭流程。另运行 `tests/web.mjs` 与 `tests/search.mjs` 检查网页来源限制、搜索模拟请求及权限边界。需要 Node.js 与已安装依赖，不请求真实模型或 Tavily。
+`npm test` 先编译当前源码，运行 `tests/demo.mjs` 验证无配置演示入口、SDK 流、真实子进程读取/拒绝、取消和本机服务边界，并用 `tests/extensions.mjs` 验证配置校验、真实宿主命令、重启启停和禁用后的上下文隔离，运行 `tests/model.mjs` 验证流式通信的独立请求、分片、用量、异常与取消信号透传，并运行 `tests/subagent.mjs` 验证子代理上下文、权限、预算、取消、卸载与诊断边界，以及 `tests/subagent-process.mjs` 验证真实子进程、后台审批、进度、状态与回收，`tests/subagent-concurrency.mjs` 验证共享名额、并发审批与状态隔离、取消和批量回收，再运行 `tests/mcp-stdio.mjs`、`tests/mcp-http.mjs` 、`tests/mcp-failures.mjs` 和 `tests/mcp-content.mjs`，分别启动本地 stdio 与 Streamable HTTP 演示子进程，验证握手、工具发现、固定文本调用及关闭流程。另运行 `tests/web.mjs` 与 `tests/search.mjs` 检查网页来源限制、搜索模拟请求及权限边界。需要 Node.js 与已安装依赖，不请求真实模型或 Tavily。
 此前脚本 `tests/branch.mjs`、`tests/memory.mjs`、`tests/compaction.mjs`、`tests/prompts.mjs`、`tests/skills.mjs` 和 `tests/session-persistence.py` 保留，当前测试入口不运行它们；本次额外的终端与请求集成验证范围见学习计划验收记录。
 
 项目按阶段学习：`src/index.ts` 是当前入口，`src/stage/stage-xx.ts` 保存已完成阶段。

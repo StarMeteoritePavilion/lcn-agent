@@ -11,6 +11,7 @@ import { registerTasks } from "./extensions/tasks.js";
 import { createInterface } from "node:readline/promises";
 import { loadConfig } from "./core/config.js";
 import { startDemoModel, demoTools } from "./core/demo.js";
+import { createExtensionSettings } from "./core/extension-settings.js";
 import { createDiagnostics, DiagnosticWriteError, showDiagnostics } from "./core/diagnostics.js";
 import { createSkills } from "./extensions/skills.js";
 import { expandPrompt, listPrompts } from "./core/prompts.js";
@@ -38,7 +39,8 @@ let model: string;
 
 // 配置校验通过后才创建；ReturnType<typeof createSkills> 抽出该函数的返回类型，
 // 不必手抄 { register, prompt }，返回形状变了这里会一起变。
-let skills: ReturnType<typeof createSkills>;
+let skills: ReturnType<typeof createSkills> | undefined;
+let extensionSettings: ReturnType<typeof createExtensionSettings>;
 
 // 自动允许的可信学习工具名单；不在名单里的名称默认拒绝。
 // delay_echo、待办写入、文件工具（含 preview_edit / apply_edit）、run_command、
@@ -420,12 +422,12 @@ async function streamChat(
   // 两者独立于历史摘要，不反复追加到会话消息中。
   // filter 去掉空串，避免只有其中一段时多出空白 system 内容。
   const instruction = [
-    memoryPrompt(process.cwd()),
-    skills.prompt({
+    extensionSettings.enabled("workflow") ? memoryPrompt(process.cwd()) : "",
+    skills?.prompt({
       cwd: process.cwd(),
       sessionFile,
       signal,
-    }),
+    }) ?? "",
   ]
     .filter((text) => text.length > 0)
     .join("\n\n");
@@ -971,8 +973,11 @@ async function main(): Promise<void> {
   console.log(`模型: ${model}`);
   console.log("输入内容后回车，输入 /exit 退出。");
   console.log("/mode 查看模式，/mode plan 只读规划，/mode execute 恢复执行。");
-  console.log("/task_start 任务 启动后台只读任务，/tasks 查看，/task_show 编号 查看结果，/task_cancel 编号 取消。");
-  console.log("/task_limit 查看并发名额，/task_limit 1|2|3|4 显式调整；重启恢复 1。");
+  console.log("/extensions 查看扩展；/extensions enable|disable 完整编号 保存启停设置，重启后生效。");
+  if (extensionSettings.enabled("subagent")) {
+    console.log("/task_start 任务 启动后台只读任务，/tasks 查看，/task_show 编号 查看结果，/task_cancel 编号 取消。");
+    console.log("/task_limit 查看并发名额，/task_limit 1|2|3|4 显式调整；重启恢复 1。");
+  }
   console.log("/new 新建，/sessions 列出，/resume 完整文件名 恢复，/history 查看历史。");
   console.log("/diagnostics 查看当前诊断；/diagnostics 完整会话文件名 查看指定会话诊断。");
   // 这里的“生成中”也包括扩展命令执行中：两者都会登记 activeAbort。
@@ -1010,6 +1015,18 @@ async function main(): Promise<void> {
       }
 
       // 命令仅在当前请求结束后处理，不与正在执行的工具并发切换会话。
+
+      // /extensions 是宿主命令：管理扩展启停配置，显示当前装载状态，设置重启后生效。
+      if (/^\/extensions(?:\s|$)/.test(userInput)) {
+        try {
+          const args = userInput.slice("/extensions".length).trim();
+          writeOutput(extensionSettings.command(args, mode) + "\n");
+        } catch (error) {
+          writeOutput(`扩展配置失败：${error instanceof Error ? error.message : String(error)}\n`, true);
+        }
+        showPrompt();
+        continue;
+      }
 
       // /fork 是宿主命令：复制当前会话末尾为新会话，成功后才切换过去。
       if (userInput === "/fork") {
@@ -1303,19 +1320,25 @@ let backgroundTasks: ReturnType<typeof registerTasks> | undefined;
 let demo: Awaited<ReturnType<typeof startDemoModel>> | undefined;
 
 try {
+  // 加载项目级扩展启停配置快照；根据 enabled(id) 决定本次启动是否装载对应扩展组。
+  extensionSettings = createExtensionSettings(process.cwd(), isDemo);
   // 先发现 Skills，再和 echo / workflow 一起装进同一份注册表；初始化失败统一回滚。
-  skills = createSkills(process.cwd());
+  if (extensionSettings.enabled("skills")) skills = createSkills(process.cwd());
 
   disposeExtension = mountExtension(toolRegistry, (api) => {
-    registerEcho(api);
-    registerWorkflow(api);
-    skills.register(api);
+    if (extensionSettings.enabled("echo")) registerEcho(api);
+    if (extensionSettings.enabled("workflow")) registerWorkflow(api);
+    skills?.register(api);
   });
+  for (const id of ["echo", "workflow", "skills"] as const) {
+    if (extensionSettings.enabled(id)) extensionSettings.markLoaded(id);
+  }
   // 外部扩展（可选）：由环境变量 LCN_AGENT_EXTENSION 指定文件路径，运行时动态加载，
   // 例如 LCN_AGENT_EXTENSION=dist/extensions/delay.js；重复加载默认扩展会明确报重名。
   const extensionPath = process.env.LCN_AGENT_EXTENSION;
-  if (!isDemo && extensionPath) {
+  if (extensionSettings.enabled("external") && extensionPath) {
     disposeExternal = await loadExtension(toolRegistry, extensionPath);
+    extensionSettings.markLoaded("external");
   }
   if (isDemo) {
     demo = await startDemoModel();
@@ -1327,16 +1350,19 @@ try {
 
   // 阶段 9 新增：挂载只读子代理工具（run_subagent）。
   // 使用已加载的模型配置创建子进程执行器；工具仍在父进程经过注册表校验与审批，这不是沙箱。
-  subagents = createProcessSubagent(config, toolRegistry);
-  const executor = subagents;
-  disposeSubagent = mountExtension(toolRegistry, (api) => {
-    registerSubagent(api, executor.run);
-    backgroundTasks = registerTasks(api, executor);
-  });
+  if (extensionSettings.enabled("subagent")) {
+    subagents = createProcessSubagent(config, toolRegistry);
+    const executor = subagents;
+    disposeSubagent = mountExtension(toolRegistry, (api) => {
+      registerSubagent(api, executor.run);
+      backgroundTasks = registerTasks(api, executor);
+    });
+    extensionSettings.markLoaded("subagent");
+  }
 
   // 阶段 8 约定：只有精确设置 LCN_AGENT_MCP_DEMO=1 时才启动本地 MCP 演示服务子进程。
   // 未设置则默认不启用，避免无故增加进程开销；设置非法值时明确抛错，防止拼写错误掩盖意图。
-  const mcpDemo = isDemo ? undefined : process.env.LCN_AGENT_MCP_DEMO;
+  const mcpDemo = extensionSettings.enabled("mcp_demo") ? process.env.LCN_AGENT_MCP_DEMO : undefined;
   if (mcpDemo !== undefined && mcpDemo !== "1") {
     throw new Error("LCN_AGENT_MCP_DEMO 仅接受 1 或不设置");
   }
@@ -1344,12 +1370,14 @@ try {
   // 若开启开关，则启动子进程并完成握手、工具发现、宿主注册；输出接入日志提示用户。
   if (mcpDemo === "1") {
     mcp = await mountDemoMcp(toolRegistry);
+    extensionSettings.markLoaded("mcp_demo");
     console.log(`已接入本地 MCP 工具：${mcp.names.join(", ")}`);
   }
 
-  const httpAddress = isDemo ? undefined : process.env.LCN_AGENT_MCP_HTTP_URL;
+  const httpAddress = extensionSettings.enabled("mcp_http") ? process.env.LCN_AGENT_MCP_HTTP_URL : undefined;
   if (httpAddress !== undefined) {
     httpMcp = await mountHttpMcp(toolRegistry, httpAddress);
+    extensionSettings.markLoaded("mcp_http");
     console.log(`已接入 HTTP MCP 工具：${httpMcp.names.join(", ")}`);
   }
 
