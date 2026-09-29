@@ -1,0 +1,66 @@
+docs/agent-development-learning-plan.md
+  s_2568fef00a33ca::t_ad7fc5ca4918b1 11,326-327,408,412,436-437,454
+src/index.ts
+  s_2568fef00a33ca::t_dfb38bc6e77005 80,966,1317,1319-1320
+tests/subagent-process.mjs
+  s_2568fef00a33ca::t_dfb38bc6e77005 138,160,169,206,219,252
+tests/subagent-concurrency.mjs
+  s_a70d5123b0259b::t_328f0a1abf52c3 14-25
+  s_2568fef00a33ca::t_a851666040aaf7 1-13,26-44,48-62,64-80,82-92,95-122,124-231,233-251
+  s_2568fef00a33ca::t_87d78a7cfec928 45-47
+  s_2568fef00a33ca::t_6306255013e358 63
+  s_2568fef00a33ca::t_2b25b618c810a9 81
+  s_2568fef00a33ca::t_e728e33690c971 93-94
+  s_2568fef00a33ca::t_15d57e3d09c531 123
+  s_2568fef00a33ca::t_37f636af3ebdbf 232
+src/core/subagent-process.ts
+  s_a70d5123b0259b::t_4847b0f88cfb9a 175,177-183,186-191,194
+  s_a70d5123b0259b::t_acb8ce120453c0 65,68,70,77
+  s_2568fef00a33ca::t_dfb38bc6e77005 61,69,71,78,80-84,176,184-185,192-193,197-199
+docs/agent-handoff.md
+  s_2568fef00a33ca::t_ad7fc5ca4918b1 10-15,25,105
+src/extensions/tasks.ts
+  s_2568fef00a33ca::t_dfb38bc6e77005 3-4,89,91-96,102,178,202-203,210-211,214,217-232,239-240,261,303-318,344,415-417
+  s_2568fef00a33ca::t_ad7fc5ca4918b1 20,53,86
+README.md
+  s_2568fef00a33ca::t_ad7fc5ca4918b1 5,328,349,362-366,374,384
+package.json
+  s_2568fef00a33ca::t_9b8aa8084275bd 11-12
+src/extensions/subagent.ts
+  s_2568fef00a33ca::t_9d00c147d719f5 29
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "9b9e98022bca7cb55e78c348e8d50de44a2f97e8",
+  "prompts": {},
+  "humans": {
+    "h_cc77f976c0845e": {
+      "author": "lcx29 <can@MacBook-Air-M5.local>"
+    }
+  },
+  "sessions": {
+    "s_2568fef00a33ca": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0eae6-3da3-7ec0-8c46-6163cc631d2c",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "lcx29 <can@MacBook-Air-M5.local>",
+      "custom_attributes": {
+        "employee_email": "licanxin@gofo.com"
+      }
+    },
+    "s_a70d5123b0259b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "853d14e2-48be-48b0-b58d-c7df2f995f23",
+        "model": "gemini-3.8-flash"
+      },
+      "human_author": "lcx29 <can@MacBook-Air-M5.local>",
+      "custom_attributes": {
+        "employee_email": "licanxin@gofo.com"
+      }
+    }
+  }
+}
