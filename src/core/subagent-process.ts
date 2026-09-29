@@ -58,28 +58,30 @@ export function isModelResult(value: unknown): value is SteamChatResult {
  * 创建子进程维度的子代理执行管理器。
  *
  * 每次执行子任务时启动一个独立的 worker 子进程；
- * 前台委派工具（run_subagent）和后台任务命令（tasks.ts）共用此串行入口，并在任务结束时彻底回收进程。
+ * 前台委派工具（run_subagent）和后台任务命令（tasks.ts）共用并发名额，进程退出后才释放名额。
  *
  * @param config 全局模型配置，包含 apiKey、baseURL 与 model
  * @param registry 父进程工具注册表，用于在父进程中受控执行子代理发起的只读工具
- * @returns 包含 run 执行方法与 close 退出清理方法的执行管理器对象
+ * @returns 包含 run 执行方法、status 状态查询、setLimit 动态调优与 close 退出清理方法的执行管理器对象
  */
 export function createProcessSubagent(config: ReturnType<typeof loadConfig>, registry: ToolRegistry) {
-  let active: AbortController | undefined;
-  let completion: Promise<string> | undefined;
+  // 维护当前活跃的子任务控制器与其完成 Promise 的映射，用于容量统计与全量中断回收
+  const active = new Map<AbortController, Promise<string>>();
+  // 并发子进程上限（默认 1，可通过 setLimit 调整为 1~4）
+  let limit = 1;
   let disposed = false;
 
   const run: SubagentRunner = (task, rounds, context, onProgress = () => {}) => {
     context.signal.throwIfAborted();
     if (disposed) throw new Error("子代理执行器已关闭");
-    if (active) throw new Error("已有子代理运行，当前只允许串行调用");
+    // 关键容量拦截：若当前运行中的任务数已达到并发上限，立即拒绝启动新任务
+    if (active.size >= limit) throw new Error(`子代理已达到并发上限 ${limit}，未启动新任务`);
     if (context.model !== config.model) throw new Error("子代理模型必须与当前配置一致");
-    active = new AbortController();
-    const signal = AbortSignal.any([context.signal, active.signal]);
-    completion = Promise.resolve().then(execute).finally(() => {
-      active = undefined;
-      completion = undefined;
-    });
+    const abort = new AbortController();
+    const signal = AbortSignal.any([context.signal, abort.signal]);
+    const completion = Promise.resolve().then(execute).finally(() => active.delete(abort));
+    // 在异步启动前同步占用名额，防止同一轮连续调用超过上限。
+    active.set(abort, completion);
     return completion;
 
     async function execute(): Promise<string> {
@@ -170,10 +172,31 @@ export function createProcessSubagent(config: ReturnType<typeof loadConfig>, reg
 
   return {
     run,
+    /** 查询当前配置的并发上限与正在运行中的子任务数量。 */
+    status: () => ({ limit, running: active.size }),
+    /**
+     * 动态调整并发上限。
+     *
+     * 规则限制：
+     * - 必须为 1 到 4 之间的整数；
+     * - 新上限不能小于当前正在运行中的任务数量，否则报错拒绝。
+     */
+    setLimit(value: number): void {
+      if (disposed) throw new Error("子代理执行器已关闭");
+      if (!Number.isInteger(value) || value < 1 || value > 4) {
+        throw new Error("并发上限必须是 1 到 4 的整数");
+      }
+      if (value < active.size) {
+        throw new Error("新上限小于运行中的任务数，请先完成或取消任务");
+      }
+      limit = value;
+    },
+    /** 优雅关闭管理器：触发所有运行中子任务的 abort 信号，并等待其完全结算退出。 */
     async close(): Promise<void> {
       disposed = true;
-      active?.abort();
-      await completion?.catch(() => {});
+      const jobs = [...active.entries()];
+      for (const [abort] of jobs) abort.abort();
+      await Promise.allSettled(jobs.map(([, completion]) => completion));
     },
   };
 }

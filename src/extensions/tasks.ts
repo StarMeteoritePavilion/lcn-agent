@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Usage } from "../core/model.js";
-import type { SubagentProgress, SubagentRunner } from "../core/subagent.js";
+import type { SubagentProgress } from "../core/subagent.js";
+import type { createProcessSubagent } from "../core/subagent-process.js";
 import type { StateContext } from "../core/state.js";
 import type { ExtensionAPI } from "../core/tools.js";
 
@@ -16,7 +17,7 @@ import type { ExtensionAPI } from "../core/tools.js";
  *    绝不根据过期的 PID 误杀操作系统中已被重新分配的进程，也绝不静默自动重跑；
  * 4. 审批快照一致性防漂移：审批时记录参数快照 `snapshot`，只有当磁盘持久化的 pending 状态与快照严格一致时
  *    才允许放行，杜绝磁盘文件被意外改写导致的越权执行；
- * 5. 存储故障快速熔断：若状态文件写入失败，立即设置 storageFailure 并强行中止正在运行的任务，杜绝失控执行。
+ * 5. 存储故障快速熔断：若状态文件写入失败，立即设置 storageFailure 并中止所有后台任务，阻止状态不明时继续工作。
  */
 
 // 状态持久化存储命名空间：存储在 .lcn-agent/background_tasks/<sessionFile>.json
@@ -49,7 +50,7 @@ type Task = {
   startedAt: string;
   /** 任务最后一次状态更新的 ISO 8601 时间戳。 */
   updatedAt: string;
-  /** 当前已执行完毕的工具循环轮次（0～5）。 */
+  /** 当前已开始的模型轮次（0～5），不代表该轮已经完成。 */
   round: number;
   /** 已累积报告的 token 用量统计。 */
   reportedUsage: Usage;
@@ -82,19 +83,23 @@ type Active = {
 };
 
 /**
- * 注册后台任务命令族（/task_start, /tasks, /task_show, /task_approve, /task_reject, /task_cancel）。
+ * 注册后台任务命令族（/task_start, /tasks, /task_show, /task_approve, /task_reject, /task_cancel, /task_limit）。
  *
  * @param api 扩展 API，用于注册命令和状态读写
- * @param run 统一的子任务执行器（由 createProcessSubagent 提供的子进程执行入口）
+ * @param executor 统一的子任务执行器，前后台共用并发名额，用户可通过命令调整上限
  */
-export function registerTasks(api: ExtensionAPI, run: SubagentRunner) {
-  let active: Active | undefined;
+export function registerTasks(
+  api: ExtensionAPI,
+  executor: Pick<ReturnType<typeof createProcessSubagent>, "run" | "status" | "setLimit">,
+) {
+  const { run } = executor;
+  const active = new Map<string, Active>();
   let disposed = false;
   let storageFailure = false;
 
   api.onDispose(() => {
     disposed = true;
-    active?.abort.abort();
+    for (const job of active.values()) job.abort.abort();
   });
 
   /** 从磁盘读取指定会话的后台任务列表，并执行严格的数据格式校验与防御。 */
@@ -170,7 +175,7 @@ export function registerTasks(api: ExtensionAPI, run: SubagentRunner) {
     for (const item of items) {
       if (
         (item.status === "running" || item.status === "awaiting_approval") &&
-        !(active?.id === item.id && active.context.sessionFile === context.sessionFile)
+        active.get(item.id)?.context.sessionFile !== context.sessionFile
       ) {
         item.status = "interrupted";
         item.error = "上次运行已中断，结果未知；未自动重跑";
@@ -194,19 +199,36 @@ export function registerTasks(api: ExtensionAPI, run: SubagentRunner) {
       save(job.context, items);
     } catch {
       storageFailure = true;
-      job.abort.abort();
-      throw new Error("后台任务状态保存失败，已停止任务");
+      for (const running of active.values()) running.abort.abort();
+      throw new Error("后台任务状态保存失败，已停止所有后台任务");
     }
   }
 
   /** 获取当前正在运行的活跃任务，如果 ID 不匹配或不在当前会话中则报错。 */
   function current(id: string, context: StateContext): Active {
     context.signal.throwIfAborted();
-    if (!active || active.id !== id.trim() || active.context.sessionFile !== context.sessionFile) {
+    const job = active.get(id.trim());
+    if (!job || job.context.sessionFile !== context.sessionFile) {
       throw new Error("请提供当前会话中正在运行的完整任务编号");
     }
-    return active;
+    return job;
   }
+
+  // 只有显式用户命令可以调整并发上限；不注册模型工具，不随会话保存。
+  api.registerCommand({
+    name: "task_limit",
+    execute(args, context) {
+      context.signal.throwIfAborted();
+      if (disposed) throw new Error("后台任务扩展已卸载");
+      const value = args.trim();
+      if (value) {
+        if (!/^[1-4]$/.test(value)) throw new Error("用法：/task_limit [1|2|3|4]");
+        executor.setLimit(Number(value));
+      }
+      const capacity = executor.status();
+      return `并发上限：${capacity.limit}；运行中：${capacity.running}`;
+    },
+  });
 
   // /task_start <task>: 启动一个新的后台异步任务
   api.registerCommand({
@@ -214,7 +236,8 @@ export function registerTasks(api: ExtensionAPI, run: SubagentRunner) {
     execute(args, context) {
       context.signal.throwIfAborted();
       if (disposed) throw new Error("后台任务扩展已卸载");
-      if (active) throw new Error("已有后台任务运行，请先完成或取消");
+      const capacity = executor.status();
+      if (capacity.running >= capacity.limit) throw new Error(`子代理已达到并发上限 ${capacity.limit}，未启动新任务`);
       if (!context.sessionFile) throw new Error("请先 /new 或 /resume 选择会话");
       const task = args.trim();
       if (!task || Buffer.byteLength(task) > 64 * 1024) throw new Error("任务不能为空或超过 64 KiB");
@@ -235,7 +258,7 @@ export function registerTasks(api: ExtensionAPI, run: SubagentRunner) {
       // 状态收尾必须能在执行信号取消后落盘，使用独立的记账信号。
       const bookkeeping = { cwd: context.cwd, sessionFile: context.sessionFile, signal: new AbortController().signal };
       const job: Active = { id, context: bookkeeping, abort: new AbortController(), done: Promise.resolve() };
-      active = job;
+      active.set(id, job);
       const signal = AbortSignal.any([job.abort.signal, AbortSignal.timeout(30_000)]);
 
       // 异步授权回调：当子任务模型请求工具时被调用，将任务置为 awaiting_approval 挂起等待显式命令审批
@@ -277,23 +300,22 @@ export function registerTasks(api: ExtensionAPI, run: SubagentRunner) {
           }
         });
 
-      // 异步触发子任务执行，不阻塞前台命令返回
-      job.done = Promise.resolve()
-        .then(() =>
-          run(
-            task,
-            5,
-            {
-              cwd: context.cwd,
-              sessionFile: context.sessionFile!,
-              model: context.model,
-              callId: id,
-              signal,
-              confirm,
-            },
-            progress,
-          ),
-        )
+      // 同步调用 run 预占共享名额；async 包装将同步拒绝转为任务失败，命令不等待任务结束。
+      const execute = async () =>
+        run(
+          task,
+          5,
+          {
+            cwd: context.cwd,
+            sessionFile: context.sessionFile!,
+            model: context.model,
+            callId: id,
+            signal,
+            confirm,
+          },
+          progress,
+        );
+      job.done = execute()
         .then((result) => {
           signal.throwIfAborted();
           update(job, (item) => {
@@ -319,7 +341,7 @@ export function registerTasks(api: ExtensionAPI, run: SubagentRunner) {
           storageFailure = true;
         })
         .finally(() => {
-          if (active === job) active = undefined;
+          active.delete(job.id);
         });
 
       return `已启动后台任务：${id}；使用 /tasks 查看进度与待审批读取`;
@@ -390,8 +412,9 @@ export function registerTasks(api: ExtensionAPI, run: SubagentRunner) {
   return {
     async close(): Promise<void> {
       disposed = true;
-      active?.abort.abort();
-      await active?.done;
+      const jobs = [...active.values()];
+      for (const job of jobs) job.abort.abort();
+      await Promise.all(jobs.map((job) => job.done));
       if (storageFailure) throw new Error("后台任务状态保存失败");
     },
   };

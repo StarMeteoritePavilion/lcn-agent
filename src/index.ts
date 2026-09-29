@@ -77,6 +77,7 @@ let mode: "plan" | "execute" = "execute";
 // /memory_add、/memory_delete 不在名单里，规划模式下不能改记忆。
 const planningCommands = new Set([
   "task_start",
+  "task_limit",
   "tasks",
   "task_show",
   "task_approve",
@@ -962,6 +963,7 @@ async function main(): Promise<void> {
   console.log("输入内容后回车，输入 /exit 退出。");
   console.log("/mode 查看模式，/mode plan 只读规划，/mode execute 恢复执行。");
   console.log("/task_start 任务 启动后台只读任务，/tasks 查看，/task_show 编号 查看结果，/task_cancel 编号 取消。");
+  console.log("/task_limit 查看并发名额，/task_limit 1|2|3|4 显式调整；重启恢复 1。");
   console.log("/new 新建，/sessions 列出，/resume 完整文件名 恢复，/history 查看历史。");
   console.log("/diagnostics 查看当前诊断；/diagnostics 完整会话文件名 查看指定会话诊断。");
   // 这里的“生成中”也包括扩展命令执行中：两者都会登记 activeAbort。
@@ -1312,10 +1314,10 @@ try {
   // 阶段 9 新增：挂载只读子代理工具（run_subagent）。
   // 使用已加载的模型配置创建子进程执行器；工具仍在父进程经过注册表校验与审批，这不是沙箱。
   subagents = createProcessSubagent(config, toolRegistry);
-  const runner = subagents.run;
+  const executor = subagents;
   disposeSubagent = mountExtension(toolRegistry, (api) => {
-    registerSubagent(api, runner);
-    backgroundTasks = registerTasks(api, runner);
+    registerSubagent(api, executor.run);
+    backgroundTasks = registerTasks(api, executor);
   });
 
   // 阶段 8 约定：只有精确设置 LCN_AGENT_MCP_DEMO=1 时才启动本地 MCP 演示服务子进程。

@@ -26,7 +26,7 @@ const maxBytes = 64 * 1024;
  * 内部维护了 `running` 信号控制器，在等待宿主执行器时拒绝本扩展的重叠调用；执行器另限制前后台共用的子进程数量。
  *
  * @param api 扩展 API 接口，用于注册工具与监听扩展注销事件
- * @param run 宿主提供的子进程执行入口，共享前台与后台的串行限制
+ * @param run 宿主提供的子进程执行入口，共享前台与后台的并发名额
  */
 export function registerSubagent(api: ExtensionAPI, run: SubagentRunner): void {
   // 当前正在运行的子任务取消控制器；存在值时表示有子任务正在执行

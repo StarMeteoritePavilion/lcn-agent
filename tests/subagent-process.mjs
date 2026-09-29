@@ -135,7 +135,7 @@ try {
   });
   const rejected = assert.rejects(waiting);
   await until(() => requests.length === 3);
-  assert.throws(() => runner.run("并发", 5, context), /串行/);
+  assert.throws(() => runner.run("并发", 5, context), /并发上限/);
   abort.abort();
   await rejected;
   assert.equal(alive(waitingPid), false);
@@ -157,7 +157,7 @@ try {
   assert.equal(isModelResult({ content: "", finishReason: "stop", toolCalls: [], usage: { totalTokens: -1 } }), false);
 
   disposeTasks = mountExtension(registry, (api) => {
-    manager = registerTasks(api, runner.run);
+    manager = registerTasks(api, runner);
   });
   await assert.rejects(command("task_start", "读取文件", { sessionFile: null }), /选择会话/);
   await command("task_start", "读取文件");
@@ -166,7 +166,7 @@ try {
   assert.equal(item.pending.name, "read_file");
   assert.equal(item.pending.argumentsJson, '{"path":"note.txt"}');
   assert.equal(alive(item.pid), true);
-  await assert.rejects(command("task_start", "第二个任务"), /已有后台任务/);
+  await assert.rejects(command("task_start", "第二个任务"), /并发上限/);
   await assert.rejects(
     command("task_approve", `${item.id} ${item.pending.approvalId}`, { sessionFile: "other.jsonl" }),
     /当前会话/,
@@ -203,7 +203,7 @@ try {
   writeState(context, "background_tasks", saved);
   const beforeRestart = requests.length;
   disposeTasks = mountExtension(registry, (api) => {
-    manager = registerTasks(api, runner.run);
+    manager = registerTasks(api, runner);
   });
   assert.equal((await tasks())[0].status, "interrupted");
   assert.equal(requests.length, beforeRestart);
@@ -216,7 +216,7 @@ try {
   assert.equal(readState(context, "background_tasks").items[3].status, "cancelled");
   disposeTasks();
   disposeTasks = mountExtension(registry, (api) => {
-    manager = registerTasks(api, runner.run);
+    manager = registerTasks(api, runner);
   });
   await command("task_start", "两次读取");
   await until(async () => (await tasks()).at(-1)?.status === "awaiting_approval");
@@ -249,7 +249,7 @@ try {
   disposeTasks();
   // 审批编号相同但磁盘参数被改写时，也不能放行原读取。
   writeState(context, "background_tasks", { version: 1, items: [] });
-  disposeTasks = mountExtension(registry, (api) => { manager = registerTasks(api, runner.run); });
+  disposeTasks = mountExtension(registry, (api) => { manager = registerTasks(api, runner); });
   await command("task_start", "读取文件");
   await until(async () => (await tasks())[0]?.status === "awaiting_approval");
   item = (await tasks())[0];

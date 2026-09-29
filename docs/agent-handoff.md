@@ -7,13 +7,12 @@
 
 阶段 8 已完成所记录基础范围的验收和入口留档，收尾提交为 `7ac5dcb`。
 2026-09-29 用户要求先 commit 再推进；模型通信提取已提交为 `18c16ab`，没有 push。
-用户已确认 Review 完成；只读子代理与独立子模型进程、后台任务管理作为本次收尾提交一并保存。
-两个节点此前没有分别提交；本次形成共同基线，准确提交号通过 git log 查询。
-工具循环、审批与诊断由父进程管理；前后台合计最多一个子模型进程，任务结束前等待回收。
-后台读取使用任务编号和独立审批编号批准/拒绝；进度、结果和已报告用量按会话保存，重启显示中断而不重跑。
-完整 npm test、类型检查、diff 检查及临时 PTY 验证通过，覆盖真实 30 秒超时、强杀后的子进程退出、
-重启中断与正常退出释放锁；本地模拟请求未使用真实模型。详细证据与限制见学习计划。
-下一节点为显式有界并发，尚未实现；默认递归仍禁止。
+只读子代理与独立子模型进程、后台任务管理已在用户 Review 后共同提交为 `988f94b`，没有 push。
+用户再次要求继续，按“先 commit、再推进”的顺序收尾显式有界并发节点；本次提交保存该基线。
+/task_limit 查看或调整前后台共享上限：默认 1、允许 1～4，跨会话保持，重启恢复 1；模型不能调整。
+满额拒绝启动，不排队；进程回收后释放名额。各后台任务按 UUID 独立审批、计时、用量和取消，
+存储故障停止全部后台任务。完整测试和临时 PTY 验证已通过，具体范围与限制见学习计划。
+下一节点为无付费模型演示模式，尚未实现；阶段 9 的产品配置、打包与最终联合验收仍未完成。
 `src/stage/stage-08.ts` 来自阶段 8 收尾时的 `src/index.ts`，只调整 core/extensions 的相对导入；不要继续修改历史入口。
 快照共享独立模块，不等于完整版本冻结。此前功能基线为 `100305a`（受限网页读取与 Tavily 搜索）。
 联合验收脚本、阶段 8 快照、README、学习计划和本文纳入本次收尾提交；准确提交号通过 git log 查询。
@@ -23,7 +22,7 @@
 
 1. 阅读协作引导、学习计划的当前进度、阶段 9、当前节点与验收记录。
 2. 核对 `git status --short`、`git log -5 --oneline`；保留用户尚未提交的修改。
-3. 当前先核对 `src/core/subagent.ts`、`src/core/subagent-process.ts`、`src/subagent-worker.ts`、`src/extensions/tasks.ts`、`tests/subagent-process.mjs` 及宿主退出清理；再按需核对 `src/index.ts`、阶段 8 快照、`src/extensions/mcp.ts`、`mcp-content.ts`、`web.ts`、`search.ts` 与对应测试；网络联合验收入口为 `tests/network-fixture.mjs`。
+3. 当前先核对 `src/core/subagent.ts`、`src/core/subagent-process.ts`、`src/subagent-worker.ts`、`src/extensions/tasks.ts`、`tests/subagent-process.mjs`、`tests/subagent-concurrency.mjs` 及宿主退出清理；再按需核对 `src/index.ts`、阶段 8 快照、`src/extensions/mcp.ts`、`mcp-content.ts`、`web.ts`、`search.ts` 与对应测试；网络联合验收入口为 `tests/network-fixture.mjs`。
 4. 运行 `npm run check`、`npm test`、`git diff --check`；不要仅凭本文认定当前代码通过。
 
 ## 当前实现和启用方式
@@ -103,7 +102,7 @@ resources/prompts 不代表完整协议支持；资源模板、分页、非文�
 
 ## 授权和数据边界
 
-用户已要求“你直接修改，我 review”，随后要求先 commit 再推进；模型通信已提交，子代理及后台任务由 Agent 实现并验收，用户现已确认 Review 完成，按既有顺序收尾提交。
+用户已要求“你直接修改，我 review”，随后要求先 commit 再推进；模型通信已提交，子代理及后台任务由 Agent 实现并验收，前两个节点已完成 Review 并提交；当前并发节点保留改动供 Review。
 当前直接修改后 Review 的协作方式沿用本次用户授权；后续按用户最新指令推进。
 节点验收后更新文档并保留工作区改动；commit 时机由用户决定，仅在用户明确要求时提交。
 此前自动提交授权已撤销，“继续”不授权 commit；push 仍需明确指令。
