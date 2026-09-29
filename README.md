@@ -2,7 +2,7 @@
 
 从零开始构建的可扩展终端 AI Agent。目前实现流式模型、工具循环、基础终端交互、JSONL 会话保存与恢复、运行诊断，以及工具扩展注册、清理和外部 JavaScript 模块加载。
 
-> **项目状态：** 阶段 0～7 已完成所记录基础范围的本地验收，阶段 7 已留档。阶段 8 已接入 stdio 与本机 Streamable HTTP MCP、resources/prompts、受限网页读取及 Tavily 搜索，并完成记录范围的验证；恶意搜索结果、HTML 与两项模拟网络失败的权限和日志联合验收已通过。阶段 8 已完成所记录基础范围的本地验收，入口已留档为 `src/stage/stage-08.ts`；阶段 9 按用户要求暂不推进。
+> **项目状态：** 阶段 0～7 已完成所记录基础范围的本地验收，阶段 7 已留档。阶段 8 已接入 stdio 与本机 Streamable HTTP MCP、resources/prompts、受限网页读取及 Tavily 搜索，并完成记录范围的验证；恶意搜索结果、HTML 与两项模拟网络失败的权限和日志联合验收已通过。阶段 8 已完成所记录基础范围的本地验收，入口已留档为 `src/stage/stage-08.ts`；阶段 9 已完成首节点：提取独立流式模型通信并通过本地模拟验收，待用户 Review；子代理尚未实现。
 
 ## 目标特性
 
@@ -325,7 +325,7 @@ npm test
 ```
 
 `npm run check` 对当前实现和阶段留档进行类型检查。
-`npm test` 先编译当前源码，再运行 `tests/mcp-stdio.mjs`、`tests/mcp-http.mjs` 、`tests/mcp-failures.mjs` 和 `tests/mcp-content.mjs`，分别启动本地 stdio 与 Streamable HTTP 演示子进程，验证握手、工具发现、固定文本调用及关闭流程。另运行 `tests/web.mjs` 与 `tests/search.mjs` 检查网页来源限制、搜索模拟请求及权限边界。需要 Node.js 与已安装依赖，不请求真实模型或 Tavily。
+`npm test` 先编译当前源码，运行 `tests/model.mjs` 验证流式通信的独立请求、分片、用量、异常与取消信号透传，再运行 `tests/mcp-stdio.mjs`、`tests/mcp-http.mjs` 、`tests/mcp-failures.mjs` 和 `tests/mcp-content.mjs`，分别启动本地 stdio 与 Streamable HTTP 演示子进程，验证握手、工具发现、固定文本调用及关闭流程。另运行 `tests/web.mjs` 与 `tests/search.mjs` 检查网页来源限制、搜索模拟请求及权限边界。需要 Node.js 与已安装依赖，不请求真实模型或 Tavily。
 此前脚本 `tests/branch.mjs`、`tests/memory.mjs`、`tests/compaction.mjs`、`tests/prompts.mjs`、`tests/skills.mjs` 和 `tests/session-persistence.py` 保留，当前测试入口不运行它们；本次额外的终端与请求集成验证范围见学习计划验收记录。
 
 项目按阶段学习：`src/index.ts` 是当前入口，`src/stage/stage-xx.ts` 保存已完成阶段。

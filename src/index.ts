@@ -1,3 +1,4 @@
+import { streamChat as requestChat, type SteamChatResult, type Usage } from "./core/model.js";
 import type { ConfirmTool } from "./core/tools.js";
 import OpenAI from "openai";
 import { clearScreenDown, cursorTo, moveCursor } from "node:readline";
@@ -137,28 +138,6 @@ const toolRegistry = createToolRegistry((name, argumentsJson, context) => {
 
 // RuntimeEvent 是核心与展示层之间的唯一运行时通信边界。
 // 核心循环只发出事件，不直接写终端；createUiRenderer 消费事件并决定怎么显示。
-
-/** 模型流里尚未执行的一次工具调用：id 与会话 tool 消息配对，arguments 是 JSON 字符串。 */
-type PendingToolCall = {
-  id: string;
-  name: string;
-  arguments: string;
-};
-
-/** 提供商报告的 token 用量；缺省时为 null，不伪造数字。 */
-type Usage = {
-  promptTokens: number;
-  completionTokens: number;
-  totalTokens: number;
-};
-
-/** 一次流式模型请求结束后收集到的完整结果。 */
-type SteamChatResult = {
-  content: string;
-  toolCalls: PendingToolCall[];
-  finishReason: string;
-  usage: Usage | null;
-};
 
 /**
  * 运行时事件联合类型。用 type 字段区分种类：
@@ -402,7 +381,7 @@ function createUiRenderer(
 const REQUEST_TIMEOUT_MS = 30_000;
 
 /**
- * 读取一次模型流：收集完整响应，同时把文本增量和模型结束事件立即上报。
+ * 组装主会话上下文，再交给独立通信模块请求模型。
  *
  * @param messages 本轮要发给模型的消息（压缩后的请求视图；记忆和 Skills 在本函数里临时拼到前面）
  * @param signal 本轮取消/超时信号，传给 SDK
@@ -430,91 +409,21 @@ async function streamChat(
     .filter((text) => text.length > 0)
     .join("\n\n");
 
-  // 参数 1 body: 模型、消息、工具列表、是否流式。
-  // 参数 2 options.signal: 取消或超时时中止这次 HTTP 请求。
-  const stream = await client.chat.completions.create(
-    {
-      model,
-      messages: instruction ? [{ role: "system", content: instruction }, ...messages] : messages,
-      // 规划模式不把写入类工具发给模型，减少它主动去调这些名字。
-      // 权限入口仍会拦截：模型若硬编造 apply_edit 等名字，也会得到“未获授权”。
-      tools: toolRegistry
-        .definitions()
-        // filter 只保留当前模式允许出现在说明书里的工具。
-        .filter((tool) => mode === "execute" || planningTools.has(tool.function.name)),
-      stream: true,
-      // openai SDK 的 stream: true 默认不返回 usage。需要加 stream_options: { include_usage: true }
-      // 这个还需要产商支持的
-      stream_options: { include_usage: true },
-    },
-    { signal },
+  // 架构分层调用：
+  // 主入口只负责注入宿主业务指令（记忆 + Skills）以及根据当前模式（执行/规划）过滤可暴露工具；
+  // 实际的底层网络通信与流分片解析完全委托给独立的 model.ts（requestChat）执行。
+  const visibleTools = toolRegistry
+    .definitions()
+    .filter((tool) => mode === "execute" || planningTools.has(tool.function.name));
+
+  return requestChat(
+    client,
+    model,
+    instruction ? [{ role: "system", content: instruction }, ...messages] : messages,
+    visibleTools,
+    signal,
+    onEvent,
   );
-
-  let content = "";
-  let finishReason = "";
-  let usage: Usage | null = null;
-  const toolCalls: PendingToolCall[] = [];
-
-  for await (const chunk of stream) {
-    //console.log(`\n--- chunk ---\n${JSON.stringify(chunk, null, 2)}`);
-
-    // 用量通常位于最后一个 choices 为空的 chunk，缺失时保持 null。
-    if (chunk.usage) {
-      // usage chunk 可能没有 choices，因此必须先单独读取再处理 choice。
-      usage = {
-        promptTokens: chunk.usage.prompt_tokens,
-        completionTokens: chunk.usage.completion_tokens,
-        totalTokens: chunk.usage.total_tokens,
-      };
-    }
-
-    const choice = chunk.choices[0];
-    if (!choice) continue;
-
-    // 文本只通过事件交给展示层，通信层不直接写终端。
-    if (choice.delta.content) {
-      // 通过回调接口将结果传输给调用方
-      onEvent({
-        type: "text_delta",
-        text: choice.delta.content,
-      });
-      content += choice.delta.content;
-    }
-
-    // 工具参数也按调用索引累积，直到 finish_reason 表示 tool_calls 才执行。
-    if (choice.delta.tool_calls) {
-      for (const delta of choice.delta.tool_calls) {
-        // 同一个 index 会跨多个 chunk 到达，第一次出现时先创建累积槽位。
-        if (!toolCalls[delta.index]) {
-          toolCalls[delta.index] = {
-            id: delta.id ?? "",
-            name: delta.function?.name ?? "",
-            arguments: "",
-          };
-        }
-        if (delta.function?.arguments) {
-          toolCalls[delta.index].arguments += delta.function.arguments;
-        }
-      }
-    }
-
-    // stop 表示回答完成，length 表示截断，tool_calls 表示需要回填工具结果。
-    // stop: 文本结束
-    // length: 响应因长度截断
-    // tool_calls: 工具调用结束
-    if (choice.finish_reason) {
-      finishReason = choice.finish_reason;
-    }
-  }
-
-  if (!signal.aborted) {
-    onEvent({
-      type: "model_end",
-      finishReason,
-    });
-  }
-
-  return { content, toolCalls, finishReason, usage };
 }
 
 /** 用量显示保留提供商原始结果；没有报告时不伪造数值。 */
