@@ -1,3 +1,0 @@
-apiKey = "${API_KEY}"
-baseURL = "${BASE_URL}"
-model = "${MODEL}"

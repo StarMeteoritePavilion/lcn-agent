@@ -1,35 +1,13 @@
 {
   "name": "lcn-agent",
   "version": "1.0.0",
-  "description": "可扩展的终端 AI Agent，支持本地演示、工具审批、会话和子代理",
-  "scripts": {
-    "build": "tsc",
-    "start": "tsc && node dist/cli.js",
-    "demo": "tsc && node dist/cli.js --demo",
-    "check": "tsc --noEmit",
-    "test": "npm run build && npm run test:agents && npm run test:transports && npm run test:content",
-    "test:agents": "node tests/model.mjs && npm run test:demo && node tests/subagent.mjs && npm run test:processes",
-    "test:processes": "node tests/subagent-process.mjs && node tests/subagent-concurrency.mjs",
-    "test:transports": "node tests/mcp-stdio.mjs && node tests/mcp-http.mjs && node tests/mcp-failures.mjs",
-    "test:content": "node tests/mcp-content.mjs && node tests/web.mjs && node tests/search.mjs",
-    "test:demo": "node tests/demo.mjs && node tests/extensions.mjs",
-    "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
-    "prepack": "npm run clean && npm run build",
-    "test:package": "npm run build && node tests/package.mjs",
-    "test:journeys": "python3 tests/acceptance.py && node tests/skills.mjs && node tests/compaction.mjs",
-    "test:acceptance": "npm run check && npm test && npm run test:journeys && npm run test:package"
-  },
-  "keywords": [],
-  "author": "",
-  "license": "Apache-2.0",
+  "description": "An agent project with independent capability packages and top-level composition.",
+  "license": "MIT",
   "type": "module",
   "devDependencies": {
     "@types/node": "^22.20.3",
     "prettier": "^3.9.7",
     "typescript": "^7.0.2"
-  },
-  "directories": {
-    "doc": "docs"
   },
   "repository": {
     "type": "git",
@@ -39,28 +17,8 @@
     "url": "https://github.com/StarMeteoritePavilion/lcn-agent/issues"
   },
   "homepage": "https://github.com/StarMeteoritePavilion/lcn-agent#readme",
-  "dependencies": {
-    "@modelcontextprotocol/sdk": "1.30.1",
-    "ajv": "^8.20.0",
-    "openai": "^7.18.0",
-    "smol-toml": "^1.8.0",
-    "yaml": "^2.9.1"
-  },
-  "bin": {
-    "lcn-agent": "dist/cli.js"
-  },
   "engines": {
     "node": ">=22"
   },
-  "files": [
-    "dist/cli.js",
-    "dist/index.js",
-    "dist/core/*.js",
-    "dist/extensions/*.js",
-    "dist/subagent-worker.js",
-    "dist/mcp-demo-server.js",
-    "dist/mcp-http-demo-server.js",
-    "config.example.toml",
-    ".env.example"
-  ]
+  "private": true
 }

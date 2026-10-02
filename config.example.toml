@@ -1,4 +1,0 @@
-# 复制为工作目录中的 config.toml；凭据通过环境变量或可选 .env 提供。
-apiKey = "${API_KEY}"
-baseURL = "${BASE_URL}"
-model = "${MODEL}"
