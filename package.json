@@ -1,9 +1,21 @@
 {
   "name": "lcn-agent",
   "version": "1.0.0",
-  "description": "An agent project with independent capability packages and top-level composition.",
+  "description": "采用独立能力模块与顶层统一装配架构的 Agent 项目。",
   "license": "MIT",
   "type": "module",
+  "scripts": {
+    "build": "node scripts/clean.mjs dist && tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "verify": "npm run format:check && npm test && npm run build",
+    "pretest": "node scripts/clean.mjs .build/test && tsc -p tsconfig.test.json",
+    "test": "cd .build/test && node --test"
+  },
+  "dependencies": {
+    "smol-toml": "1.9.0"
+  },
   "devDependencies": {
     "@types/node": "^22.20.3",
     "prettier": "^3.9.7",
@@ -20,5 +32,6 @@
   "engines": {
     "node": ">=22"
   },
+  "packageManager": "npm@10.9.9",
   "private": true
 }
