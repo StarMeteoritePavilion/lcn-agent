@@ -1,0 +1,19 @@
+{
+  "provider": "lcn29",
+  "model": "gemini-3.8-flash-high",
+  "modelProviders": [
+    {
+      "name": "lcn29",
+      "models": [
+        {
+          "id": "gemini-3.8-flash-high"
+        },
+        {
+          "id": "gpt-6.1-sol"
+        }
+      ],
+      "baseUrl": "${BASE_URL}",
+      "apiKey": "${API_KEY}"
+    }
+  ]
+}

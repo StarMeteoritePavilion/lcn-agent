@@ -14,7 +14,7 @@
     "test": "cd .build/test && node --test"
   },
   "dependencies": {
-    "smol-toml": "1.9.0"
+    "openai": "^7.27.0"
   },
   "devDependencies": {
     "@types/node": "^22.20.3",

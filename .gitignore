@@ -71,7 +71,9 @@ web_modules/
 .env.*
 !.env.example
 
-# 本地配置，使用 config.example.toml 创建
+# 本地配置，使用 setting.example.json 创建
+/setting.json
+# 保留旧配置的忽略规则，避免泄露迁移前的本地值
 /config.toml
 
 # parcel-bundler cache (https://parceljs.org/)
