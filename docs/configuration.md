@@ -32,6 +32,79 @@ BASE_URL=https://example.invalid
 
 这里的空密钥和示例地址不能直接用于请求。`BASE_URL` 应使用服务文档提供的基础地址，包括所需路径前缀；SDK 会基于它构造 Chat Completions 请求。
 
+## 对照说明
+
+下面带注释的版本仅用于阅读，实际 `setting.json` 必须使用上方不含注释的 JSON。
+
+```jsonc
+{
+  // 选择 name 为 lcn29 的供应商，不按数组位置选择。
+  "provider": "lcn29",
+  // 选择该供应商 models 列表中的模型，请求时作为 model 发送。
+  "model": "gemini-3.8-flash-high",
+  "modelProviders": [
+    {
+      // 本地供应商标识，必须唯一，与顶层 provider 完全一致。
+      "name": "lcn29",
+      // 声明该供应商可选择的模型，不会自动查询服务端模型列表。
+      "models": [{ "id": "gemini-3.8-flash-high" }, { "id": "gpt-6.1-sol" }],
+      // 从同目录 .env 或进程环境读取 BASE_URL 的完整值。
+      "baseUrl": "${BASE_URL}",
+      // 从同目录 .env 或进程环境读取 API_KEY 的完整值。
+      "apiKey": "${API_KEY}",
+    },
+  ],
+}
+```
+
+示例的选择过程是：`provider` → 找到 `name` 为 `lcn29` 的供应商 → 在其 `models` 中确认 `gemini-3.8-flash-high` 存在 → 使用该供应商的 `baseUrl` 和 `apiKey` 发起请求。列出两个模型不会同时调用两个模型，也不会失败后自动切换。
+
+## 修改配置的例子
+
+### 切换同一供应商的模型
+
+在上方完整示例中，将顶层 `model` 从 `"gemini-3.8-flash-high"` 改成 `"gpt-6.1-sol"`，其余内容保持原样。该模型已经在 `lcn29` 的 `models` 中，不需要再添加条目。
+
+如果使用列表之外的模型，必须同时将服务实际支持的精确标识写入顶层 `model` 和对应的 `models[].id`。只改顶层而不更新列表，会在请求前报配置错误。
+
+### 配置多个供应商
+
+以下示例将同一个接口分别配置为两个本地供应商，以演示数组结构和名称选择。两者共用同一组环境变量；接入不同服务时，应分别填写各自的地址和密钥，或使用在 `.env` 中明确声明的独立变量。
+
+```json
+{
+  "provider": "其他服务商",
+  "model": "gpt-6.1-sol",
+  "modelProviders": [
+    {
+      "name": "lcn29",
+      "models": [{ "id": "gemini-3.8-flash-high" }],
+      "baseUrl": "${BASE_URL}",
+      "apiKey": "${API_KEY}"
+    },
+    {
+      "name": "其他服务商",
+      "models": [{ "id": "gpt-6.1-sol" }],
+      "baseUrl": "${BASE_URL}",
+      "apiKey": "${API_KEY}"
+    }
+  ]
+}
+```
+
+这次选择数组中的第二项。切回第一项时，同时将 `provider` 改为 `"lcn29"`、`model` 改为 `"gemini-3.8-flash-high"`。两个供应商的 `name` 不能重复。
+
+### 环境变量如何对应
+
+| setting.json 中的写法                  | 对应值与结果                                                  |
+| -------------------------------------- | ------------------------------------------------------------- |
+| `"baseUrl": "${BASE_URL}"`             | 读取 `.env` 中的 `BASE_URL`；没有非空值时读取进程中的同名变量 |
+| `"apiKey": "${API_KEY}"`               | 读取 `.env` 中的 `API_KEY`；两处均没有非空值时配置校验失败    |
+| `"baseUrl": "https://example.invalid"` | 按原文使用，不执行环境变量查找；此地址仅供展示                |
+| `"baseUrl": "${BASE_URL}/v1"`          | 不执行替换；如需路径前缀，应将完整地址写入环境变量            |
+
+例如 `.env` 中设置 `BASE_URL=https://example.invalid/v1` 后，`"${BASE_URL}"` 的替换结果就是 `"https://example.invalid/v1"`。这里仍使用不可请求的示例地址；实际值以服务提供方说明为准。
+
 ## 字段
 
 | 字段路径                       | 类型     | 规则                                         |
