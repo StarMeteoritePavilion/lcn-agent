@@ -470,3 +470,71 @@ globalThis.fetch = async (input, init) => {
   assert.equal(result.stderr, "");
   assert.equal(result.stdout, "[]\n");
 });
+
+/**
+ * 验证入口按供应商配置分发 Google 请求，正常空内容结果结束工具循环。
+ * @param t - 提供临时目录清理的测试上下文。
+ * @throws 配置读取、请求协议或最终输出不符时抛出异常。
+ * @remarks 在独立进程中加载临时配置和模拟 fetch，测试结束后删除临时目录。
+ */
+test("入口按供应商配置选择 Google 协议", (t: TestContext): void => {
+  const prefix = join(tmpdir(), "lcn-main-google-");
+  const cwd = mkdtempSync(prefix);
+  /**
+   * 清理临时配置和请求模拟模块。
+   * @throws 删除临时目录失败时抛出异常。
+   */
+  t.after((): void => rmSync(cwd, { recursive: true, force: true }));
+  const mockPath = join(cwd, "mock.mjs");
+  writeFileSync(
+    mockPath,
+    `
+import assert from "node:assert/strict";
+/**
+ * 验证入口的 Google 请求并返回空内容完成响应。
+ * @param input - SDK 请求对象或地址。
+ * @param init - 可选的认证及序列化请求选项。
+ * @returns 正常结束的模拟响应。
+ * @throws 请求协议、认证、输入或工具声明不符时抛出断言错误。
+ */
+globalThis.fetch = async (input, init) => {
+  const request = new Request(input, init);
+  assert.equal(request.url,
+    "https://example.invalid/models/gemini-3.8-flash-high:streamGenerateContent?alt=sse");
+  assert.equal(request.headers.get("x-goog-api-key"), "test-api-key");
+  const body = await request.json();
+  assert.deepEqual(body.generationConfig, {});
+  assert.deepEqual(body.contents, [{
+    role: "user", parts: [{ text: "请调用 add 计算 17 加 25。" }],
+  }]);
+  assert.equal(body.tools[0].functionDeclarations[0].name, "add");
+  return new Response('data: {"candidates":[{"finishReason":"STOP"}]}\\n\\n', {
+    headers: { "content-type": "text/event-stream" },
+  });
+};
+`,
+  );
+  const config = {
+    provider: "服务商",
+    model: "gemini-3.8-flash-high",
+    modelProviders: [
+      {
+        name: "服务商",
+        api: "google-generative-ai",
+        baseUrl: "https://example.invalid",
+        apiKey: "test-api-key",
+        models: [{ id: "gemini-3.8-flash-high" }],
+      },
+    ],
+  };
+  writeFileSync(join(cwd, "setting.json"), JSON.stringify(config));
+  const result = spawnSync(process.execPath, ["--import", mockPath, fileURLToPath(mainUrl)], {
+    cwd,
+    encoding: "utf8",
+    timeout: 5000,
+  });
+  assert.equal(result.error, undefined);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stderr, "");
+  assert.equal(result.stdout, "[]\n");
+});

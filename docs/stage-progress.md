@@ -1,6 +1,6 @@
 # 阶段功能记录
 
-阶段 1、阶段 2、阶段 3、阶段 4、阶段 5 已完成。各节记录对应阶段交付时的行为；当前使用方式见 [README](../README.md)。
+阶段 1、阶段 2、阶段 3、阶段 4、阶段 5、阶段 6 已完成。各节记录对应阶段交付时的行为；当前使用方式见 [README](../README.md)。
 
 ## stage-01：空白项目与最小聊天闭环
 
@@ -60,3 +60,17 @@
 - 必须收到 Responses 终态事件；正常完成且包含工具调用时返回 `toolUse`，`incomplete.max_output_tokens` 返回 `length`，其他未完成原因及失败事件返回错误消息。正常工具终态仍留有内部参数原文时报告未结束调用，异常清理内部字段并保留累计内容。
 - 新增 Responses 请求、事件、文本签名、工具补齐及错误路径测试，更新协议配置和入口分发的回归检查。当前只有一个 Responses 入口，消息转换、工具转换及事件处理保持模块私有，没有新增 shared 模块、Azure 或 Codex 请求入口。
 - 补充 [Responses 文件组织说明](desin/02-openai-responses-shared.md)。推理与用量事件、服务端会话续接、取消请求和通用 Agent 执行循环尚未实现。
+
+## stage-06：Google Generative AI 与工具思考签名
+
+- 新增 `google-generative-ai` 协议，配置加载和 `completion` 支持该精确值；通过 Google SDK 的 `models.generateContentStream` 发起请求，公共事件流及最终结果读取方式保持不变。
+- Google 客户端使用供应商的 `baseUrl` 和空 `apiVersion`，密钥发送为 `x-goog-api-key`；当前仅允许省略 `options.fetch` 或传入同一 `globalThis.fetch`，独立自定义实现返回错误消息。
+- 请求上限校验为非负有限整数、温度为 0 到 2 之间的有限数值，二者显式 0 均保留；上限发送为 `maxOutputTokens`，省略时不设置，也不读取 `Model.maxTokens`。生成上限统一规则仍记录在 [待办](../待办.md)。
+- 上下文转换为 `contents`，助手角色转换为 `model`，系统提示词使用 `systemInstruction`，工具声明使用 `functionDeclarations` 与 `parametersJsonSchema`。Google 协议模块的 `toolChoice` 精确接受 `auto`、`none`、`any`，分别映射为 SDK 的 `AUTO`、`NONE`、`ANY`。
+- 工具结果通过 `functionResponse` 回填，正常结果使用 `output`，失败结果使用 `error`，连续结果合并到同一 `user` 内容项；接口模块只返回工具调用，不执行工具或替代本地参数校验。
+- 忽略标记为 `thought: true` 的文本；普通文本的思考签名保存到 `textSignature`，工具签名保存到新增的 `ToolCall.thoughtSignature`。签名原文保留，历史回传要求供应商及模型标识完全一致，并通过非空、长度为 4 的倍数及 Base64 字符形式检查，不解码或验证真实性。
+- Google 历史中的 `functionCall.id` 和 `functionResponse.id` 沿用模型兼容规则：原始标识以 `claude-` 或 `gpt-oss-` 开头，或 Gemini 主版本不低于 3 时回传；Gemini 版本提取先对内部副本转为小写，再匹配 `/^gemini(?:-live)?-(\d+)/`。此过程不修改发送给服务的模型标识，也不改变供应商及模型的精确选择。
+- 每个函数调用创建独立内容块，接口调用标识缺失或与本轮已有工具块重复时生成本地标识，发送 `toolcall_start`、包含参数对象 JSON 字符串的 `toolcall_delta` 及 `toolcall_end`；调用前结束当前文本块，后续文本另建块，流结束时结束剩余文本块。
+- 仅处理首项响应内容并保留首次响应标识；`STOP` 和 `CONTINUATION` 映射为 `stop`，含工具调用时改为 `toolUse`；`MAX_TOKENS` 映射为 `length`，过滤等其他已列出的原因映射为错误，未知原因或缺少结束原因也返回错误消息。当前不自动续写。
+- 新增 Google 请求、文本与工具事件、签名、历史转换、参数边界及错误路径测试，同步四协议配置与使用说明。推理文本事件、用量事件、取消请求、交互输入和通用 Agent 执行循环尚未实现。
+- 编译配置的 `lib` 加入 TypeScript 内置 `DOM` 类型，补齐 Google SDK 声明依赖的 `RequestInfo`、`ErrorEvent`、`CloseEvent` 和 `HeadersInit` 等 Web 类型；运行环境仍为 Node.js，没有启用跳过第三方类型校验。

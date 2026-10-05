@@ -3,6 +3,7 @@ import type { Context, Model, StreamOptions } from "./types.ts";
 import { stream as openaiCompletionsStream } from "./api/openai-completions.ts";
 import { stream as anthropicMessageStream } from "./api/anthropic-messages.ts";
 import { stream as openaiResponseStream } from "./api/openai-responses.ts";
+import { stream as googleGenerativeAIStream } from "./api/google-generative-ai.ts";
 import type { AssistantMessageEventStream } from "./utils/event-stream.ts";
 
 /**
@@ -34,6 +35,9 @@ export async function completion(
     }
     case "openai-responses": {
       return openaiResponseStream(model as Model<"openai-responses">, context, options);
+    }
+    case "google-generative-ai": {
+      return googleGenerativeAIStream(model as Model<"google-generative-ai">, context, options);
     }
     default: {
       throw new Error("不支持的模型接口类型。");

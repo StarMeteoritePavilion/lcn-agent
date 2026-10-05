@@ -1,7 +1,8 @@
 import type { TSchema } from "typebox";
 
 /** 当前支持的模型接口类型。 */
-export type Api = "openai-completions" | "anthropic-messages" | "openai-responses";
+export type Api =
+  "openai-completions" | "anthropic-messages" | "openai-responses" | "google-generative-ai";
 
 /** 模型标识、接口类型及服务提供方配置；TApi 用于限定支持的接口类型。 */
 export interface Model<TApi extends Api = Api> {
@@ -13,7 +14,7 @@ export interface Model<TApi extends Api = Api> {
   provider: string;
   /** 传入接口客户端的基础地址。 */
   baseUrl: string;
-  /** 运行时必填的模型默认生成令牌上限；Anthropic 未设置 options.maxTokens 时使用，OpenAI 请求不读取此字段。 */
+  /** 运行时必填的模型默认生成令牌上限；仅 Anthropic 未设置 options.maxTokens 时使用，其他协议不读取此字段。 */
   maxTokens: number;
 }
 
@@ -21,11 +22,11 @@ export interface Model<TApi extends Api = Api> {
 export interface StreamOptions {
   /** API 密钥；类型允许省略，但各协议的请求实现均要求提供密钥，Anthropic 另行拒绝纯空白字符串。 */
   apiKey?: string;
-  /** 本次生成的非负有限整数令牌上限；Anthropic 发送 max_tokens，缺省用模型值并保留 0；Chat Completions 发送 max_completion_tokens；Responses 发送 max_output_tokens 且正值至少为 16；后两者省略或为 0 时不设置。 */
+  /** 本次生成的非负有限整数令牌上限；Anthropic 发送 max_tokens，缺省用模型值并保留 0；Google 发送 maxOutputTokens 并保留 0；Chat Completions 发送 max_completion_tokens；Responses 发送 max_output_tokens 且正值至少为 16；后两者省略或为 0 时不设置。 */
   maxTokens?: number;
   /** 生成温度，必须为 0 到 2 之间的有限数值；省略时不设置请求参数，显式传入 0 时会保留。 */
   temperature?: number;
-  /** 自定义请求实现；省略时由对应协议的 SDK 使用默认 fetch。 */
+  /** 自定义请求实现；Google 仅允许省略或传入当前全局 fetch，其他协议支持独立实现。 */
   fetch?: typeof globalThis.fetch;
 }
 
@@ -35,7 +36,7 @@ export interface TextContent {
   type: "text";
   /** 文本原文；允许为空字符串。 */
   text: string;
-  /** Responses 生成的版本化 JSON 签名，保存消息项标识与可选 phase；回填历史时也接受旧版纯字符串标识。 */
+  /** Responses 保存消息项标识与可选 phase 的 JSON 签名，也接受旧版纯字符串；Google 保存原始思考签名，历史回传需来源一致且格式有效。 */
   textSignature?: string;
 }
 
@@ -43,12 +44,14 @@ export interface TextContent {
 export interface ToolCall {
   /** 工具调用内容块的类型标识。 */
   type: "toolCall";
-  /** 接口返回的调用标识，用于关联 ToolResultMessage.toolCallId；Responses 使用 call_id|输出项id，Chat Completions 流式开始时可能为空字符串。 */
+  /** 用于关联 ToolResultMessage.toolCallId；Responses 使用 call_id|输出项id，Google 缺失或重复时生成本地标识，Chat Completions 流式开始时可能为空字符串。 */
   id: string;
   /** 模型选择的工具名称，用于与 Tool.name 精确匹配；流式开始时可能尚未收到。 */
   name: string;
   /** 已解析的工具参数；流式处理中可能不完整或回退为空对象，类型声明不代表已通过运行时校验。 */
   arguments: Record<string, unknown>;
+  /** Google 工具调用的原始思考签名；历史回传时检查供应商、模型及 Base64 字符形式。 */
+  thoughtSignature?: string;
 }
 
 /** 向模型声明的工具名称、用途和 TypeBox 参数结构；不包含工具执行函数。 */
@@ -73,15 +76,15 @@ export interface UserMessage {
 
 /** 调用方执行工具后写入对话历史的结果消息，用调用标识关联助手的工具调用。 */
 export interface ToolResultMessage {
-  /** 工具结果的角色标识；Chat Completions 转为 tool 消息，Responses 转为 function_call_output，Anthropic 转为 user 消息中的 tool_result。 */
+  /** 工具结果的角色标识；Chat Completions 转为 tool，Responses 转为 function_call_output，Anthropic 转为 user 中的 tool_result，Google 转为 user 中的 functionResponse。 */
   role: "toolResult";
-  /** 对应 ToolCall.id；Chat Completions 转为 tool_call_id，Anthropic 转为 tool_use_id，Responses 取分隔符前的 call_id。 */
+  /** 对应 ToolCall.id；Chat Completions 转为 tool_call_id，Anthropic 转为 tool_use_id，Responses 取 call_id，Google 按模型规则决定是否发送 functionResponse.id。 */
   toolCallId: string;
-  /** 已执行的工具名称；当前历史转换不将此字段发送给接口。 */
+  /** 已执行的工具名称；Google 发送为 functionResponse.name，其他协议不发送此字段。 */
   toolName: string;
-  /** 工具输出文本块；发送时以换行连接，OpenAI 的空结果使用 (no tool output) 占位，Anthropic 保留空字符串。 */
+  /** 工具输出文本块；发送时以换行连接，OpenAI 的空结果使用 (no tool output) 占位，Anthropic 和 Google 保留空字符串。 */
   content: TextContent[];
-  /** 工具执行是否失败；Anthropic 原样发送为 is_error，OpenAI 不发送此字段，两者均不据此修改文本。 */
+  /** 工具执行是否失败；Anthropic 发送为 is_error，Google 据此选用 response.error 或 response.output，OpenAI 不发送此字段。 */
   isError: boolean;
   /** 工具结果的时间戳；当前示例使用毫秒值，请求转换不读取或发送此字段。 */
   timestamp: number;
@@ -107,7 +110,7 @@ export interface AssistantMessage {
   provider: string;
   /** 生成消息使用的模型标识。 */
   model: string;
-  /** Responses 的响应标识；其他协议或尚未收到响应标识时不设置，不作为历史请求参数发送。 */
+  /** Responses 或 Google 的响应标识；Google 保留首个非空标识，其他协议或未收到时不设置，不作为历史请求参数发送。 */
   responseId?: string;
   /** 当前处理状态；length 表示文本可能被截断，不保证内容完整。 */
   stopReason: StopReason;
@@ -124,7 +127,7 @@ export type Message = UserMessage | AssistantMessage | ToolResultMessage;
 
 /** 发起模型请求时使用的系统提示词、对话历史和工具声明。 */
 export interface Context {
-  /** 系统提示词；OpenAI 添加 system 消息，Anthropic 设置独立 system 参数，省略或为空字符串时均不发送。 */
+  /** 系统提示词；OpenAI 添加 system 消息，Anthropic 设置 system 参数，Google 设置 systemInstruction；省略或为空字符串时均不发送。 */
   systemPrompt?: string;
   /** 按发送顺序排列的历史消息；允许为空数组。 */
   messages: Message[];
@@ -139,6 +142,7 @@ export interface Context {
  * contentIndex 为文本块或工具调用块在 partial.content 中从 0 开始的索引，不是接口的工具调用 index。
  * 内容块结束事件只表示对应块结束，不保证工具参数有效或整个请求成功；模型请求模块不执行工具。
  * Chat Completions 在响应流读取完毕后发送内容结束事件，Anthropic 在 content_block_stop 时发送，Responses 在 response.output_item.done 时发送。
+ * Google 在遇到工具调用或响应流读取完毕时结束文本块，完整工具调用收到后立即发送其开始、增量和结束事件。
  * done 和 error 是终结事件，均用于完成事件流的 result()；错误结果通过消息返回。
  */
 export type AssistantMessageEvent =
@@ -189,7 +193,7 @@ export type AssistantMessageEvent =
       type: "toolcall_delta";
       /** 被更新的工具调用块索引，从 0 开始。 */
       contentIndex: number;
-      /** 本次收到的参数原文片段；仅提供标识或名称时为空字符串，不是已解析参数对象。 */
+      /** 参数原文增量；Google 为完整参数的 JSON 字符串，其他协议可为不完整片段，仅提供标识或名称时可为空字符串。 */
       delta: string;
       /** 包含当前工具参数解析结果、仍会继续更新的助手消息。 */
       partial: AssistantMessage;
@@ -199,7 +203,7 @@ export type AssistantMessageEvent =
       type: "toolcall_end";
       /** 已结束工具调用块在消息内容中的索引，从 0 开始。 */
       contentIndex: number;
-      /** 去除内部拼接字段后的工具调用对象；参数解析采用容错规则，不保证符合工具声明。 */
+      /** 去除内部拼接字段后的工具调用对象；Google 参数来自结构化响应，其他协议容错解析，均不保证符合工具声明。 */
       toolCall: ToolCall;
       /** 当前助手消息，结束状态仍可能因后续校验失败而更新。 */
       partial: AssistantMessage;

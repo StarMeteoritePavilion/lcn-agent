@@ -94,7 +94,12 @@ function settings(
  */
 test("模型默认令牌上限省略时补齐并校验正整数", (t: TestContext): void => {
   setEnv(t, "API_KEY", "测试密钥");
-  const apis: Api[] = ["openai-completions", "anthropic-messages", "openai-responses"];
+  const apis: Api[] = [
+    "openai-completions",
+    "anthropic-messages",
+    "openai-responses",
+    "google-generative-ai",
+  ];
   for (const api of apis) {
     const omitted = settings("模型", api);
     Object.assign(omitted.modelProviders[0], {
@@ -143,7 +148,12 @@ test("模型默认令牌上限省略时补齐并校验正整数", (t: TestContex
  */
 test("供应商协议必填且只接受支持的精确值", (t: TestContext): void => {
   setEnv(t, "API_KEY", "测试密钥");
-  const apis: Api[] = ["openai-completions", "anthropic-messages", "openai-responses"];
+  const apis: Api[] = [
+    "openai-completions",
+    "anthropic-messages",
+    "openai-responses",
+    "google-generative-ai",
+  ];
   for (const api of apis) {
     const path = createConfig(t, settings("模型", api));
     assert.equal(loadSettings(path).modelProviders[0].api, api);
@@ -156,6 +166,7 @@ test("供应商协议必填且只接受支持的精确值", (t: TestContext): vo
     " ",
     "OPENAI-COMPLETIONS",
     "OPENAI-RESPONSES",
+    "GOOGLE-GENERATIVE-AI",
     "openai",
     "anthropic",
     null,

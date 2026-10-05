@@ -20,7 +20,7 @@
 | 文件                                                        | 当前职责                                               |
 | ----------------------------------------------------------- | ------------------------------------------------------ |
 | [openai-responses.ts](../../src/ai/api/openai-responses.ts) | 请求构造、Responses 历史与工具转换、输出槽位和终态处理 |
-| [index.ts](../../src/ai/index.ts)                           | 按三种 `model.api` 分发并返回事件流的 Promise          |
+| [index.ts](../../src/ai/index.ts)                           | 按四种 `model.api` 分发并返回事件流的 Promise          |
 | [types.ts](../../src/ai/types.ts)                           | 公共消息、文本签名、响应标识与助手事件                 |
 | [hash.ts](../../src/ai/utils/hash.ts)                       | 将过长的历史消息项标识转换为确定性短标识               |
 | [responses.test.ts](../../test/ai/responses.test.ts)        | 模拟请求、事件回放、历史转换及错误边界                 |

@@ -107,17 +107,20 @@ BASE_URL=https://example.invalid
 
 ### 选择接口协议
 
-每个供应商条目必须配置 `api`，只接受以下三个精确值：
+每个供应商条目必须配置 `api`，只接受以下四个精确值：
 
-| api                  | 接口实现                         | 基础地址与请求路径示例                                |
-| -------------------- | -------------------------------- | ----------------------------------------------------- |
-| `openai-completions` | OpenAI Chat Completions 兼容接口 | `https://example.invalid/v1` → `/v1/chat/completions` |
-| `openai-responses`   | OpenAI Responses 兼容接口        | `https://example.invalid/v1` → `/v1/responses`        |
-| `anthropic-messages` | Anthropic Messages 兼容接口      | `https://example.invalid` → `/v1/messages?beta=true`  |
+| api                    | 接口实现                         | 基础地址与请求路径示例                                                                    |
+| ---------------------- | -------------------------------- | ----------------------------------------------------------------------------------------- |
+| `openai-completions`   | OpenAI Chat Completions 兼容接口 | `https://example.invalid/v1` → `/v1/chat/completions`                                     |
+| `openai-responses`     | OpenAI Responses 兼容接口        | `https://example.invalid/v1` → `/v1/responses`                                            |
+| `google-generative-ai` | Google Generative AI 兼容接口    | `https://example.invalid` → `/models/gemini-3.8-flash-high:streamGenerateContent?alt=sse` |
+| `anthropic-messages`   | Anthropic Messages 兼容接口      | `https://example.invalid` → `/v1/messages?beta=true`                                      |
 
 表中的地址仅用于展示 SDK 的路径拼接，实际基础地址、模型和协议必须由服务提供方确认。切换协议时同步检查 `baseUrl`，不能只改字段后沿用不对应的路径前缀。
 
 同一个服务需要多种协议时，可配置成名称不同的供应商条目，分别设置 `api` 和 `baseUrl`。顶层 `provider` 决定使用哪一组配置，模型条目中不重复声明协议。
+
+Google 客户端使用 `httpOptions: { baseUrl: model.baseUrl, apiVersion: "" }`，示例请求路径不自动添加版本前缀，所需前缀应由服务提供方确认后写入基础地址。
 
 已有配置需要为每个供应商补齐 `api`；缺失、大小写不符或使用其他值时，在发起请求前报告配置错误，不自动推断或回退。
 
@@ -137,7 +140,9 @@ BASE_URL=https://example.invalid
 - Chat Completions：不读取 `Model.maxTokens`，仅将显式提供的正整数 `options.maxTokens` 发送为 `max_completion_tokens`；省略或为 0 时不发送上限字段。
 - Responses：不读取 `Model.maxTokens`，正整数 `options.maxTokens` 发送为 `max_output_tokens`，低于 16 时提升为 16；省略或为 0 时不发送上限字段。
 
-三种协议的上限统一规则尚未确定，后续确认事项见 [待办](../待办.md)。模型配置与单次请求选项分别校验：模型配置要求正整数，`options.maxTokens` 仍允许非负整数，并按以上协议规则处理 0。默认预算 16384 不代表模型的上下文窗口大小或实际能力。数值配置需直接写入 JSON，环境变量替换产生字符串，不自动转换为数字。
+- Google：不读取 `Model.maxTokens`，显式非负有限整数 `options.maxTokens` 发送为 `maxOutputTokens`，0 保留；省略时不发送上限字段。
+
+四种协议的上限统一规则尚未确定，后续确认事项见 [待办](../待办.md)。模型配置与单次请求选项分别校验：模型配置要求正整数，`options.maxTokens` 仍允许非负整数，并按以上协议规则处理 0。默认预算 16384 不代表模型的上下文窗口大小或实际能力。数值配置需直接写入 JSON，环境变量替换产生字符串，不自动转换为数字。
 
 ### 环境变量如何对应
 
@@ -152,18 +157,18 @@ BASE_URL=https://example.invalid
 
 ## 字段
 
-| 字段路径                              | 类型     | 规则                                                                    |
-| ------------------------------------- | -------- | ----------------------------------------------------------------------- |
-| `provider`                            | 字符串   | 必填，与某个供应商的 `name` 精确匹配                                    |
-| `model`                               | 字符串   | 必填，与所选供应商某个模型的 `id` 精确匹配                              |
-| `modelProviders`                      | 对象数组 | 必填，必须包含所选供应商                                                |
-| `modelProviders[].api`                | 字符串   | 必填，只接受 openai-completions、anthropic-messages 或 openai-responses |
-| `modelProviders[].name`               | 字符串   | 必填，供应商之间不可重名                                                |
-| `modelProviders[].baseUrl`            | 字符串   | 必填，接口基础地址；格式和协议在请求阶段处理                            |
-| `modelProviders[].apiKey`             | 字符串   | 必填，建议使用环境变量占位符                                            |
-| `modelProviders[].models`             | 对象数组 | 必填，所选供应商的列表必须包含顶层指定的模型                            |
-| `modelProviders[].models[].maxTokens` | 数字     | 可选，正整数；省略时补为 16384                                          |
-| `modelProviders[].models[].id`        | 字符串   | 必填，发送给模型服务的标识                                              |
+| 字段路径                              | 类型     | 规则                                                                                          |
+| ------------------------------------- | -------- | --------------------------------------------------------------------------------------------- |
+| `provider`                            | 字符串   | 必填，与某个供应商的 `name` 精确匹配                                                          |
+| `model`                               | 字符串   | 必填，与所选供应商某个模型的 `id` 精确匹配                                                    |
+| `modelProviders`                      | 对象数组 | 必填，必须包含所选供应商                                                                      |
+| `modelProviders[].api`                | 字符串   | 必填，只接受 openai-completions、anthropic-messages、openai-responses 或 google-generative-ai |
+| `modelProviders[].name`               | 字符串   | 必填，供应商之间不可重名                                                                      |
+| `modelProviders[].baseUrl`            | 字符串   | 必填，接口基础地址；格式和协议在请求阶段处理                                                  |
+| `modelProviders[].apiKey`             | 字符串   | 必填，建议使用环境变量占位符                                                                  |
+| `modelProviders[].models`             | 对象数组 | 必填，所选供应商的列表必须包含顶层指定的模型                                                  |
+| `modelProviders[].models[].maxTokens` | 数字     | 可选，正整数；省略时补为 16384                                                                |
+| `modelProviders[].models[].id`        | 字符串   | 必填，发送给模型服务的标识                                                                    |
 
 所有必填字符串均拒绝空字符串、纯空白和未解析的整值占位符。字段名、供应商名称和模型标识均区分大小写，不自动去除首尾空白或转换名称。
 
@@ -194,7 +199,9 @@ BASE_URL=https://example.invalid
 
 请求失败时，`stream` 通过 `error` 事件完成 `result()`，`completion` 的 Promise 返回事件流，调用其 `result()` 后获得最终消息；不支持的 `model.api` 会直接使 `completion` 拒绝。入口检查 `stopReason` 后使用 `errorMessage` 抛出异常，由 Node.js 输出错误详情并以非零状态退出，不再执行工具或发送下一轮请求。工具名称未声明、参数校验失败或第四轮仍包含工具调用也会使入口抛出异常。第四轮返回的工具仍会先执行并追加结果，随后因没有剩余请求轮次而报错；是否执行工具按消息内容中的 `toolCall` 判断，`length` 结果也遵循此规则。
 
-入口发送“请调用 add 计算 17 加 25。”，校验并执行 `add`，将结果回填后继续请求，最多四轮；取得不含工具调用的助手消息后输出内容数组。入口未设置 `options.maxTokens` 或 `options.temperature`。`Model.maxTokens` 来自所选模型的 `models[].maxTokens`，配置省略时由加载器补为 16384；在 Anthropic 请求中作为未设置 `options.maxTokens` 时的令牌上限，OpenAI 请求不读取该字段。调用补全接口可通过 `StreamOptions` 设置单次请求参数；服务端仍会校验模型的可用上限。
+入口发送“请调用 add 计算 17 加 25。”，校验并执行 `add`，将结果回填后继续请求，最多四轮；取得不含工具调用的助手消息后输出内容数组。入口未设置 `options.maxTokens` 或 `options.temperature`。`Model.maxTokens` 来自所选模型的 `models[].maxTokens`，配置省略时由加载器补为 16384；在 Anthropic 请求中作为未设置 `options.maxTokens` 时的令牌上限，OpenAI 和 Google 请求不读取该字段。调用补全接口可通过 `StreamOptions` 设置单次请求参数；服务端仍会校验模型的可用上限。
+
+Google 适配器还校验温度为 0 到 2 之间的有限数值。直接调用其 `stream` 可设置 `toolChoice`，精确值仅为 `auto`、`none` 或 `any`，配置文件没有对应字段。Google 适配器拒绝与 `globalThis.fetch` 不同的 `options.fetch`，错误通过事件流返回；省略该选项或传入同一全局实现时由 SDK 发起请求。Google 的 `CONTINUATION` 当前映射为 `stop`，不自动续写；缺少结束原因或过滤等失败原因均返回错误消息。
 
 ## 开发接口
 
