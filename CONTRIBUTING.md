@@ -36,7 +36,9 @@ npm run verify
 
 测试源码位于 `test`，与 `src` 对应，文件名以 `.test.ts` 结尾。`pretest` 清理 `.build/test` 并将源码和测试编译到该目录，避免执行旧产物。构建生成 `dist`，不生成 SDK 类型声明。
 
-[tsconfig.json](tsconfig.json) 的 `lib` 包含 `ES2022` 和 `DOM`。`DOM` 用于补齐 Google SDK 类型声明引用的 Web 类型，运行环境仍为 Node.js；项目保持第三方类型校验。
+[tsconfig.json](tsconfig.json) 使用 `ES2022` 编译目标，省略 `lib`，采用 TypeScript 默认标准库，其中包含 Google SDK 声明所需的 `DOM` 类型。`types: ["node"]` 加载 Node.js 类型，不排除默认标准库。项目未启用 `skipLibCheck`，保留声明文件检查，运行环境仍为 Node.js。
+
+`module` 和 `moduleResolution` 均显式设置为 `NodeNext`。`allowImportingTsExtensions` 允许源码使用 `.ts` 导入路径，`rewriteRelativeImportExtensions` 在构建时将这些相对路径转换为 `.js`；测试配置继承上述选项。
 
 ## 编写变更
 

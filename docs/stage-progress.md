@@ -74,3 +74,8 @@
 - 仅处理首项响应内容并保留首次响应标识；`STOP` 和 `CONTINUATION` 映射为 `stop`，含工具调用时改为 `toolUse`；`MAX_TOKENS` 映射为 `length`，过滤等其他已列出的原因映射为错误，未知原因或缺少结束原因也返回错误消息。当前不自动续写。
 - 新增 Google 请求、文本与工具事件、签名、历史转换、参数边界及错误路径测试，同步四协议配置与使用说明。推理文本事件、用量事件、取消请求、交互输入和通用 Agent 执行循环尚未实现。
 - 编译配置的 `lib` 加入 TypeScript 内置 `DOM` 类型，补齐 Google SDK 声明依赖的 `RequestInfo`、`ErrorEvent`、`CloseEvent` 和 `HeadersInit` 等 Web 类型；运行环境仍为 Node.js，没有启用跳过第三方类型校验。
+
+## 阶段 6 后的编译配置整理
+
+- 显式设置 `moduleResolution: "NodeNext"` 和 `allowImportingTsExtensions: true`，继续通过 `rewriteRelativeImportExtensions` 转换构建产物中的相对导入扩展名。
+- 移除显式 `lib`，使用包含 `DOM` 的默认标准库；未设置 `skipLibCheck`，保留声明文件检查。源码、测试和运行环境保持原有职责。
