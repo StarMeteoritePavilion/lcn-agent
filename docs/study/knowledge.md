@@ -7,7 +7,7 @@
 | 分类                                                    | 已收录主题                                                            |
 | ------------------------------------------------------- | --------------------------------------------------------------------- |
 | [JavaScript 基础语法](#javascript-基础语法)             | 剩余参数、展开语法、三元运算符、条件添加属性、箭头函数、`void` 运算符 |
-| [TypeScript 接口与泛型](#typescript-接口与泛型)         | 接口、类型组合、泛型默认值、泛型约束                                  |
+| [TypeScript 接口与泛型](#typescript-接口与泛型)         | 接口、类型导入、类型组合、泛型默认值、泛型约束                        |
 | [TypeScript 工具类型](#typescript-工具类型)             | `Extract`、条件类型、`Record`、函数类型、`ReturnType`、`Awaited`      |
 | [TypeScript 类型检查与推断](#typescript-类型检查与推断) | 非空断言、`as`、`satisfies`、上下文类型、类型谓词                     |
 | [异步迭代与生成器](#异步迭代与生成器)                   | 生成器、迭代协议、Symbol 入口、事件流与结束通知                       |
@@ -215,6 +215,46 @@ content: (TextContent | ThinkingContent | ToolCall)[];
 ```
 
 这表示数组元素可以符合三种结构之一，只是在组合类型，没有创建数组。`interface` 编译后会被移除，不能执行 `new TextContent()`；`class` 则可以提供运行时实现并创建实例，类也可以用 `implements` 接受接口约束。
+
+### 类型导入 `import type` 与普通 `import`
+
+**只用于类型检查的依赖使用 `import type`；运行时需要调用函数、创建实例或读取常量时，使用普通 `import`。**
+
+[main.ts](../../src/main.ts) 分别导入运行时函数和类型，下面节选其中两个名称：
+
+```ts
+import { loadSettings } from "./base/settings.ts";
+import type { Context } from "./ai/types.ts";
+```
+
+`loadSettings` 需要在运行时调用；`Context` 用于类型标注，编译后不需要这个接口。
+
+| 写法                                                | 用途           | 编译为 JavaScript 后     |
+| --------------------------------------------------- | -------------- | ------------------------ |
+| `import type { Context } from "./ai/types.ts"`      | 仅用于类型检查 | 整条导入被移除           |
+| `import { loadSettings } from "./base/settings.ts"` | 获取运行时函数 | 当前配置下保留运行时导入 |
+
+项目的 [tsconfig.json](../../tsconfig.json) 开启了 `verbatimModuleSyntax`：类型导入会被移除，普通导入会保留；仅有类型身份的接口等名称必须显式使用类型导入。保留的模块路径还会按项目编译配置处理。
+
+#### 函数也可以只作为类型来源导入
+
+`import type` 不只用于接口，还可以导入函数或类的名称，但导入后只能用于类型位置。例如，下面是独立的类型用法示例：
+
+```ts
+import type { loadSettings } from "./base/settings.ts";
+
+type Config = ReturnType<typeof loadSettings>;
+```
+
+这里的 `typeof` 位于类型位置，不调用函数。如果随后执行 `loadSettings("setting.json")`，会产生类型错误，因为该名称通过 `import type` 导入，不能作为运行时值使用。同理，通过类型导入取得的类不能用于 `new` 或 `instanceof`。
+
+同一模块同时导出值和类型时，可以使用 `import { 值名称, type 类型名称 } from "模块路径"` 合并导入。名称必须确实由该模块导出；当前 `settings.ts` 的 `SettingsConfig` 是内部接口，没有导出，不能直接导入它。
+
+#### 模块执行与副作用
+
+整条 `import type` 被移除，因此不会因这条导入而在运行时加载、执行目标模块；若其他地方存在普通导入，目标模块仍会被加载。普通导入会参与模块加载，并执行目标模块的顶层代码。
+
+在 `verbatimModuleSyntax` 下，`import { type Context } from "./ai/types.ts"` 虽然移除了类型名称，仍会留下空的运行时导入 `import {} from "./ai/types.js"`。全部名称都仅用于类型时，使用整条 `import type`，可明确避免保留这条运行时依赖。
 
 ### 泛型参数、默认值与约束
 

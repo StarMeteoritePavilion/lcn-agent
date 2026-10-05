@@ -1,6 +1,6 @@
 # 阶段功能记录
 
-阶段 1、阶段 2、阶段 3、阶段 4 已完成。各节记录对应阶段交付时的行为；当前使用方式见 [README](../README.md)。
+阶段 1、阶段 2、阶段 3、阶段 4、阶段 5 已完成。各节记录对应阶段交付时的行为；当前使用方式见 [README](../README.md)。
 
 ## stage-01：空白项目与最小聊天闭环
 
@@ -48,3 +48,15 @@
 - Anthropic 的 `max_tokens` 使用 `options.maxTokens`，省略时使用模型上限，显式 0 保留；OpenAI 仍仅发送显式正整数请求上限，省略或为 0 时不发送 `max_completion_tokens`，不读取模型上限。统一规则保留在 [待办](../待办.md)，尚未完成。
 - 入口将配置组装、加法工具执行和有界对话拆为内部函数，沿用最多四轮、按实际工具内容逐个执行并回填结果的行为；第四轮工具结果仍会加入历史，随后报告轮次上限。取得不含工具调用的消息后输出内容数组，不消费增量事件。
 - 新增 Anthropic 请求、历史转换、SSE 解码及错误路径测试，更新配置、协议分发、入口、参数解析与校验的回归测试。通用 Agent 执行循环、交互输入、推理与用量事件、取消请求尚未实现。
+
+## stage-05：OpenAI Responses 与输出项转换
+
+- 新增 `openai-responses` 协议，配置加载及 `completion` 分发支持该精确值；补全入口仍返回 `Promise<AssistantMessageEventStream>`，最终消息通过事件流的 `result()` 获取。
+- Responses 使用 OpenAI SDK 的 `responses.create`，转换上下文为 `input`，设置 `stream: true`、`store: false`，禁用自动重试；函数工具使用 `strict: false`，实际执行和参数校验仍由调用方负责。
+- 校验请求上限为非负有限整数、温度为 0 到 2 之间的有限数值；正数上限发送为 `max_output_tokens` 并提升到至少 16，省略或为 0 时不设置，不读取 `Model.maxTokens`。生成上限统一规则仍保留在 [待办](../待办.md)。
+- 按 `output_index` 保存文本或工具槽位，转换文本、拒绝文本和函数参数增量；最终参数替换累计原文，只在其包含原有前缀时补发剩余增量，内容结束时移除槽位及内部参数原文。
+- 助手消息新增可选 `responseId`，文本新增可选 `textSignature`，保存版本 1 的消息项标识及 `phase`；历史转换接受版本化签名和旧版纯字符串标识，超过 64 字符的消息标识通过 `shortHash` 缩短。
+- 工具调用标识保存为 `call_id|item.id`，结果发送为 `function_call_output`；仅在历史模型与请求模型标识相同且输出项标识以 `fc_` 开头时保留该输出项标识。
+- 必须收到 Responses 终态事件；正常完成且包含工具调用时返回 `toolUse`，`incomplete.max_output_tokens` 返回 `length`，其他未完成原因及失败事件返回错误消息。正常工具终态仍留有内部参数原文时报告未结束调用，异常清理内部字段并保留累计内容。
+- 新增 Responses 请求、事件、文本签名、工具补齐及错误路径测试，更新协议配置和入口分发的回归检查。当前只有一个 Responses 入口，消息转换、工具转换及事件处理保持模块私有，没有新增 shared 模块、Azure 或 Codex 请求入口。
+- 补充 [Responses 文件组织说明](desin/02-openai-responses-shared.md)。推理与用量事件、服务端会话续接、取消请求和通用 Agent 执行循环尚未实现。

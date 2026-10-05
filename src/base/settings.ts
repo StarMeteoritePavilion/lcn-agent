@@ -76,8 +76,8 @@ function parseProvider(value: unknown, field: string): ProviderConfig {
   }
   const name = requireString(value.name, `${field}.name`);
   const api = value.api;
-  if (api !== "openai-completions" && api !== "anthropic-messages") {
-    throw new Error(`${field}.api 必须是 openai-completions 或 anthropic-messages。`);
+  if (api !== "openai-completions" && api !== "anthropic-messages" && api !== "openai-responses") {
+    throw new Error(`${field}.api 必须是 openai-completions/anthropic-messages/openai-responses。`);
   }
   if (!Array.isArray(value.models)) {
     throw new Error(`${field}.models 必须是模型对象数组。`);
@@ -175,7 +175,7 @@ function loadSettingsFromFile(settingPath: string): Record<string, unknown> {
  * 读取配置同目录 .env，每次调用重新加载，不缓存配置或修改进程环境。
  * 对全部供应商做运行时校验，再按原字符串精确选择供应商和模型，不转换大小写或去除首尾空白。
  * 供应商名称必须唯一；所选供应商必须包含所选模型，模型列表本身不检查重复标识。
- * 每个供应商必须显式声明 api，只接受 openai-completions 或 anthropic-messages，不按名称或模型推断协议。
+ * 每个供应商必须显式声明 api，只接受 openai-completions、anthropic-messages 或 openai-responses，不按名称或模型推断协议。
  * 每个模型的 maxTokens 可省略，省略时补为 16384；显式值必须是正整数，返回配置始终包含此字段。
  * maxTokens 作为模型的默认生成预算，不推断服务端的模型能力。
  * 本模块不输出配置或密钥；字段校验错误只描述字段路径和约束，文件读取及 JSON 解析异常按原样传递。

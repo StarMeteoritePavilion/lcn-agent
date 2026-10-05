@@ -88,13 +88,13 @@ function settings(
 }
 
 /**
- * 验证两种协议的模型默认生成上限均补齐为 16384，保留显式正整数并拒绝非法值。
+ * 验证支持协议的模型默认生成上限均补齐为 16384，保留显式正整数并拒绝非法值。
  * @param t - 提供临时配置清理和环境恢复的测试上下文。
  * @throws 缺省值未补齐、显式上限未保留、非法值被接受或错误路径不符时抛出断言错误。
  */
 test("模型默认令牌上限省略时补齐并校验正整数", (t: TestContext): void => {
   setEnv(t, "API_KEY", "测试密钥");
-  const apis: Api[] = ["openai-completions", "anthropic-messages"];
+  const apis: Api[] = ["openai-completions", "anthropic-messages", "openai-responses"];
   for (const api of apis) {
     const omitted = settings("模型", api);
     Object.assign(omitted.modelProviders[0], {
@@ -143,7 +143,7 @@ test("模型默认令牌上限省略时补齐并校验正整数", (t: TestContex
  */
 test("供应商协议必填且只接受支持的精确值", (t: TestContext): void => {
   setEnv(t, "API_KEY", "测试密钥");
-  const apis: Api[] = ["openai-completions", "anthropic-messages"];
+  const apis: Api[] = ["openai-completions", "anthropic-messages", "openai-responses"];
   for (const api of apis) {
     const path = createConfig(t, settings("模型", api));
     assert.equal(loadSettings(path).modelProviders[0].api, api);
@@ -155,6 +155,7 @@ test("供应商协议必填且只接受支持的精确值", (t: TestContext): vo
     "",
     " ",
     "OPENAI-COMPLETIONS",
+    "OPENAI-RESPONSES",
     "openai",
     "anthropic",
     null,

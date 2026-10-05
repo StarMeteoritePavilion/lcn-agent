@@ -1,7 +1,7 @@
 import type { TSchema } from "typebox";
 
 /** 当前支持的模型接口类型。 */
-export type Api = "openai-completions" | "anthropic-messages";
+export type Api = "openai-completions" | "anthropic-messages" | "openai-responses";
 
 /** 模型标识、接口类型及服务提供方配置；TApi 用于限定支持的接口类型。 */
 export interface Model<TApi extends Api = Api> {
@@ -19,9 +19,9 @@ export interface Model<TApi extends Api = Api> {
 
 /** 流式请求的认证、生成参数及网络请求选项。 */
 export interface StreamOptions {
-  /** API 密钥；类型允许省略，但两种协议的请求实现均要求提供密钥，Anthropic 另行拒绝纯空白字符串。 */
+  /** API 密钥；类型允许省略，但各协议的请求实现均要求提供密钥，Anthropic 另行拒绝纯空白字符串。 */
   apiKey?: string;
-  /** 本次生成的令牌数上限，必须为非负有限整数；Anthropic 发送为 max_tokens，省略时使用模型值且保留 0；OpenAI 发送为 max_completion_tokens，省略或为 0 时不设置。 */
+  /** 本次生成的非负有限整数令牌上限；Anthropic 发送 max_tokens，缺省用模型值并保留 0；Chat Completions 发送 max_completion_tokens；Responses 发送 max_output_tokens 且正值至少为 16；后两者省略或为 0 时不设置。 */
   maxTokens?: number;
   /** 生成温度，必须为 0 到 2 之间的有限数值；省略时不设置请求参数，显式传入 0 时会保留。 */
   temperature?: number;
@@ -35,13 +35,15 @@ export interface TextContent {
   type: "text";
   /** 文本原文；允许为空字符串。 */
   text: string;
+  /** Responses 生成的版本化 JSON 签名，保存消息项标识与可选 phase；回填历史时也接受旧版纯字符串标识。 */
+  textSignature?: string;
 }
 
 /** 模型请求执行的工具调用；参数由响应解析得到，执行前仍需按工具声明校验。 */
 export interface ToolCall {
   /** 工具调用内容块的类型标识。 */
   type: "toolCall";
-  /** 接口返回的调用标识，用于关联 ToolResultMessage.toolCallId；流式开始时可能尚为空字符串。 */
+  /** 接口返回的调用标识，用于关联 ToolResultMessage.toolCallId；Responses 使用 call_id|输出项id，Chat Completions 流式开始时可能为空字符串。 */
   id: string;
   /** 模型选择的工具名称，用于与 Tool.name 精确匹配；流式开始时可能尚未收到。 */
   name: string;
@@ -71,9 +73,9 @@ export interface UserMessage {
 
 /** 调用方执行工具后写入对话历史的结果消息，用调用标识关联助手的工具调用。 */
 export interface ToolResultMessage {
-  /** 工具结果消息的角色标识；OpenAI 转为 tool 消息，Anthropic 转为 user 消息中的 tool_result。 */
+  /** 工具结果的角色标识；Chat Completions 转为 tool 消息，Responses 转为 function_call_output，Anthropic 转为 user 消息中的 tool_result。 */
   role: "toolResult";
-  /** 对应 ToolCall.id；OpenAI 转为 tool_call_id，Anthropic 转为 tool_use_id。 */
+  /** 对应 ToolCall.id；Chat Completions 转为 tool_call_id，Anthropic 转为 tool_use_id，Responses 取分隔符前的 call_id。 */
   toolCallId: string;
   /** 已执行的工具名称；当前历史转换不将此字段发送给接口。 */
   toolName: string;
@@ -105,6 +107,8 @@ export interface AssistantMessage {
   provider: string;
   /** 生成消息使用的模型标识。 */
   model: string;
+  /** Responses 的响应标识；其他协议或尚未收到响应标识时不设置，不作为历史请求参数发送。 */
+  responseId?: string;
   /** 当前处理状态；length 表示文本可能被截断，不保证内容完整。 */
   stopReason: StopReason;
   /** 接口返回的原始非空结束原因；尚未收到时不设置，多个结束原因以最后一次为准。 */
@@ -134,7 +138,7 @@ export interface Context {
  * partial、message 和 error 均引用消息对象，不是副本；partial 指向的对象会随后续处理更新。
  * contentIndex 为文本块或工具调用块在 partial.content 中从 0 开始的索引，不是接口的工具调用 index。
  * 内容块结束事件只表示对应块结束，不保证工具参数有效或整个请求成功；模型请求模块不执行工具。
- * OpenAI 在响应流读取完毕后发送内容结束事件，Anthropic 在收到 content_block_stop 时发送。
+ * Chat Completions 在响应流读取完毕后发送内容结束事件，Anthropic 在 content_block_stop 时发送，Responses 在 response.output_item.done 时发送。
  * done 和 error 是终结事件，均用于完成事件流的 result()；错误结果通过消息返回。
  */
 export type AssistantMessageEvent =
