@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Type } from "typebox";
-import type { Tool, ToolCall } from "../../../src/ai/types.ts";
+import type { JsonObject, Tool, ToolCall } from "../../../src/ai/types.ts";
 import { validateToolCall } from "../../../src/ai/utils/validation.ts";
 
 const tool: Tool = {
@@ -58,7 +58,7 @@ test("工具参数校验拒绝未声明或大小写不同的工具名", (): void
  * @throws 错误路径或原始调用内容不符时抛出断言错误。
  */
 test("工具参数校验报告缺失字段和无效字段路径", (): void => {
-  const cases: { arguments: Record<string, unknown>; expected: RegExp }[] = [
+  const cases: { arguments: JsonObject; expected: RegExp }[] = [
     { arguments: { a: 17 }, expected: /Validation failed for tool "add":\n  - b:/u },
     { arguments: { a: "无效", b: 25 }, expected: /Validation failed for tool "add":\n  - a:/u },
   ];
@@ -176,7 +176,7 @@ test("同名工具只使用首个声明并报告顶层参数错误", (): void =>
   assert.deepEqual(validateToolCall([tool, second], call), { a: 17, b: 25 });
   assert.deepEqual(validateToolCall([second, tool], call), { a: "17", b: "25" });
   // 参数来自外部 JSON，类型声明不能保证运行时一定是对象。
-  const invalidArguments: Record<string, unknown> = JSON.parse("null");
+  const invalidArguments: JsonObject = JSON.parse("null");
   assert.throws(
     /**
      * 校验运行时并非对象的工具参数。
@@ -187,4 +187,89 @@ test("同名工具只使用首个声明并报告顶层参数错误", (): void =>
     },
     /Validation failed for tool "add":\n  - root:/u,
   );
+});
+
+/**
+ * 验证普通 JSON Schema 转换嵌套数组与额外字段，并保留已符合联合类型的原值。
+ * @throws 转换结果、原始参数或无效字段的拒绝行为不符时抛出断言错误。
+ */
+test("普通 JSON Schema 转换嵌套参数且不修改原始调用", (): void => {
+  const jsonTool: Tool = {
+    name: "json",
+    description: "校验普通 JSON Schema 参数",
+    parameters: {
+      type: "object",
+      properties: {
+        values: { type: "array", items: { type: "integer" } },
+        input: {
+          type: "object",
+          properties: { enabled: { type: "boolean" } },
+          required: ["enabled"],
+        },
+        selection: { anyOf: [{ type: "number" }, { type: "string" }] },
+      },
+      required: ["values", "input", "selection"],
+      additionalProperties: { type: "number" },
+    },
+  };
+  const call: ToolCall = {
+    type: "toolCall",
+    id: "call_json",
+    name: "json",
+    arguments: { values: ["17", "25"], input: { enabled: "false" }, selection: "42", extra: "7" },
+  };
+  const original = structuredClone(call.arguments);
+  assert.deepEqual(validateToolCall([jsonTool], call), {
+    values: [17, 25],
+    input: { enabled: false },
+    selection: "42",
+    extra: 7,
+  });
+  assert.deepEqual(call.arguments, original);
+  assert.throws(
+    /**
+     * 校验无法转换为整数的数组参数。
+     * @throws 数组项不符合整数约束时抛出校验异常。
+     */
+    (): void => {
+      validateToolCall([jsonTool], { ...call, arguments: { ...original, values: ["1.5"] } });
+    },
+    /Validation failed for tool "json":\n  - values\.0:/u,
+  );
+});
+
+/**
+ * 验证普通 JSON Schema 联合类型逐项转换后仍必须满足数值范围。
+ * @throws 转换结果、约束错误或原始调用参数不符时抛出断言错误。
+ */
+test("普通 JSON Schema 联合转换继续校验数值约束", (): void => {
+  const unionTool: Tool = {
+    name: "union",
+    description: "校验联合类型及数值范围",
+    parameters: {
+      type: "object",
+      properties: { value: { anyOf: [{ type: "number", minimum: 10 }, { type: "boolean" }] } },
+      required: ["value"],
+    },
+  };
+  const call: ToolCall = {
+    type: "toolCall",
+    id: "call_union",
+    name: "union",
+    arguments: { value: "17" },
+  };
+  assert.deepEqual(validateToolCall([unionTool], call), { value: 17 });
+  assert.deepEqual(call.arguments, { value: "17" });
+  const invalid = { ...call, arguments: { value: "2" } };
+  assert.throws(
+    /**
+     * 校验可转换数值仍低于联合 Schema 的最小值时拒绝。
+     * @throws 转换后所有联合分支均不满足约束时抛出校验异常。
+     */
+    (): void => {
+      validateToolCall([unionTool], invalid);
+    },
+    /Validation failed for tool "union":/u,
+  );
+  assert.deepEqual(invalid.arguments, { value: "2" });
 });

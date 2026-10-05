@@ -9,7 +9,7 @@
 | [JavaScript 基础语法](#javascript-基础语法)             | 剩余参数、展开语法、三元运算符、条件添加属性、箭头函数、`void` 运算符 |
 | [TypeScript 接口与泛型](#typescript-接口与泛型)         | 接口、类型导入、类型组合、泛型默认值、泛型约束                        |
 | [TypeScript 工具类型](#typescript-工具类型)             | `Extract`、条件类型、`Record`、函数类型、`ReturnType`、`Awaited`      |
-| [TypeScript 类型检查与推断](#typescript-类型检查与推断) | 非空断言、`as`、`satisfies`、上下文类型、类型谓词                     |
+| [TypeScript 类型检查与推断](#typescript-类型检查与推断) | 非空断言、`as`、`satisfies`、上下文类型、类型谓词、`never` 与穷尽检查 |
 | [异步迭代与生成器](#异步迭代与生成器)                   | 生成器、迭代协议、Symbol 入口、事件流与结束通知                       |
 | [Node.js 模块与进程](#nodejs-模块与进程)                | 入口文件判断、函数返回、进程退出与退出码                              |
 
@@ -141,7 +141,7 @@ block => block.type === "text"
 
 **`void 表达式` 会执行表达式，并将整个表达式的结果变成 `undefined`。** 它是 JavaScript 的一元运算符，不会阻止函数执行，也不会等待或取消异步任务。
 
-[openai-completions.ts](../../src/ai/api/openai-completions.ts) 的 `stream()` 函数中有以下节选：
+[openai-completions.ts](../../src/ai/api/openai-completions.ts) 的历史 `stream()` 实现有以下节选；当前实现使用异步函数表达式启动后台请求：
 
 ```ts
 const stream = new AssistantMessageEventStream();
@@ -161,7 +161,7 @@ return stream;
 
 因此，这里的 `void` 并非必须，直接调用也不会自动等待。它主要表达意图；某些检查未处理 Promise 的代码规则允许这种写法，是否允许取决于规则配置。`void` 不创建新线程，函数的异步行为来自自身实现。
 
-**忽略 Promise 不等于处理错误。** `void` 不捕获同步异常，也不为 Promise 注册拒绝处理；未处理的拒绝仍可能被运行环境报告。当前 `runStream` 自身用 `try/catch` 将请求与响应处理异常转换为 `error` 事件，并结束事件流。这是函数内部的处理，不是 `void` 的效果，也不保证 `catch` 自身再次出错时 Promise 不会拒绝。
+**忽略 Promise 不等于处理错误。** `void` 不捕获同步异常，也不为 Promise 注册拒绝处理；未处理的拒绝仍可能被运行环境报告。上述历史实现中的 `runStream` 自身用 `try/catch` 将请求与响应处理异常转换为 `error` 事件，并结束事件流。这是函数内部的处理，不是 `void` 的效果，也不保证 `catch` 自身再次出错时 Promise 不会拒绝。
 
 注意区分两个位置的 `void`：
 
@@ -280,7 +280,7 @@ type DifferentTypeStream = EventStream<string, number>; // 事件为 string，�
 
 默认值可以引用前面的类型参数；有默认值的参数可以省略，后面不能再放必需类型参数。调用泛型函数或用 `new` 创建泛型类实例时，类型参数还可以从实参推断，因此省略类型实参并不意味着一定使用默认值。
 
-历史示例中的 `AssistantMessageEventStream` 继承 `EventStream<AssistantMessageEvent, AssistantMessage>`：迭代取得事件，`result()` 返回 `Promise<AssistantMessage>`。`R` 是该类自行管理的结果类型，`AsyncIterable<T>` 本身不管理它。
+当前 `AssistantMessageEventStream` 继承 `EventStream<AssistantMessageEvent, AssistantMessage>`：迭代取得事件，`result()` 返回 `Promise<AssistantMessage>`。`R` 是该类自行管理的结果类型，`AsyncIterable<T>` 本身不管理它。
 
 #### 约束与默认值组合 `TApi extends Api = Api`
 
@@ -310,6 +310,8 @@ type AnyModel = Model; // 等同于 Model<Api>，api 允许上述三种值。
 type ResponsesModel = Model<"openai-responses">; // api 只能为 "openai-responses"。
 type InvalidModel = Model<number>; // 类型错误：number 不满足 Api 约束。
 ```
+
+当前 `Model<TApi extends Api>` 没有泛型默认值，使用时必须提供具体协议或 `Api`、`KnownApi`；上面的省略写法只适用于历史示例。
 
 直接写 `api: Api` 会允许全部 `Api` 值；使用 `api: TApi` 可以保留“这个模型使用哪一种接口”的具体类型。这里的 `extends` 表示泛型约束，`=` 表示类型默认值，均不会产生运行时赋值或自动转换。
 
@@ -442,7 +444,7 @@ let runtime: ReturnType<typeof loadRuntime>;
 | `typeof loadRuntime` | 取得 `loadRuntime` 的函数类型      |
 | `ReturnType<...>`    | 提取该函数类型的返回值类型         |
 
-[main.ts](../../src/main.ts) 中，`loadRuntime` 的参数为 `settingPath: string`，显式返回类型为 `{ model: Model; options: StreamOptions }`，因此上面的类型标注等价于 `let runtime: { model: Model; options: StreamOptions }`。当函数的返回类型改变时，通过 `ReturnType` 引用的类型也会随之变化。
+[main.ts](../../src/main.ts) 中，`loadRuntime` 的参数为 `settingPath: string`，显式返回类型为 `{ model: Model<KnownApi>; options: StreamOptions }`，因此上面的类型标注等价于 `let runtime: { model: Model<KnownApi>; options: StreamOptions }`。当函数的返回类型改变时，通过 `ReturnType` 引用的类型也会随之变化。
 
 类型声明不会调用函数，也不会读取配置文件。实际执行发生在后续赋值时：
 
@@ -462,7 +464,7 @@ type PendingName = ReturnType<LoadName>; // Promise<string>
 type ResolvedName = Awaited<ReturnType<LoadName>>; // string
 ```
 
-`Awaited<T>` 按照 `await` 的解析规则提取完成后的结果类型，包括递归展开嵌套 Promise；它本身不会执行异步等待。当前 `loadRuntime` 是同步函数，使用 `ReturnType<typeof loadRuntime>` 即可，无需额外添加 `Awaited`。`completion` 返回 `Promise<AssistantMessageEventStream>`，因此 `Awaited<ReturnType<typeof completion>>` 提取的是事件流类型，最终消息仍需通过该流的 `result()` 获取。
+`Awaited<T>` 按照 `await` 的解析规则提取完成后的结果类型，包括递归展开嵌套 Promise；它本身不会执行异步等待。当前 `loadRuntime` 是同步函数，使用 `ReturnType<typeof loadRuntime>` 即可，无需额外添加 `Awaited`。当前 `stream` 同步返回 `AssistantMessageEventStream`；`complete` 返回 `Promise<AssistantMessage>`，因此 `Awaited<ReturnType<typeof complete>>` 提取的是最终助手消息类型。对已经创建的流，应通过同一流的 `result()` 等待结果。
 
 ## TypeScript 类型检查与推断
 
@@ -580,19 +582,19 @@ satisfies ScenarioMap
 
 #### 当前 `convertMessages` 中的效果
 
-[openai-completions.ts](../../src/ai/api/openai-completions.ts) 的 `convertMessages` 使用：
+[openai-completions.ts](../../src/ai/api/openai-completions.ts) 的 `convertMessages` 先用 `isTextContentBlock` 筛选文本，再过滤空白文本、构造协议内容块并拼接原文。以下是省略协议内容块构造后的等价筛选示意：
 
 ```ts
-const assistantText = message.content
-  .filter((block): block is TextContent => block.type === "text")
-  .filter((block): block is TextContent => block.text.trim().length > 0)
-  .map((block) => block.text.trim())
+const assistantText = msg.content
+  .filter(isTextContentBlock)
+  .filter((block: TextContent): boolean => block.text.trim().length > 0)
+  .map((block: TextContent): string => block.text)
   .join("");
 ```
 
-[types.ts](../../src/ai/types.ts) 中，`AssistantMessage.content` 已声明为 `TextContent[]`，因此回调参数本来就是 `TextContent`。在这个前提下，改用参数类型标注，或者完全省略类型标注，最终类型和运行结果都相同。
+[types.ts](../../src/ai/types.ts) 中，`AssistantMessage.content` 声明为 `(TextContent | ToolCall)[]`。`isTextContentBlock` 的返回类型是 `block is TextContent`，首个 `filter` 因此将元素收窄为 `TextContent`，后续回调才能直接读取 `text`。
 
-第一个 `filter` 检查内容标识，第二个过滤空白文本，`map` 去掉首尾空白，`join("")` 无分隔地拼接文本。第二个条件只检查文本内容，不识别新的类型，无需写类型谓词；它也不会把 `string` 变成“非空字符串类型”。
+第一个 `filter` 检查内容标识，第二个过滤空白文本，`map` 保留文本原文，`join("")` 无分隔地拼接文本。`trim()` 仅用于判断空白，不改变发送的文本。第二个条件只检查文本内容，不识别新的类型，无需写类型谓词；它也不会把 `string` 变成“非空字符串类型”。
 
 如果数组元素是包含其他内容类型的联合类型，类型谓词可以帮助 `filter` 将结果收窄为 `TextContent[]`。反之，把回调参数直接限定为 `TextContent`，就无法接收联合类型中的其他成员，在严格函数类型检查下会产生类型不兼容。
 
@@ -603,6 +605,72 @@ const assistantText = message.content
 `TextContent` 是接口，编译后被移除，运行时没有可供比较的接口值。JavaScript 的 `typeof block` 返回 `"object"`、`"string"` 等字符串，不会返回接口名称，因此这种比较无法验证接口。
 
 `block.type === "text"` 检查的是对象的 `type` 属性，只检查这一个字段，不会自动检查 `text` 是否存在或是否为字符串。对于已经正确建模的联合类型，可以借助标识字段收窄；对于未经校验的外部数据，需要另行检查完整结构。显式类型谓词也不会让编译器证明判断逻辑正确，声明与实际检查必须一致。
+
+### `never` 与不可能出现的值
+
+**`never` 表示没有任何可能取值的类型。** 它用于表达不会正常返回的函数、排除类型成员，以及检查是否处理了所有分支；不会在运行时创建一种特殊值。
+
+| 类型        | 含义                                               |
+| ----------- | -------------------------------------------------- |
+| `never`     | 没有可取的值；作为函数返回类型时，表示不会正常返回 |
+| `void`      | 函数可以正常返回，但不提供有意义的结果             |
+| `undefined` | 包含实际值 `undefined`                             |
+| `null`      | 包含实际值 `null`                                  |
+
+#### 不会正常返回的函数
+
+以下是用于说明语法的独立示例：
+
+```ts
+/**
+ * 抛出错误并终止当前执行路径。
+ * @param message - 错误说明。
+ * @throws 始终抛出包含指定说明的错误。
+ */
+function fail(message: string): never {
+  throw new Error(message);
+}
+```
+
+始终抛出异常或始终循环且不会退出的函数，可以返回 `never`。它与“返回了 `undefined`”不同：后者仍然是正常返回。`never` 是静态类型，不会自动让函数抛错或停止执行，实际行为由函数体决定。
+
+#### 在联合类型中排除成员
+
+```ts
+type Result = string | never; // 等价于 string。
+```
+
+`never` 不增加任何可取的值，因此在联合类型中会被消去。`Extract<T, U>` 利用这一点，将不符合条件的成员变为 `never`；具体筛选过程见 [`Extract` 与分布式条件类型](#extract-与分布式条件类型)。
+
+#### 穷尽检查
+
+当控制流已经排除联合类型的全部成员，剩余分支中的变量会收窄为 `never`。可以利用这一点，让遗漏分支变成编译错误：
+
+```ts
+type Status = "success" | "error";
+
+/**
+ * 将状态转换为中文说明，并检查所有状态是否均已处理。
+ * @param status - 成功或失败状态。
+ * @returns 状态对应的中文说明。
+ * @throws 运行时收到未处理的状态时抛出错误。
+ */
+function describeStatus(status: Status): string {
+  if (status === "success") {
+    return "成功";
+  }
+  if (status === "error") {
+    return "失败";
+  }
+
+  const unhandled: never = status;
+  throw new Error(`未处理的状态：${unhandled}`);
+}
+```
+
+当前两种状态都已处理，赋值给 `never` 可以通过检查。如果以后给 `Status` 增加 `"pending"`，却没有补充分支，最后的 `status` 就仍可能为 `"pending"`，不能赋给 `never`，编译器会报告错误。
+
+穷尽检查帮助发现类型定义变化后的遗漏；外部数据仍需运行时校验，不能仅凭类型声明认定实际输入一定合法。
 
 ## 异步迭代与生成器
 

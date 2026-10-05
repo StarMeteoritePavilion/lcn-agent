@@ -123,7 +123,7 @@ export class EventStream<T, R = T> implements AsyncIterable<T> {
 
     while (this.waiting.length > 0) {
       const waiter = this.waiting.dequeue()!;
-      waiter({ value: undefined, done: true });
+      waiter({ value: undefined as any, done: true });
     }
   }
 

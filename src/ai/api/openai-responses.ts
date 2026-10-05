@@ -1,184 +1,194 @@
 import OpenAI from "openai";
 import type {
   ResponseCreateParamsStreaming,
+  FunctionTool,
   ResponseInput,
+  ResponseInputContent,
+  ResponseInputImage,
+  ResponseInputText,
   ResponseOutputItem,
   ResponseOutputMessage,
   ResponseStreamEvent,
-  Tool as OpenAITool,
 } from "openai/resources/responses/responses.js";
 import type {
+  Api,
   AssistantMessage,
-  Context,
+  ImageContent,
   Model,
-  StopReason,
+  OpenAIResponsesCompat,
+  ProviderHeaders,
+  StreamFunction,
   StreamOptions,
+  StopReason,
   TextContent,
+  TextSignatureV1,
   Tool,
   ToolCall,
+  Context,
 } from "../types.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
-import { parseStreamingJson } from "../utils/json-parse.ts";
 import { shortHash } from "../utils/hash.ts";
-
-/** 附带尚未结束的参数原文的工具调用块。 */
-type StreamingToolCall = ToolCall & { partialJson?: string };
-/** 将协议输出项关联到本地内容块及其索引的槽位。 */
-type ResponsesOutputSlot =
-  | { type: "text"; block: TextContent; contentIndex: number }
-  | { type: "toolCall"; block: StreamingToolCall; contentIndex: number };
-/** 用于累积工具参数的输出槽位。 */
-type ToolCallOutputSlot = Extract<ResponsesOutputSlot, { type: "toolCall" }>;
-
-/** Responses 请求选项，工具选择原样交给接口处理。 */
-interface OpenAIResponsesOptions extends StreamOptions {
-  /** 可选的工具选择策略或指定工具；本模块不校验与工具声明的对应关系。 */
+import { parseStreamingJson } from "../utils/json-parse.ts";
+import { transformMessages } from "./transform-messages.ts";
+import { validateStreamOptions } from "../utils/validation.ts";
+const OPENAI_RESPONSES_MIN_OUTPUT_TOKENS = 16;
+/**
+ * 校验并返回本次请求的显式 API 密钥。
+ * @param provider - 请求服务商标识，用于缺少密钥时的错误说明。
+ * @param apiKey - 本次请求的显式密钥。
+ * @returns 非空密钥原文。
+ * @throws 密钥不是非空字符串时抛出异常。
+ */
+function getClientApiKey(provider: string, apiKey: string | undefined): string {
+  if (typeof apiKey === "string" && apiKey.trim()) {
+    return apiKey;
+  }
+  throw new Error(`No API key for provider: ${provider}`);
+}
+/**
+ * 读取模型的兼容选项并补齐默认值。
+ * @param model - 本次请求的模型配置。
+ * @returns 用于构建请求和处理结束状态的完整兼容选项。
+ */
+function getCompat(model: Model<"openai-responses">): Required<OpenAIResponsesCompat> {
+  return {
+    supportsDeveloperRole: model.compat?.supportsDeveloperRole ?? true,
+    supportsMaxOutputTokens: model.compat?.supportsMaxOutputTokens ?? true,
+  };
+}
+export interface OpenAIResponsesOptions extends StreamOptions {
   toolChoice?: ResponseCreateParamsStreaming["tool_choice"];
 }
-
-/** 保存 Responses 消息标识与输出阶段的版本化文本签名。 */
-interface TextSignatureV1 {
-  /** 当前签名格式版本。 */
-  v: 1;
-  /** Responses 消息项标识。 */
-  id: string;
-  /** 可选的说明或最终回答阶段。 */
-  phase?: "commentary" | "final_answer";
-}
-
 /**
- * 创建助手消息事件流并启动 OpenAI Responses 请求。
- * @param model - 请求模型、接口地址及输出消息的来源标识。
- * @param context - 系统提示词、对话历史与可选工具声明。
- * @param options - 请求密钥、生成参数、自定义 fetch 及工具选择方式。
- * @returns 可异步迭代内容事件，并通过 result() 等待最终助手消息的事件流。
- * @remarks 启动处理后立即返回；请求和响应处理失败时通过 error 事件返回错误消息，不在本模块执行工具。
- */
-export function stream(
-  model: Model<"openai-responses">,
-  context: Context,
-  options?: OpenAIResponsesOptions,
-): AssistantMessageEventStream {
-  const stream = new AssistantMessageEventStream();
-  // 使用 void 显式忽略返回的 Promise，让调用方立即获得事件流并消费后续事件。
-  // void 不捕获异常；请求和响应处理中的异常由 runStream 内部转换为 error 事件。
-  void runStream(model, context, stream, options);
-  return stream;
-}
-
-/**
- * 组织请求和响应处理，统一发送开始、完成或错误事件。
- * @param model - 请求模型及输出消息的接口、供应商和模型标识。
- * @param context - 用于构建请求的系统提示词、历史消息及工具声明。
- * @param stream - 接收内容事件与最终消息的事件流。
- * @param options - 请求密钥、生成参数、自定义 fetch 及工具选择方式。
- * @returns Promise 完成表示正常或错误结果已写入事件流。
- * @throws 错误处理自身失败时拒绝 Promise，例如非 Error 异常无法 JSON 序列化。
- * @remarks 请求成功后发送 start；响应处理成功后发送 done，失败时清理工具内部字段并发送 error，保留累计内容。
- */
-async function runStream(
-  model: Model<"openai-responses">,
-  context: Context,
-  stream: AssistantMessageEventStream,
-  options?: OpenAIResponsesOptions,
-): Promise<void> {
-  const output: AssistantMessage = {
-    role: "assistant",
-    content: [],
-    api: model.api,
-    provider: model.provider,
-    model: model.id,
-    stopReason: "pending",
-    timestamp: Date.now(),
-  };
-
-  try {
-    const openaiStream = await createCompletionStream(model, context, options);
-
-    stream.push({ type: "start", partial: output });
-    const stopReason = await consumeCompletionStream(openaiStream, output, stream);
-
-    stream.push({ type: "done", reason: stopReason, message: output });
-    stream.end();
-  } catch (error) {
-    for (const block of output.content) {
-      delete (block as { partialJson?: string }).partialJson;
-    }
-    output.stopReason = "error";
-    output.errorMessage = error instanceof Error ? error.message : JSON.stringify(error);
-    stream.push({ type: "error", reason: "error", error: output });
-    stream.end();
-  }
-}
-
-/**
- * 校验密钥并发起 OpenAI Responses 流式请求。
- * @param model - 请求使用的模型标识、接口地址及供应商标识。
+ * 创建助手消息事件流并启动协议请求。
+ * @param model - 本次请求的模型配置。
  * @param context - 系统提示词、历史消息和工具声明。
- * @param options - 请求密钥、生成参数、自定义 fetch 及工具选择方式。
- * @returns Promise 完成后返回可异步迭代的 Responses 协议事件流。
- * @throws 密钥缺失、参数构建失败、客户端初始化失败或请求失败时拒绝 Promise。
- * @remarks 每次创建独立客户端，请求禁用自动重试，异常交由 runStream 处理。
+ * @param options - 可选的认证、生成参数和工具选择配置。
+ * @returns 立即返回可异步迭代内容事件并通过 result() 等待最终消息的事件流。
+ * @remarks 请求校验、网络和协议处理失败通过 error 事件返回；不执行工具，不自动续写或重试，partial 与最终消息共享引用。
  */
-async function createCompletionStream(
+export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> = (
   model: Model<"openai-responses">,
   context: Context,
   options?: OpenAIResponsesOptions,
-): Promise<AsyncIterable<ResponseStreamEvent>> {
-  const apiKey = options?.apiKey;
-  if (!apiKey) {
-    throw new Error(`No API key for provider: ${model.provider}`);
+): AssistantMessageEventStream => {
+  const stream = new AssistantMessageEventStream();
+  void (
+    /**
+     * 处理协议请求并将完成结果或错误写入助手事件流。
+     * @returns Promise 完成表示终结事件已写入且事件流已结束。
+     * @remarks 启动后异步执行；错误转换为 error 事件并保留已累积内容。
+     */
+    async (): Promise<void> => {
+      const output: AssistantMessage = {
+        role: "assistant",
+        content: [],
+        api: model.api,
+        provider: model.provider,
+        model: model.id,
+        stopReason: "pending",
+        timestamp: Date.now(),
+      };
+      try {
+        validateStreamOptions(options);
+        const apiKey = getClientApiKey(model.provider, options?.apiKey);
+        const compat = getCompat(model);
+        const client = createClient(model, apiKey, options?.headers, options?.fetch);
+        const params = buildParams(model, context, options, compat);
+        const request = client.responses.create(params, { maxRetries: 0 });
+        const { data: openaiStream } = await request.withResponse();
+        stream.push({ type: "start", partial: output });
+        await processResponsesStream(openaiStream, output, stream);
+        if (output.stopReason === "pending") {
+          throw new Error("OpenAI Responses stream ended without a stop reason");
+        }
+        if (output.stopReason === "aborted" || output.stopReason === "error") {
+          throw new Error(output.errorMessage || "An unknown error occurred");
+        }
+        stream.push({ type: "done", reason: output.stopReason, message: output });
+        stream.end();
+      } catch (error) {
+        for (const block of output.content) {
+          delete (
+            block as {
+              index?: number;
+            }
+          ).index;
+          delete (
+            block as {
+              partialJson?: string;
+            }
+          ).partialJson;
+        }
+        output.stopReason = "error";
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        output.errorMessage = errorMessage;
+        stream.push({ type: "error", reason: output.stopReason, error: output });
+        stream.end();
+      }
+    }
+  )();
+  return stream;
+};
+/**
+ * 创建使用显式认证和合并请求头的协议客户端。
+ * @param model - 本次请求的模型配置。
+ * @param apiKey - 本次请求的显式密钥。
+ * @param optionsHeaders - 覆盖模型默认请求头的请求选项，null 值交由 SDK 处理。
+ * @param fetch - 可选的网络请求实现。
+ * @returns 本次请求使用的新客户端。
+ * @throws SDK 初始化失败时抛出异常。
+ * @remarks 不读取环境凭据；请求选项请求头覆盖模型同名请求头。
+ */
+function createClient(
+  model: Model<"openai-responses">,
+  apiKey: string,
+  optionsHeaders?: ProviderHeaders,
+  fetch?: typeof globalThis.fetch,
+): OpenAI {
+  const headers: ProviderHeaders = { ...model.headers };
+  if (optionsHeaders) {
+    Object.assign(headers, optionsHeaders);
   }
-  const client = new OpenAI({
+  return new OpenAI({
     apiKey,
     baseURL: model.baseUrl,
     dangerouslyAllowBrowser: true,
-    fetch: options?.fetch,
+    fetch,
+    defaultHeaders: headers,
   });
-
-  const params = buildParams(model, context, options);
-  return client.responses.create(params, { maxRetries: 0 });
 }
-
 /**
- * 将模型、上下文和选项组装为 Responses 流式请求参数。
- * @param model - 请求模型及历史工具调用转换时使用的模型标识。
- * @param context - 系统提示词、历史消息和可选工具声明。
- * @param options - 生成参数和工具选择方式，密钥及 fetch 不写入请求体。
- * @returns 启用 stream 并关闭 store 的请求参数，保留现有消息、工具和生成参数转换规则。
- * @throws maxTokens 不是非负有限整数、temperature 不是 0 到 2 之间的有限数值，或历史工具参数无法 JSON 序列化时抛出异常。
- * @remarks maxTokens 为正整数时发送 max_output_tokens，低于 16 时提升到 16；省略或为 0 时不发送，也不读取 model.maxTokens。
+ * 组装 Responses 的流式请求参数。
+ * @param model - 本次请求的模型配置。
+ * @param context - 系统提示词、历史消息和工具声明。
+ * @param options - 可选的认证、生成参数和工具选择配置。
+ * @param compat - 模型的完整兼容配置。
+ * @returns 不保存响应、包含转换后输入及可选生成参数的请求对象。
+ * @throws 历史工具参数无法 JSON 序列化时抛出异常。
+ * @remarks 正令牌上限至少为 16；maxTokens 为 0 或省略时不发送上限。
  */
 function buildParams(
   model: Model<"openai-responses">,
   context: Context,
-  options?: OpenAIResponsesOptions,
+  options: OpenAIResponsesOptions | undefined,
+  compat: Required<OpenAIResponsesCompat> = getCompat(model),
 ): ResponseCreateParamsStreaming {
-  const maxTokens = options?.maxTokens;
-  if (maxTokens !== undefined && (!Number.isInteger(maxTokens) || maxTokens < 0)) {
-    throw new Error("maxTokens 必须是非负有限整数。");
-  }
-  const temperature = options?.temperature;
-  if (
-    temperature !== undefined &&
-    (!Number.isFinite(temperature) || temperature < 0 || temperature > 2)
-  ) {
-    throw new Error("temperature 必须是 0 到 2 之间的有限数值。");
-  }
+  const messages = convertResponsesMessages(model, context);
   const params: ResponseCreateParamsStreaming = {
     model: model.id,
-    input: convertResponsesMessages(model, context),
+    input: messages,
     stream: true,
     store: false,
   };
-  if (maxTokens) {
-    params.max_output_tokens = Math.max(maxTokens, 16);
+  if (options?.maxTokens && compat.supportsMaxOutputTokens) {
+    params.max_output_tokens = Math.max(options.maxTokens, OPENAI_RESPONSES_MIN_OUTPUT_TOKENS);
   }
-  if (temperature !== undefined) {
-    params.temperature = temperature;
+  if (options?.temperature !== undefined) {
+    params.temperature = options?.temperature;
   }
-  if (context.tools?.length) {
-    params.tools = convertResponsesTools(context.tools);
+  if ((context.tools ?? []).length > 0) {
+    params.tools = convertResponsesTools(context.tools ?? []);
   }
   if (options?.toolChoice !== undefined) {
     params.tool_choice = options.toolChoice;
@@ -187,107 +197,30 @@ function buildParams(
 }
 
 /**
- * 将项目对话历史转换为 Responses 输入项。
- * @param model - 本次请求模型，用于判断能否复用历史工具调用的输出项标识。
- * @param context - 系统提示词及用户、助手和工具结果历史。
- * @returns 按历史顺序排列的输入项，没有可发送内容时返回空数组。
- * @throws 历史工具参数无法 JSON 序列化时抛出异常。
- * @remarks 保留文本签名中的消息标识和阶段；工具结果通过调用标识关联，空结果使用固定占位文本。
+ * 将消息标识和可选阶段编码为版本 1 的文本签名。
+ * @param id - Responses 消息项的标识。
+ * @param phase - 可选的消息输出阶段。
+ * @returns 包含 v、id 及非空 phase 的 JSON 字符串，用于回传助手历史。
  */
-function convertResponsesMessages(model: Model, context: Context): ResponseInput {
-  const messages: ResponseInput = [];
-  if (context.systemPrompt) {
-    messages.push({ role: "system", content: context.systemPrompt });
+function encodeTextSignatureV1(id: string, phase?: TextSignatureV1["phase"]): string {
+  const payload: TextSignatureV1 = { v: 1, id };
+  if (phase) {
+    payload.phase = phase;
   }
-  let msgIndex = 0;
-  for (const msg of context.messages) {
-    if (msg.role === "user") {
-      const content =
-        typeof msg.content === "string"
-          ? [{ type: "input_text" as const, text: msg.content }]
-          : msg.content.map(
-              /**
-               * 将用户文本块转换为 Responses 文本输入。
-               * @param item - 用户的文本内容块。
-               * @returns 保留文本原文的 input_text 输入块。
-               */
-              (item: TextContent): { type: "input_text"; text: string } => ({
-                type: "input_text",
-                text: item.text,
-              }),
-            );
-      if (content.length > 0) {
-        messages.push({ role: "user", content });
-      }
-    } else if (msg.role === "assistant") {
-      let textBlockIndex = 0;
-      for (const block of msg.content) {
-        if (block.type === "text") {
-          const parsedSignature = parseTextSignature(block.textSignature);
-          const fallbackMessageId =
-            textBlockIndex === 0 ? `msg_pi_${msgIndex}` : `msg_pi_${msgIndex}_${textBlockIndex}`;
-          textBlockIndex++;
-          let msgId = parsedSignature?.id;
-          if (!msgId) {
-            msgId = fallbackMessageId;
-          } else if (msgId.length > 64) {
-            msgId = `msg_${shortHash(msgId)}`;
-          }
-          messages.push({
-            type: "message",
-            role: "assistant",
-            status: "completed",
-            id: msgId,
-            phase: parsedSignature?.phase,
-            content: [{ type: "output_text", text: block.text, annotations: [] }],
-          });
-        } else if (block.type === "toolCall") {
-          const [callId, itemIdRaw] = block.id.split("|");
-          let itemId: string | undefined = itemIdRaw;
-          if (msg.model !== model.id || !itemId?.startsWith("fc_")) {
-            itemId = undefined;
-          }
-          messages.push({
-            type: "function_call",
-            id: itemId,
-            call_id: callId,
-            name: block.name,
-            arguments: JSON.stringify(block.arguments),
-          });
-        }
-      }
-    } else if (msg.role === "toolResult") {
-      const [callId] = msg.toolCallId.split("|");
-      const textResult = msg.content
-        .map(
-          /**
-           * 提取工具结果文本块的原文。
-           * @param block - 工具返回的文本块。
-           * @returns 未修改的文本，后续以换行连接。
-           */
-          (block: TextContent): string => block.text,
-        )
-        .join("\n");
-      messages.push({
-        type: "function_call_output",
-        call_id: callId,
-        output: textResult || "(no tool output)",
-      });
-    }
-    msgIndex++;
-  }
-  return messages;
+  return JSON.stringify(payload);
 }
-
 /**
  * 读取文本签名中的消息标识及可选输出阶段。
  * @param signature - 版本化 JSON 签名或旧版纯字符串标识。
  * @returns 签名包含的标识和有效阶段；签名为空时返回 undefined。
  * @remarks 无法识别版本化结构或解析失败时，将整个原始签名作为旧版标识。
  */
-function parseTextSignature(
-  signature: string | undefined,
-): { id: string; phase?: TextSignatureV1["phase"] } | undefined {
+function parseTextSignature(signature: string | undefined):
+  | {
+      id: string;
+      phase?: TextSignatureV1["phase"];
+    }
+  | undefined {
   if (!signature) {
     return undefined;
   }
@@ -301,25 +234,197 @@ function parseTextSignature(
         return { id: parsed.id };
       }
     } catch {
-      // 继续使用旧的纯字符串签名。
+      // 无法识别的 JSON 签名沿用旧版字符串标识。
     }
   }
   return { id: signature };
 }
-
+type ToolResultOutputContent = Array<ResponseInputText | ResponseInputImage>;
+/**
+ * 将工具结果转换为 Responses 文本或图文输出。
+ * @param model - 本次请求的模型配置。
+ * @param content - 按原顺序排列的文本和图片内容块。
+ * @returns 有图片且模型支持图片时返回内容块数组，否则返回文本或固定占位。
+ */
+function convertToolResultOutput<TApi extends Api>(
+  model: Model<TApi>,
+  content: readonly (TextContent | ImageContent)[],
+): string | ToolResultOutputContent {
+  const textContent = content.filter(
+    /**
+     * 检查内容块是否为文本。
+     * @param c - 待检查或提取原文的内容块。
+     * @returns type 为 text 时返回 true。
+     */
+    (c: TextContent | ImageContent): c is TextContent => c.type === "text",
+  );
+  const textResult = textContent
+    .map(
+      /**
+       * 提取文本内容块的原文。
+       * @param c - 待检查或提取原文的内容块。
+       * @returns 未经修改的文本字符串。
+       */
+      (c: TextContent): string => c.text,
+    )
+    .join("\n");
+  const images = content.filter(
+    /**
+     * 检查内容块是否为图片。
+     * @param c - 待检查或提取原文的内容块。
+     * @returns type 为 image 时返回 true。
+     */
+    (c: TextContent | ImageContent): c is ImageContent => c.type === "image",
+  );
+  const hasText = textResult.length > 0;
+  if (images.length === 0 || !model.input.includes("image")) {
+    return hasText ? textResult : images.length > 0 ? "(see attached image)" : "(no tool output)";
+  }
+  const output: ToolResultOutputContent = [];
+  if (hasText) {
+    output.push({ type: "input_text", text: textResult });
+  }
+  for (const image of images) {
+    output.push({
+      type: "input_image",
+      detail: "auto",
+      image_url: `data:${image.mimeType};base64,${image.data}`,
+    });
+  }
+  return output;
+}
+/**
+ * 将项目对话历史转换为 Responses 输入项。
+ * @param model - 本次请求的模型配置。
+ * @param context - 系统提示词、历史消息和工具声明。
+ * @returns 按历史顺序排列的输入项，没有可发送内容时返回空数组。
+ * @throws 历史工具参数无法 JSON 序列化时抛出异常。
+ * @remarks 保留文本签名的标识和阶段，工具结果按调用标识关联；不修改上下文。
+ */
+function convertResponsesMessages<TApi extends Api>(
+  model: Model<TApi>,
+  context: Context,
+): ResponseInput {
+  const messages: ResponseInput = [];
+  if (context.systemPrompt) {
+    messages.push({ role: "system", content: context.systemPrompt });
+  }
+  const transformedMessages = transformMessages(context.messages, model);
+  for (let msgIndex = 0; msgIndex < transformedMessages.length; msgIndex++) {
+    const msg = transformedMessages[msgIndex];
+    if (msg.role === "user") {
+      if (typeof msg.content === "string") {
+        messages.push({
+          role: "user",
+          content: [{ type: "input_text", text: msg.content }],
+        });
+      } else {
+        const content: ResponseInputContent[] = msg.content.map(
+          /**
+           * 将用户文本或图片转换为协议内容块。
+           * @param item - 用户消息中的文本或图片内容块。
+           * @returns 保留原文或图片数据的协议内容块。
+           */
+          (item: TextContent | ImageContent): ResponseInputContent => {
+            if (item.type === "text") {
+              return {
+                type: "input_text",
+                text: item.text,
+              } satisfies ResponseInputText;
+            }
+            return {
+              type: "input_image",
+              detail: "auto",
+              image_url: `data:${item.mimeType};base64,${item.data}`,
+            } satisfies ResponseInputImage;
+          },
+        );
+        if (content.length === 0) {
+          continue;
+        }
+        messages.push({
+          role: "user",
+          content,
+        });
+      }
+    } else if (msg.role === "assistant") {
+      const output: ResponseInput = [];
+      const assistantMsg = msg as AssistantMessage;
+      const isSameProviderAndApi =
+        assistantMsg.provider === model.provider && assistantMsg.api === model.api;
+      const isSameModel = isSameProviderAndApi && assistantMsg.model === model.id;
+      const isDifferentModel = isSameProviderAndApi && assistantMsg.model !== model.id;
+      let textBlockIndex = 0;
+      for (const block of msg.content) {
+        if (block.type === "text") {
+          const textBlock = block as TextContent;
+          const parsedSignature = parseTextSignature(textBlock.textSignature);
+          const fallbackMessageId =
+            textBlockIndex === 0 ? `msg_pi_${msgIndex}` : `msg_pi_${msgIndex}_${textBlockIndex}`;
+          textBlockIndex++;
+          let msgId = parsedSignature?.id;
+          if (!msgId) {
+            msgId = fallbackMessageId;
+          } else if (msgId.length > 64) {
+            msgId = `msg_${shortHash(msgId)}`;
+          }
+          output.push({
+            type: "message",
+            role: "assistant",
+            content: [{ type: "output_text", text: textBlock.text, annotations: [] }],
+            status: "completed",
+            id: msgId,
+            phase: parsedSignature?.phase,
+          } satisfies ResponseOutputMessage);
+        } else if (block.type === "toolCall") {
+          const toolCall = block as ToolCall;
+          const [callId, itemIdRaw] = toolCall.id.split("|");
+          let itemId: string | undefined = itemIdRaw;
+          const itemIdPrefix = "fc_";
+          if (isDifferentModel || !itemId?.startsWith(itemIdPrefix)) {
+            itemId = undefined;
+          }
+          output.push({
+            type: "function_call",
+            id: itemId,
+            call_id: callId,
+            name: toolCall.name,
+            arguments: JSON.stringify(toolCall.arguments),
+            ...(isSameModel && toolCall.namespace !== undefined
+              ? { namespace: toolCall.namespace }
+              : {}),
+          });
+        }
+      }
+      if (output.length === 0) {
+        continue;
+      }
+      messages.push(...output);
+    } else if (msg.role === "toolResult") {
+      const [callId] = msg.toolCallId.split("|");
+      const output = convertToolResultOutput(model, msg.content);
+      messages.push({
+        type: "function_call_output",
+        call_id: callId,
+        output,
+      });
+    }
+  }
+  return messages;
+}
 /**
  * 将项目工具声明转换为 Responses 函数工具。
- * @param tools - 工具名称、说明及参数结构列表。
- * @returns 关闭 strict 的函数工具列表；空列表返回空数组。
+ * @param tools - 工具名称、说明和参数结构列表。
+ * @returns 保留名称、说明和参数结构且关闭 strict 的工具数组，没有工具时为空数组。
  */
-function convertResponsesTools(tools: readonly Tool[]): OpenAITool[] {
+function convertResponsesTools(tools: readonly Tool[]): FunctionTool[] {
   return tools.map(
     /**
-     * 转换单个工具的声明字段。
-     * @param tool - 待转换的项目工具。
-     * @returns 保留参数结构原引用的 Responses 函数工具。
+     * 将单个工具声明转换为关闭严格模式的 Responses 函数工具。
+     * @param tool - 需要转换的工具名称、说明和参数结构。
+     * @returns 保留名称、说明和参数结构，strict 为 false 的函数工具。
      */
-    (tool: Tool): OpenAITool => ({
+    (tool: Tool): FunctionTool => ({
       type: "function",
       name: tool.name,
       description: tool.description,
@@ -328,28 +433,46 @@ function convertResponsesTools(tools: readonly Tool[]): OpenAITool[] {
     }),
   );
 }
-
+type StreamingToolCall = ToolCall & {
+  partialJson?: string;
+};
+type ResponsesOutputSlot =
+  | {
+      type: "text";
+      block: TextContent;
+      contentIndex: number;
+    }
+  | {
+      type: "toolCall";
+      block: StreamingToolCall;
+      contentIndex: number;
+    };
+type ToolCallOutputSlot = Extract<
+  ResponsesOutputSlot,
+  {
+    type: "toolCall";
+  }
+>;
 /**
- * 读取 Responses 协议事件，累积文本和工具调用并校验结束状态。
- * @param openaiStream - 请求返回的 Responses 协议事件流。
- * @param output - 持续更新的助手消息，内容、响应标识及结束状态写入同一对象。
- * @param stream - 接收文本和工具调用的开始、增量与结束事件的事件流。
- * @returns Promise 完成后返回 stop、length 或 toolUse，供 runStream 发送 done 事件。
- * @throws 读取失败、协议错误、缺少终态事件、工具调用未结束或消息结束状态无效时拒绝 Promise。
- * @remarks
- * 按 output_index 关联内容块；内容完成事件保存文本签名或清理工具参数原文，本函数不发送 done 或 error。
- * length 允许保留未结束工具调用的部分参数，返回前移除内部原文，不补发工具结束事件。
+ * 读取 Responses 协议流并写入文本、工具调用及结束状态。
+ * @param openaiStream - 本次请求返回的 Responses 协议事件流。
+ * @param output - 持续更新的最终助手消息。
+ * @param stream - 接收文本和工具调用内容事件的事件流。
+ * @returns Promise 完成表示协议流已处理，内容及结束状态写入 output。
+ * @throws 协议报错、缺少终结响应或正常结束时仍有未完成工具调用时拒绝 Promise。
+ * @remarks 发送内容事件，不发送整体终结事件；保留截断参数并清理内部原文。
  */
-async function consumeCompletionStream(
+async function processResponsesStream(
   openaiStream: AsyncIterable<ResponseStreamEvent>,
   output: AssistantMessage,
   stream: AssistantMessageEventStream,
-): Promise<"stop" | "length" | "toolUse"> {
+): Promise<void> {
   let sawTerminalResponseEvent = false;
   const outputSlots = new Map<number, ResponsesOutputSlot>();
   /**
-   * 根据消息项的最终回答阶段更新消息结束状态。
-   * @param item - 当前处理的 Responses 输出项。
+   * 将最终回答阶段标记为正常结束。
+   * @param item - 服务端的响应输出项。
+   * @remarks 仅 message 类型且 phase 为 final_answer 时更新输出消息。
    */
   const applyMessagePhaseStopReason = (item: ResponseOutputItem): void => {
     if (item.type === "message" && item.phase === "final_answer") {
@@ -357,24 +480,37 @@ async function consumeCompletionStream(
     }
   };
   /**
-   * 按协议输出索引和内容类型获取已创建的槽位。
-   * @param outputIndex - Responses 的输出项索引。
-   * @param type - 调用方需要的槽位类型。
-   * @returns 类型匹配的槽位；未创建或类型不符时返回 undefined。
+   * 按输出项索引查找指定类型的内容槽。
+   * @param outputIndex - 服务端输出项的索引。
+   * @param type - 需要查找的内容槽类型。
+   * @returns 匹配类型的内容槽，不存在或类型不匹配时返回 undefined。
    */
   const getSlot = <TType extends ResponsesOutputSlot["type"]>(
     outputIndex: number,
     type: TType,
-  ): Extract<ResponsesOutputSlot, { type: TType }> | undefined => {
+  ):
+    | Extract<
+        ResponsesOutputSlot,
+        {
+          type: TType;
+        }
+      >
+    | undefined => {
     const slot = outputSlots.get(outputIndex);
     return slot?.type === type
-      ? (slot as Extract<ResponsesOutputSlot, { type: TType }>)
+      ? (slot as Extract<
+          ResponsesOutputSlot,
+          {
+            type: TType;
+          }
+        >)
       : undefined;
   };
   /**
-   * 为工具调用槽位发送参数增量事件。
-   * @param slot - 接收参数增量的工具调用槽位。
-   * @param delta - 参数原文增量；undefined 时不发送事件，空字符串仍会发送。
+   * 发送工具调用参数的增量事件。
+   * @param slot - 对应工具调用的内容槽。
+   * @param delta - 需要发送的参数原文增量。
+   * @remarks delta 为 undefined 时不发送事件，其余值保持原文。
    */
   const pushToolCallDelta = (slot: ToolCallOutputSlot, delta: string | undefined): void => {
     if (delta === undefined) {
@@ -388,11 +524,11 @@ async function consumeCompletionStream(
     });
   };
   /**
-   * 为文本消息或函数调用创建内容块和槽位，并发送对应开始事件。
-   * @param outputIndex - Responses 的输出项索引。
-   * @param item - 接口返回的输出项。
-   * @returns 新建的内容槽位；其他输出项类型返回 undefined。
-   * @remarks 新内容块加入 output.content，槽位保存索引供后续增量和结束事件使用。
+   * 为文本或工具输出项创建内容槽并发送开始事件。
+   * @param outputIndex - 服务端输出项的索引。
+   * @param item - 服务端的响应输出项。
+   * @returns 创建的内容槽，其他输出项类型返回 undefined。
+   * @remarks 内容块追加到最终消息，槽按服务端输出项索引登记。
    */
   const createSlot = (
     outputIndex: number,
@@ -417,6 +553,7 @@ async function consumeCompletionStream(
         id: `${item.call_id}|${item.id}`,
         name: item.name,
         arguments: {},
+        ...(item.namespace !== undefined ? { namespace: item.namespace } : {}),
         partialJson: item.arguments || "",
       };
       output.content.push(block);
@@ -431,25 +568,32 @@ async function consumeCompletionStream(
     }
     return undefined;
   };
+
   /**
-   * 根据终态响应更新响应标识、原始结束原因和项目消息状态。
-   * @param response - 完成或未完成事件中携带的响应。
-   * @remarks 标记已收到终态；正常完成且内容包含工具调用时改为 toolUse，并清除或更新错误说明。
+   * 从终结响应更新输出标识、结束原因和错误说明。
+   * @param response - 服务端的终结响应。
+   * @throws 响应状态不属于 SDK 定义时抛出异常。
+   * @remarks 标记已经收到终结事件；正常结束且存在工具调用时改为 toolUse。
    */
   const finalizeResponse = (
     response: Extract<
       ResponseStreamEvent,
-      { type: "response.completed" | "response.incomplete" }
+      {
+        type: "response.completed" | "response.incomplete";
+      }
     >["response"],
   ): void => {
     sawTerminalResponseEvent = true;
     if (response?.id) {
       output.responseId = response.id;
     }
-
     const status = response?.status;
     const incompleteDetails = response?.incomplete_details as
-      { reason?: unknown } | null | undefined;
+      | {
+          reason?: unknown;
+        }
+      | null
+      | undefined;
     const incompleteReason =
       typeof incompleteDetails?.reason === "string" ? incompleteDetails.reason : undefined;
     output.rawStopReason = incompleteReason ? `${status}.${incompleteReason}` : status;
@@ -460,19 +604,20 @@ async function consumeCompletionStream(
     } else {
       output.errorMessage = mappedStop.errorMessage;
     }
-    const hasToolCall = output.content.some(
-      /**
-       * 判断内容块是否为工具调用。
-       * @param b - 助手消息中的文本或工具调用块。
-       * @returns type 为 toolCall 时返回 true。
-       */
-      (b: TextContent | ToolCall): boolean => b.type === "toolCall",
-    );
-    if (hasToolCall && output.stopReason === "stop") {
+    if (
+      output.content.some(
+        /**
+         * 检查内容块是否为工具调用。
+         * @param b - 当前需要检查的协议内容块。
+         * @returns type 为 toolCall 时返回 true。
+         */
+        (b: TextContent | ToolCall): boolean => b.type === "toolCall",
+      ) &&
+      output.stopReason === "stop"
+    ) {
       output.stopReason = "toolUse";
     }
   };
-
   for await (const event of openaiStream) {
     if (event.type === "response.created") {
       output.responseId = event.response.id;
@@ -518,7 +663,6 @@ async function consumeCompletionStream(
       const previousPartialJson = slot.block.partialJson;
       slot.block.partialJson = event.arguments;
       slot.block.arguments = parseStreamingJson(slot.block.partialJson);
-
       if (event.arguments.startsWith(previousPartialJson)) {
         const delta = event.arguments.slice(previousPartialJson.length);
         if (delta.length > 0) {
@@ -529,18 +673,19 @@ async function consumeCompletionStream(
       const item = event.item;
       applyMessagePhaseStopReason(item);
       const slot = outputSlots.get(event.output_index) ?? createSlot(event.output_index, item);
-
       if (item.type === "message" && slot?.type === "text") {
-        const texts = item.content?.map(
-          /**
-           * 提取完成消息中的回答或拒绝文本。
-           * @param c - 已完成消息的文本或拒绝内容块。
-           * @returns 该块的文本原文，后续直接拼接。
-           */
-          (c: ResponseOutputMessage["content"][number]): string =>
-            c.type === "output_text" ? c.text : c.refusal,
-        );
-        slot.block.text = texts?.join("") || "";
+        slot.block.text =
+          item.content
+            ?.map(
+              /**
+               * 读取 Responses 文本或拒绝内容的原文。
+               * @param c - 待检查或提取原文的内容块。
+               * @returns 文本输出或拒绝说明。
+               */
+              (c: ResponseOutputMessage["content"][number]): string =>
+                c.type === "output_text" ? c.text : c.refusal,
+            )
+            .join("") || "";
         slot.block.textSignature = encodeTextSignatureV1(item.id, item.phase ?? undefined);
         stream.push({
           type: "text_end",
@@ -555,7 +700,9 @@ async function consumeCompletionStream(
         slot.block.partialJson !== undefined
       ) {
         slot.block.arguments = parseStreamingJson(item.arguments || slot.block.partialJson || "{}");
-
+        if (item.namespace !== undefined) {
+          slot.block.namespace = item.namespace;
+        }
         delete slot.block.partialJson;
         stream.push({
           type: "toolcall_end",
@@ -568,7 +715,7 @@ async function consumeCompletionStream(
     } else if (event.type === "response.completed" || event.type === "response.incomplete") {
       finalizeResponse(event.response);
     } else if (event.type === "error") {
-      throw new Error(`Error Code ${event.code}: ${event.message}` || "Unknown error");
+      throw new Error(`Error Code ${event.code}: ${event.message}`);
     } else if (event.type === "response.failed") {
       sawTerminalResponseEvent = true;
       output.rawStopReason = event.response?.status;
@@ -585,7 +732,6 @@ async function consumeCompletionStream(
   if (!sawTerminalResponseEvent) {
     throw new Error("OpenAI Responses stream ended before a terminal response event");
   }
-
   if (output.stopReason === "toolUse") {
     for (const block of output.content) {
       if (block.type !== "toolCall") {
@@ -599,24 +745,12 @@ async function consumeCompletionStream(
       }
     }
   }
-
-  if (output.stopReason === "pending") {
-    throw new Error("OpenAI Responses stream ended without a stop reason");
-  }
-  if (output.stopReason === "error") {
-    throw new Error(output.errorMessage || "An unknown error occurred");
-  }
-
-  // 截断的工具调用可能没有收到输出项结束事件；保留部分参数，但不将内部拼接原文作为业务字段返回。
   for (const block of output.content) {
     if (block.type === "toolCall") {
       delete (block as StreamingToolCall).partialJson;
     }
   }
-
-  return output.stopReason;
 }
-
 /**
  * 将 Responses 状态及未完成原因映射为项目消息结束状态。
  * @param status - 接口响应状态；省略时按 stop 映射。
@@ -628,7 +762,10 @@ async function consumeCompletionStream(
 function mapStopReason(
   status: OpenAI.Responses.ResponseStatus | undefined,
   incompleteReason?: string,
-): { stopReason: StopReason; errorMessage?: string } {
+): {
+  stopReason: StopReason;
+  errorMessage?: string;
+} {
   if (!status) {
     return { stopReason: "stop" };
   }
@@ -648,7 +785,6 @@ function mapStopReason(
     case "failed":
     case "cancelled":
       return { stopReason: "error" };
-
     case "in_progress":
     case "queued":
       return { stopReason: "stop" };
@@ -657,18 +793,4 @@ function mapStopReason(
       throw new Error(`Unhandled stop reason: ${_exhaustive}`);
     }
   }
-}
-
-/**
- * 将消息标识和可选阶段编码为版本 1 的文本签名。
- * @param id - Responses 消息项的标识。
- * @param phase - 可选的消息输出阶段。
- * @returns 包含 v、id 及非空 phase 的 JSON 字符串，用于回传助手历史。
- */
-function encodeTextSignatureV1(id: string, phase?: TextSignatureV1["phase"]): string {
-  const payload: TextSignatureV1 = { v: 1, id };
-  if (phase) {
-    payload.phase = phase;
-  }
-  return JSON.stringify(payload);
 }

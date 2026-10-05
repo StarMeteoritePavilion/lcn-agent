@@ -6,11 +6,18 @@ import { dirname, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test, type TestContext } from "node:test";
 import { loadSettings } from "../../src/base/settings.ts";
-import type { Api } from "../../src/ai/types.ts";
+import type { KnownApi } from "../../src/ai/types.ts";
 
 // 子进程加载与当前测试文件相同格式的模块，兼容源码及编译产物。
 const extension = extname(fileURLToPath(import.meta.url));
 const configUrl = new URL(`../../src/base/settings${extension}`, import.meta.url);
+
+/** 仅供测试使用的显式模型元数据。 */
+const modelMetadata: { name: string; input: ("text" | "image")[]; contextWindow: number } = {
+  name: "测试模型",
+  input: ["text", "image"],
+  contextWindow: 1000000,
+};
 
 /**
  * 创建测试配置及可选的环境文件，并注册清理。
@@ -69,7 +76,7 @@ function setEnv(t: TestContext, name: string, value?: string): void {
  */
 function settings(
   id: string = "模型",
-  api: Api = "openai-completions",
+  api: KnownApi = "openai-completions",
   maxTokens: number = 500000,
 ): ReturnType<typeof loadSettings> {
   return {
@@ -81,11 +88,73 @@ function settings(
         api,
         baseUrl: "https://example.invalid/v1",
         apiKey: "${API_KEY}",
-        models: [{ id, maxTokens }],
+        models: [{ ...modelMetadata, id, maxTokens }],
       },
     ],
   };
 }
+
+/**
+ * 验证显式模型元数据按原文保留，省略输入能力及窗口时补齐默认值，并拒绝非法值。
+ * @param t - 提供临时配置清理和环境恢复的测试上下文。
+ * @throws 元数据被修改、非法值未被拒绝或错误路径不符时抛出断言错误。
+ */
+test("模型元数据保留显式值并补齐默认输入能力和窗口", (t: TestContext): void => {
+  setEnv(t, "API_KEY", "测试密钥");
+  const config = settings();
+  const path = createConfig(t, config);
+  assert.deepEqual(
+    loadSettings(path).modelProviders[0].models[0],
+    config.modelProviders[0].models[0],
+  );
+  const original = config.modelProviders[0].models[0];
+  const omitted = {
+    ...config,
+    modelProviders: [
+      {
+        ...config.modelProviders[0],
+        models: [{ ...original, input: undefined, contextWindow: undefined }],
+      },
+    ],
+  };
+  writeFileSync(path, JSON.stringify(omitted));
+  assert.deepEqual(loadSettings(path).modelProviders[0].models[0], {
+    ...original,
+    input: ["text"],
+    contextWindow: 128000,
+  });
+  const cases: { field: "name" | "input" | "contextWindow"; values: unknown[] }[] = [
+    { field: "name", values: [undefined, "", " ", null, 1] },
+    { field: "input", values: [[], "image", ["Image"], ["audio"], [1], null] },
+    { field: "contextWindow", values: [0, -1, 1.5, "1000000", null] },
+  ];
+  for (const { field, values } of cases) {
+    for (const value of values) {
+      const model = { ...original, [field]: value };
+      const invalid = {
+        ...config,
+        modelProviders: [{ ...config.modelProviders[0], models: [model] }],
+      };
+      writeFileSync(path, JSON.stringify(invalid));
+      const expectedPath = `modelProviders[0].models[0].${field}`;
+      /**
+       * 验证显式无效元数据准确指向字段，不用默认值掩盖错误。
+       * @throws 配置元数据无效时抛出异常。
+       */
+      assert.throws(
+        (): void => {
+          loadSettings(path);
+        },
+        /**
+         * 检查异常包含准确的元数据字段路径。
+         * @param error - 配置加载抛出的异常。
+         * @returns 异常消息包含预期路径时返回 true。
+         */
+        (error: unknown): boolean => error instanceof Error && error.message.includes(expectedPath),
+      );
+    }
+  }
+});
 
 /**
  * 验证支持协议的模型默认生成上限均补齐为 16384，保留显式正整数并拒绝非法值。
@@ -94,7 +163,7 @@ function settings(
  */
 test("模型默认令牌上限省略时补齐并校验正整数", (t: TestContext): void => {
   setEnv(t, "API_KEY", "测试密钥");
-  const apis: Api[] = [
+  const apis: KnownApi[] = [
     "openai-completions",
     "anthropic-messages",
     "openai-responses",
@@ -103,12 +172,15 @@ test("模型默认令牌上限省略时补齐并校验正整数", (t: TestContex
   for (const api of apis) {
     const omitted = settings("模型", api);
     Object.assign(omitted.modelProviders[0], {
-      models: [{ id: "模型" }, { id: "其他模型", maxTokens: 1234 }],
+      models: [
+        { ...modelMetadata, id: "模型" },
+        { ...modelMetadata, id: "其他模型", maxTokens: 1234 },
+      ],
     });
     const omittedPath = createConfig(t, omitted);
     assert.deepEqual(loadSettings(omittedPath).modelProviders[0].models, [
-      { id: "模型", maxTokens: 16384 },
-      { id: "其他模型", maxTokens: 1234 },
+      { ...modelMetadata, id: "模型", maxTokens: 16384 },
+      { ...modelMetadata, id: "其他模型", maxTokens: 1234 },
     ]);
     for (const maxTokens of [1, 1234, 500000]) {
       const path = createConfig(t, settings("模型", api, maxTokens));
@@ -129,7 +201,7 @@ test("模型默认令牌上限省略时补齐并校验正整数", (t: TestContex
     }, /modelProviders\[0\]\.models\[0\]\.maxTokens/u);
   }
   const unselected = settings();
-  const other = { id: "其他模型", maxTokens: -1 };
+  const other = { ...modelMetadata, id: "其他模型", maxTokens: -1 };
   unselected.modelProviders[0].models.push(other);
   const unselectedPath = createConfig(t, unselected);
   /**
@@ -148,7 +220,7 @@ test("模型默认令牌上限省略时补齐并校验正整数", (t: TestContex
  */
 test("供应商协议必填且只接受支持的精确值", (t: TestContext): void => {
   setEnv(t, "API_KEY", "测试密钥");
-  const apis: Api[] = [
+  const apis: KnownApi[] = [
     "openai-completions",
     "anthropic-messages",
     "openai-responses",
@@ -218,7 +290,9 @@ test("配置校验与环境替换统一完成", (t: TestContext): void => {
   const path = createConfig(t, settings("${MODEL}"), 'API_KEY="文件密钥"\nMODEL=');
   const loaded = loadSettings(path);
   assert.equal(loaded.model, "进程模型");
-  assert.deepEqual(loaded.modelProviders[0].models, [{ id: "进程模型", maxTokens: 500000 }]);
+  assert.deepEqual(loaded.modelProviders[0].models, [
+    { ...modelMetadata, id: "进程模型", maxTokens: 500000 },
+  ]);
   assert.equal(loaded.modelProviders[0].apiKey, "文件密钥");
   assert.equal(process.env.API_KEY, "进程密钥");
   assert.equal(process.env.MODEL, "进程模型");
@@ -378,7 +452,7 @@ test("供应商数组按唯一名称选择", (t: TestContext): void => {
   const other = {
     ...config.modelProviders[0],
     name: "其他服务商",
-    models: [{ id: "其他模型", maxTokens: 500000 }],
+    models: [{ ...modelMetadata, id: "其他模型", maxTokens: 500000 }],
   };
   config.modelProviders.unshift(other);
   const path = createConfig(t, config, 'API_KEY="测试密钥"');
@@ -456,11 +530,11 @@ test("字段错误包含供应商及模型索引", (t: TestContext): void => {
  */
 test("拒绝仅存在于其他供应商的模型", (t: TestContext): void => {
   const config = settings("目标模型");
-  config.modelProviders[0].models = [{ id: "其他模型", maxTokens: 500000 }];
+  config.modelProviders[0].models = [{ ...modelMetadata, id: "其他模型", maxTokens: 500000 }];
   config.modelProviders.push({
     ...config.modelProviders[0],
     name: "其他服务商",
-    models: [{ id: "目标模型", maxTokens: 500000 }],
+    models: [{ ...modelMetadata, id: "目标模型", maxTokens: 500000 }],
   });
   const path = createConfig(t, config, 'API_KEY="测试密钥"');
   /**

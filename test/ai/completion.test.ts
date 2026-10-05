@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Type } from "typebox";
 import { stream as streamCompletion } from "../../src/ai/api/openai-completions.ts";
-import { completion } from "../../src/ai/index.ts";
+import { stream as streamModel, complete } from "../../src/ai/index.ts";
 import type {
   AssistantMessage,
   AssistantMessageEvent,
@@ -144,6 +144,7 @@ test("合法生成参数边界保持原值传递", async (): Promise<void> => {
         apiKey: "test-api-key",
         maxTokens: 1,
         temperature,
+        headers: { "x-test-override": "request-value", "x-test-remove": null },
         /**
          * 核对请求中的合法生成参数并返回正常结束响应。
          * @param _input - 客户端请求地址。
@@ -156,11 +157,16 @@ test("合法生成参数边界保持原值传递", async (): Promise<void> => {
           init?: Parameters<typeof globalThis.fetch>[1],
         ): Promise<Response> => {
           requests += 1;
+          const headers = new Headers(init?.headers);
+          assert.equal(headers.get("x-test-override"), "request-value");
+          assert.equal(headers.get("x-test-keep"), "keep-value");
+          assert.equal(headers.has("x-test-remove"), false);
           const body: unknown = JSON.parse(String(init?.body));
           assert.deepEqual(body, {
             model: model.id,
             messages: [],
             stream: true,
+            store: false,
             max_completion_tokens: 1,
             temperature,
           });
@@ -179,6 +185,14 @@ const model: Model<"openai-completions"> = {
   api: "openai-completions",
   provider: "测试服务商",
   baseUrl: "https://example.invalid/v1",
+  name: "测试模型",
+  input: ["text", "image"],
+  contextWindow: 1000000,
+  headers: {
+    "X-Test-Override": "model-value",
+    "X-Test-Keep": "keep-value",
+    "X-Test-Remove": "remove-value",
+  },
   maxTokens: 999,
 };
 
@@ -284,13 +298,13 @@ test("响应读取失败保留工具参数并清理内部拼接字段", async ()
 });
 
 /**
- * 验证补全包装接口返回事件流，并可通过 result() 等待完整消息。
+ * 验证统一流式接口同步返回事件流，并可通过 result() 等待完整消息。
  * @returns Promise 完成表示公开接口的返回类型和最终消息均已验证。
  * @throws 返回值或消息内容不符时抛出断言错误。
  */
 
-test("completion 返回事件流并通过 result 获取最终助手消息", async (): Promise<void> => {
-  const pending = completion(
+test("stream 同步返回事件流并通过 result 获取最终助手消息", async (): Promise<void> => {
+  const eventStream = streamModel(
     model,
     { messages: [] },
     {
@@ -306,8 +320,8 @@ test("completion 返回事件流并通过 result 获取最终助手消息", asyn
         ]),
     },
   );
-  assert.ok(pending instanceof Promise);
-  const eventStream = await pending;
+  assert.equal(eventStream instanceof Promise, false);
+  assert.equal(typeof eventStream[Symbol.asyncIterator], "function");
   const result = await eventStream.result();
   assert.deepEqual(result.content, [{ type: "text", text: "第一段第二段" }]);
   assert.equal(result.stopReason, "stop");
@@ -535,6 +549,7 @@ test("请求传递模型、认证、生成选项并按规则转换历史，不�
       assert.deepEqual(body, {
         model: "测试模型",
         stream: true,
+        store: false,
         messages: [
           { role: "system", content: "系统提示" },
           { role: "user", content: "用户输入" },
@@ -621,7 +636,7 @@ test("省略生成选项及传入零上限时不使用模型默认上限，空�
           init?: Parameters<typeof globalThis.fetch>[1],
         ): Promise<Response> => {
           const body: unknown = JSON.parse(String(init?.body));
-          assert.deepEqual(body, { model: "测试模型", messages: [], stream: true });
+          assert.deepEqual(body, { model: "测试模型", messages: [], stream: true, store: false });
           return response([{ choices: [{ delta: {}, finish_reason: "stop" }] }]);
         },
       },
@@ -770,9 +785,8 @@ test("缺失或空密钥通过错误事件完成结果且不发送请求", async
       assert.equal(events[0].error, result);
     }
   }
-  const omitted = completion(model, { messages: [] });
-  assert.ok(omitted instanceof Promise);
-  const omittedStream = await omitted;
+  const omittedStream = streamModel(model, { messages: [] });
+  assert.equal(omittedStream instanceof Promise, false);
   const omittedResult = await omittedStream.result();
   assert.equal(omittedResult.stopReason, "error");
   assert.equal(omittedResult.errorMessage, "No API key for provider: 测试服务商");
@@ -865,3 +879,38 @@ for (const reason of [null, "content_filter", "network_error", "未知原因"]) 
     }
   });
 }
+
+/**
+ * 验证完整回复接口直接返回最终消息，并将请求失败保留为错误消息。
+ * @returns Promise 完成表示成功和失败请求均获得对应最终消息。
+ * @throws 返回类型、请求次数或消息内容不符时抛出断言错误。
+ */
+test("complete 返回最终助手消息并保留错误结果", async (): Promise<void> => {
+  for (const failed of [false, true]) {
+    let requests = 0;
+    const resultPromise = complete(
+      model,
+      { messages: [] },
+      {
+        apiKey: failed ? undefined : "test-api-key",
+        /**
+         * 返回完整回复接口使用的文本增量和正常终态。
+         * @returns Promise 完成后返回本地模拟 SSE 响应。
+         */
+        fetch: async (): Promise<Response> => {
+          requests++;
+          return response([
+            { choices: [{ delta: { content: "完整回复" }, finish_reason: "stop" }] },
+          ]);
+        },
+      },
+    );
+    assert.ok(resultPromise instanceof Promise);
+    const result = await resultPromise;
+    assert.equal(result.role, "assistant");
+    assert.equal(requests, failed ? 0 : 1);
+    assert.equal(result.stopReason, failed ? "error" : "stop");
+    assert.deepEqual(result.content, failed ? [] : [{ type: "text", text: "完整回复" }]);
+    assert.equal(result.errorMessage, failed ? "No API key for provider: 测试服务商" : undefined);
+  }
+});

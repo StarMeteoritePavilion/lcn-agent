@@ -79,3 +79,11 @@
 
 - 显式设置 `moduleResolution: "NodeNext"` 和 `allowImportingTsExtensions: true`，继续通过 `rewriteRelativeImportExtensions` 转换构建产物中的相对导入扩展名。
 - 移除显式 `lib`，使用包含 `DOM` 的默认标准库；未设置 `skipLibCheck`，保留声明文件检查。源码、测试和运行环境保持原有职责。
+
+## 阶段 6 后的接口与演示整理
+
+- 统一入口改为 `stream(model, context, options)` 和 `complete(model, context, options)`：前者按四种协议同步返回 `AssistantMessageEventStream`，后者等待同一生成路径的最终 `AssistantMessage`，不再提供 `completion`。`done` 和 `error` 均完成结果 Promise，调用方仍须检查 `stopReason`。
+- 模型增加 `name`、`input` 和 `contextWindow`。配置必须提供 `name`；`input` 和 `contextWindow` 省略时分别补为 `["text"]` 和 128000；`maxTokens` 仍默认为 16384。加载器不按模型标识推断输入能力或令牌窗口，显式值均需通过校验。
+- 四种协议支持用户图片及工具结果图片，公共消息转换依据 `Model.input` 将不支持的图片替换为文本说明，不修改原上下文。入口的图片识别仍要求显式声明 `image`。
+- `ToolCall.arguments` 使用 `JsonObject`；`ToolResultMessage` 支持 JSON 结果详情及嵌套调用记录。类型表达不代替运行时检查，执行工具前仍深拷贝、转换并校验参数。
+- 入口导出 `runModelExamples`，使用独立上下文依次演示流式回复、完整回复、图片识别与有四轮上限的加法工具对话；流式文本实时输出，四项内容数组在全部调用完成后输出。直接运行时先读取当前工作目录中的 demo.png 并检查 PNG 文件签名，再发起请求。

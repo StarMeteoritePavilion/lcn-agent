@@ -1,7 +1,13 @@
 import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { parseEnv } from "node:util";
-import type { Api } from "../ai/types.ts";
+import type { KnownApi } from "../ai/types.ts";
+
+/** 配置省略输入能力时使用的默认声明，只包含文本输入。 */
+const DEFAULT_MODEL_INPUT = ["text"];
+
+/** 配置省略上下文窗口时使用的默认令牌数量。 */
+const DEFAULT_MODEL_CONTEXT_WINDOW = 128000;
 
 /** 配置省略模型上限时使用的默认生成预算，不代表服务端模型能力。 */
 const DEFAULT_MODEL_MAX_TOKENS = 16384;
@@ -10,6 +16,12 @@ const DEFAULT_MODEL_MAX_TOKENS = 16384;
 interface ModelConfig {
   /** 请求使用的模型标识。 */
   id: string;
+  /** 模型显示名称，按配置原文使用。 */
+  name: string;
+  /** 输入能力，只接受 text 和 image；配置省略时补为 ["text"]。 */
+  input: ("text" | "image")[];
+  /** 模型上下文窗口的令牌数量，必须是正整数；配置省略时补为 128000。 */
+  contextWindow: number;
   /** 模型默认生成令牌上限，必须是正整数；配置省略时补为 16384，服务端仍校验模型支持的上限。 */
   maxTokens: number;
 }
@@ -19,7 +31,7 @@ interface ProviderConfig {
   /** 唯一的供应商名称，用于与 provider 精确匹配。 */
   name: string;
   /** 本供应商全部模型使用的接口协议。 */
-  api: Api;
+  api: KnownApi;
   /** 接口基础地址，格式及协议由请求方处理。 */
   baseUrl: string;
   /** 经校验的非空 API 密钥；若使用整值环境变量占位符，必须完成替换。 */
@@ -67,8 +79,8 @@ function requireString(value: unknown, field: string): string {
  * @param value - 未校验的供应商配置。
  * @param field - 供应商在配置数组中的路径，用于定位错误。
  * @returns 仅包含声明字段的供应商配置，保留原始字符串与模型顺序。
- * @throws 字段类型无效、接口协议不受支持、模型上限不是正整数、字符串为空或占位符未替换时抛出包含字段路径的错误。
- * @remarks 模型配置省略 maxTokens 时补为 16384；显式提供的值必须通过校验，null 不视为省略。
+ * @throws 字段类型无效、接口协议不受支持、模型能力声明无效、令牌上限不是正整数、字符串为空或占位符未替换时抛出包含字段路径的错误。
+ * @remarks 模型配置省略 input、contextWindow、maxTokens 时分别补为 ["text"]、128000、16384；显式提供的值必须通过校验，null 不视为省略。
  */
 function parseProvider(value: unknown, field: string): ProviderConfig {
   if (!isRecord(value)) {
@@ -96,11 +108,32 @@ function parseProvider(value: unknown, field: string): ProviderConfig {
       throw new Error(`${modelField} 必须是模型对象。`);
     }
     const id = requireString(entry.id, `${modelField}.id`);
+    const modelName = requireString(entry.name, `${modelField}.name`);
+    const configuredInput = entry.input === undefined ? DEFAULT_MODEL_INPUT : entry.input;
+    if (!Array.isArray(configuredInput) || configuredInput.length === 0) {
+      throw new Error(`${modelField}.input 必须是非空数组，只接受 text 和 image。`);
+    }
+    const input: ModelConfig["input"] = [];
+    for (const kind of configuredInput) {
+      if (kind !== "text" && kind !== "image") {
+        throw new Error(`${modelField}.input 只接受 text 和 image。`);
+      }
+      input.push(kind);
+    }
+    const contextWindow =
+      entry.contextWindow === undefined ? DEFAULT_MODEL_CONTEXT_WINDOW : entry.contextWindow;
+    if (
+      typeof contextWindow !== "number" ||
+      !Number.isInteger(contextWindow) ||
+      contextWindow <= 0
+    ) {
+      throw new Error(`${modelField}.contextWindow 必须是正整数。`);
+    }
     const maxTokens = entry.maxTokens === undefined ? DEFAULT_MODEL_MAX_TOKENS : entry.maxTokens;
     if (typeof maxTokens !== "number" || !Number.isInteger(maxTokens) || maxTokens <= 0) {
       throw new Error(`${modelField}.maxTokens 必须是正整数。`);
     }
-    models.push({ id, maxTokens });
+    models.push({ id, name: modelName, input, contextWindow, maxTokens });
   }
 
   const baseUrl = requireString(value.baseUrl, `${field}.baseUrl`);
@@ -184,6 +217,7 @@ function loadSettingsFromFile(settingPath: string): Record<string, unknown> {
  * 供应商名称必须唯一；所选供应商必须包含所选模型，模型列表本身不检查重复标识。
  * 每个供应商必须显式声明 api，只接受 openai-completions、anthropic-messages、openai-responses 或 google-generative-ai，不按名称或模型推断协议。
  * 每个模型的 maxTokens 可省略，省略时补为 16384；显式值必须是正整数，返回配置始终包含此字段。
+ * 每个模型必须显式提供 name；input 和 contextWindow 省略时分别补为 ["text"] 和 128000，不按模型标识推断能力。
  * maxTokens 作为模型的默认生成预算，不推断服务端的模型能力。
  * 本模块不输出配置或密钥；字段校验错误只描述字段路径和约束，文件读取及 JSON 解析异常按原样传递。
  */

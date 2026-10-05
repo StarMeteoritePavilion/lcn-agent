@@ -11,11 +11,12 @@
 
 本文保留 pi 学习基准 `200387122ca450d6387f033949423114a270b96c` 的设计讲解。
 原始学习记录中的工作区 HEAD 为 `b2b5c42f6138b73ec4b2f49ec0ca468800f88586`，不代表当前项目版本。
-下表链接指向本项目当前实现；正文中的 `complete`、`streamSimple`、`lazyStream`、
+下表链接指向本项目当前实现；正文中的 `streamSimple`、`lazyStream`、
 推理、用量和取消能力属于 pi 基准。本项目已实现文本与工具调用事件，以及有四轮上限的加法工具闭环。
-本地 `completion(model, context, options)` 按 `model.api` 分发至 OpenAI Chat Completions、Anthropic Messages、OpenAI Responses 或 Google Generative AI，
-返回 `Promise<AssistantMessageEventStream>`；取得事件流后消费增量，最终消息通过同一流的 `result()` 获取。
-四个协议模块的 `stream` 则同步返回事件流；入口当前只等待最终消息，不消费增量。
+本地 `stream(model, context, options)` 按 `model.api` 分发至 OpenAI Chat Completions、Anthropic Messages、OpenAI Responses 或 Google Generative AI，
+同步返回 `AssistantMessageEventStream`；调用方可消费增量，并通过同一流的 `result()` 等待最终消息。
+本地 `complete(model, context, options)` 复用 `stream(...).result()`，返回 `Promise<AssistantMessage>`。
+入口先实时输出流式回复，再执行完整回复、图片识别及最多四轮的工具对话。
 
 | 文件                                                                | 本文关注的内容                                   |
 | ------------------------------------------------------------------- | ------------------------------------------------ |
@@ -25,7 +26,7 @@
 | [openai-responses.ts](../../src/ai/api/openai-responses.ts)         | Responses 输出项如何转换为助手事件               |
 | [anthropic-messages.ts](../../src/ai/api/anthropic-messages.ts)     | SSE 协议事件如何转换为助手事件                   |
 | [google-generative-ai.ts](../../src/ai/api/google-generative-ai.ts) | Google 文本、函数调用和签名如何转换为助手事件    |
-| [index.ts](../../src/ai/index.ts)                                   | 本地 `completion` 如何分发请求并返回事件流       |
+| [index.ts](../../src/ai/index.ts)                                   | 本地 `stream` 分发及 `complete` 等待最终消息     |
 | [event-stream.test.ts](../../test/ai/utils/event-stream.test.ts)    | FIFO、等待者顺序、结束与结果的本地测试           |
 
 pi 基准中的 `packages/ai/src/models.ts` 和 `packages/ai/src/api/lazy.ts` 分别用于讲解
@@ -126,7 +127,7 @@ async function showResponse(stream: AssistantMessageEventStream): Promise<void> 
   }
 
   const message = await stream.result();
-  if (message.stopReason === "error") {
+  if (message.stopReason === "error" || message.stopReason === "aborted") {
     console.error(message.errorMessage ?? message.stopReason);
     return;
   }
@@ -136,7 +137,7 @@ async function showResponse(stream: AssistantMessageEventStream): Promise<void> 
 ```
 
 也可以完全不遍历事件，直接 `await stream.result()`。
-基准 `models.ts` 中的 `complete` 正是调用 `this.stream(model, context, options).result()`。
+本地 `index.ts` 中的 `complete` 调用 `stream(model, context, options).result()`；基准 `models.ts` 使用 `this.stream(model, context, options).result()`。
 它复用相同生成路径，没有为了“只要最终结果”再维护一套非流式协议实现。
 
 这两个入口不是两次请求。对同一个流对象多次调用 `result()`，得到的是同一个内部 Promise。
@@ -450,7 +451,7 @@ stream(model, context, options)
     创建客户端、构造请求并等待响应
     push(start)
     遍历 SDK chunk
-      更新 output 内容／用量／元数据
+      更新 output 内容及响应元数据
       push 对应公共事件
     检查终止状态
     push(done) 或在捕获错误后 push(error)

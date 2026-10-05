@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import { Type } from "typebox";
 import { stream } from "../../src/ai/api/google-generative-ai.ts";
-import { completion } from "../../src/ai/index.ts";
+import { stream as streamModel } from "../../src/ai/index.ts";
 import type {
   AssistantMessage,
   AssistantMessageEvent,
@@ -18,6 +18,14 @@ const model: Model<"google-generative-ai"> = {
   provider: "测试服务商",
   id: "gemini-3.8-flash-high",
   baseUrl: "https://example.invalid",
+  name: "测试模型",
+  input: ["text", "image"],
+  contextWindow: 1000000,
+  headers: {
+    "X-Test-Override": "model-value",
+    "X-Test-Keep": "keep-value",
+    "X-Test-Remove": "remove-value",
+  },
   maxTokens: 999,
 };
 
@@ -197,12 +205,14 @@ test("Google 请求与响应事件保持现有行为", async (t: TestContext): P
         "https://example.invalid/models/gemini-3.8-flash-high:streamGenerateContent?alt=sse",
       );
       assert.equal(request.headers.get("x-goog-api-key"), "test-api-key");
+      assert.equal(request.headers.get("x-test-override"), "request-value");
+      assert.equal(request.headers.get("x-test-keep"), "keep-value");
+      assert.equal(request.headers.has("x-test-remove"), false);
       const body = await request.json();
       assert.deepEqual(body, {
         contents: [{ role: "user", parts: [{ text: "测试" }] }],
         generationConfig: { temperature: 0, maxOutputTokens: 0 },
         systemInstruction: { parts: [{ text: "中文回答" }], role: "user" },
-        toolConfig: { functionCallingConfig: { mode: "NONE" } },
       });
       let data = "";
       for (const chunk of scenario.chunks) {
@@ -223,6 +233,7 @@ test("Google 请求与响应事件保持现有行为", async (t: TestContext): P
         maxTokens: 0,
         temperature: 0,
         toolChoice: "none",
+        headers: { "x-test-override": "request-value", "x-test-remove": null },
         fetch: scenario.customFetch ? customFetch : globalThis.fetch,
       },
     );
@@ -309,7 +320,7 @@ test("Google 无效生成参数和工具选择在请求前被拒绝", async (t: 
 });
 
 /**
- * 验证 completion 分发 Google 请求，历史回传只复用同来源有效签名并合并工具结果。
+ * 验证 stream 分发 Google 请求，历史回传只复用同来源有效签名并合并工具结果。
  * @param t - 提供全局 fetch 恢复的测试上下文。
  * @returns Promise 完成表示历史、工具声明、缺省生成选项及上下文不变均已验证。
  * @throws 请求字段、消息转换或原始上下文不符时抛出断言错误。
@@ -442,7 +453,7 @@ test("Google 历史转换保留工具签名与调用关联并合并结果", asyn
       headers: { "content-type": "text/event-stream" },
     });
   };
-  const eventStream = await completion(model, context, { apiKey: "test-api-key" });
+  const eventStream = streamModel(model, context, { apiKey: "test-api-key" });
   const result = await eventStream.result();
   assert.equal(requests, 1);
   assert.equal(result.stopReason, "stop", result.errorMessage);

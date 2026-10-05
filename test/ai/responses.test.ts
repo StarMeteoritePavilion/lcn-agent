@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { stream } from "../../src/ai/api/openai-responses.ts";
-import { completion } from "../../src/ai/index.ts";
+import { stream as streamModel } from "../../src/ai/index.ts";
 import type {
   AssistantMessage,
   AssistantMessageEvent,
@@ -17,6 +17,14 @@ const model: Model<"openai-responses"> = {
   provider: "测试服务商",
   id: "测试模型",
   baseUrl: "https://example.invalid/v1",
+  name: "测试模型",
+  input: ["text", "image"],
+  contextWindow: 1000000,
+  headers: {
+    "X-Test-Override": "model-value",
+    "X-Test-Keep": "keep-value",
+    "X-Test-Remove": "remove-value",
+  },
   maxTokens: 999,
 };
 
@@ -216,6 +224,7 @@ test("Responses 请求与响应事件保持现有行为", async (): Promise<void
         apiKey: scenario.noKey ? undefined : "test-api-key",
         maxTokens: 1,
         temperature: 0,
+        headers: { "x-test-override": "request-value", "x-test-remove": null },
         toolChoice: "none",
         /**
          * 验证请求参数并回放本地事件，不访问网络。
@@ -231,6 +240,9 @@ test("Responses 请求与响应事件保持现有行为", async (): Promise<void
           requests++;
           assert.equal(String(input), "https://example.invalid/v1/responses");
           const headers = new Headers(init?.headers);
+          assert.equal(headers.get("x-test-override"), "request-value");
+          assert.equal(headers.get("x-test-keep"), "keep-value");
+          assert.equal(headers.has("x-test-remove"), false);
           assert.equal(headers.get("authorization"), "Bearer test-api-key");
           const bodyParams: unknown = JSON.parse(String(init?.body));
           assert.deepEqual(bodyParams, {
@@ -327,7 +339,7 @@ test("Responses 无效生成参数在请求前被拒绝", async (): Promise<void
 });
 
 /**
- * 验证 completion 分发 Responses 请求，历史转换压缩长签名并保留阶段和工具结果关联。
+ * 验证 stream 分发 Responses 请求，历史转换压缩长签名并保留阶段和工具结果关联。
  * @returns Promise 完成表示历史转换、上下文不变和零值或省略生成上限的语义均已验证。
  * @throws 请求内容、原始上下文或最终状态不符时抛出断言错误。
  */
@@ -370,7 +382,7 @@ test("Responses 历史转换保留签名和工具关联并压缩长消息标识"
   };
   const original = structuredClone(context);
   for (const maxTokens of [undefined, 0]) {
-    const eventStream = await completion(model, context, {
+    const eventStream = streamModel(model, context, {
       apiKey: "test-api-key",
       maxTokens,
       /**

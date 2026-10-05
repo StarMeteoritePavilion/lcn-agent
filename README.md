@@ -1,19 +1,19 @@
 # lcn-agent
 
-使用 TypeScript 开发的 Agent 项目，已完成阶段 6 的 Google Generative AI 接入。现有入口从本地配置选择模型，按供应商配置选择 OpenAI Chat Completions、Anthropic Messages、OpenAI Responses 或 Google Generative AI 协议发送加法请求，校验并执行模型返回的工具调用，携带工具结果继续请求，最后输出助手内容。
+使用 TypeScript 开发的 Agent 项目，已完成阶段 6 的 Google Generative AI 接入。现有入口从本地配置选择模型，按供应商配置选择 OpenAI Chat Completions、Anthropic Messages、OpenAI Responses 或 Google Generative AI 协议，依次演示流式回复、完整回复、图片识别和加法工具调用，输出各项结果。
 
 ## 当前能力
 
 - 从 `setting.json` 加载供应商和模型配置，支持 `${key}` 环境变量替换。
 - 按供应商名称与模型标识精确选择模型，供应商通过 `api` 显式选择接口协议，模型通过 `maxTokens` 配置默认生成预算。
 - 使用 OpenAI、Anthropic 或 Google SDK 发起流式请求，Anthropic 响应由本地 SSE 解析器读取，将文本及工具调用的开始、增量、结束和请求终态转换为助手事件。
-- `completion(model, context, options)` 按 `model.api` 分发请求，返回 `Promise<AssistantMessageEventStream>`；获得事件流后可读取增量事件，或调用 `result()` 等待最终消息。
-- 声明工具参数，容错解析累积的 JSON 参数，执行前按工具名称精确查找并使用 TypeBox 转换、校验参数副本。
+- `stream(model, context, options)` 按 `model.api` 分发请求，返回可异步迭代的助手事件流；`complete(model, context, options)` 返回最终助手消息的 Promise。
+- 工具参数以 `JsonObject` 表达，容错解析累积的 JSON 参数，执行前按工具名称精确查找并使用 TypeBox 转换、校验参数副本；JSON 解析及类型声明不能替代执行前校验。
 - Google 保留文本及工具的思考签名，历史回传须来自相同供应商和模型并符合签名格式；不输出思考文本。
 - 入口执行 `add` 工具，将助手消息和带 `toolCallId` 的结果加入历史，最多请求四轮。
 - 提供配置、启动入口、四种协议的补全接口、事件流、参数解析和校验的自动化测试，无需真实 API 密钥。
 
-目前发送固定提示“请调用 add 计算 17 加 25。”，不接收命令行提示词。入口等待最终消息，不实时输出增量；交互聊天、通用 Agent 执行循环、终端界面、MCP 和 Skills 尚未实现。
+入口使用固定提示词和当前工作目录中的 `demo.png`，通过 `runModelExamples` 统一调用四个方法；流式回复实时输出文本增量，工具对话最多四轮。运行前准备该 PNG 图片；入口在任何请求之前读取图片并检查 PNG 文件签名。交互聊天、通用 Agent 执行循环、终端界面、MCP 和 Skills 尚未实现。
 
 ## 快速启动
 
@@ -34,7 +34,7 @@
    cp .env.example .env
    ```
 
-3. 编辑 `.env`，填写服务提供方给出的 `BASE_URL` 和 `API_KEY`。示例域名 `example.invalid` 无法用于真实请求。编辑 `setting.json`，将顶层 `model` 和对应供应商的 `models[].id` 设置为该服务实际支持的模型标识。为每个供应商设置 `api`，使用 `openai-completions`、`anthropic-messages`、`openai-responses` 或 `google-generative-ai`，基础地址须与所选协议对应。模型条目的 `maxTokens` 可省略，省略时补为 16384；显式提供时必须是正整数。示例中的模型名称不保证被你的服务支持。
+3. 编辑 `.env`，填写服务提供方给出的 `BASE_URL` 和 `API_KEY`。示例域名 `example.invalid` 无法用于真实请求。编辑 `setting.json`，将顶层 `model` 和对应供应商的 `models[].id` 设置为该服务实际支持的模型标识。为每个供应商设置 `api`，使用 `openai-completions`、`anthropic-messages`、`openai-responses` 或 `google-generative-ai`，基础地址须与所选协议对应。模型条目必须提供 `name`；`input` 可省略，默认 `["text"]`，图片识别要求显式包含 `image`；`contextWindow` 可省略，默认 128000 tokens；`maxTokens` 可省略，省略时补为 16384；显式提供时必须是正整数。示例中的模型名称不保证被你的服务支持。
 
 4. 在项目根目录构建并运行：
 
@@ -43,7 +43,7 @@
    node dist/main.js
    ```
 
-成功时终端输出首个不含工具调用的助手内容数组。配置加载失败时输出中文提示；请求失败、工具不存在、参数校验失败或第四轮仍包含工具调用时抛出异常，由 Node.js 输出错误并以非零状态退出。运行入口会调用你配置的模型服务；自动化测试使用模拟响应。
+成功时终端实时输出流式文本，再分别输出完整回复、流式回复、图片识别和工具调用的助手内容数组。配置加载失败时输出中文提示；请求失败、工具不存在、参数校验失败或第四轮仍包含工具调用时抛出异常，由 Node.js 输出错误并以非零状态退出。运行入口会调用你配置的模型服务；自动化测试使用模拟响应。
 
 ## 配置
 
@@ -67,22 +67,23 @@ npm run verify
 
 ## 目录与规划
 
-| 路径                                 | 当前职责                                   |
-| ------------------------------------ | ------------------------------------------ |
-| `src/main.ts`                        | 加载配置、校验并执行加法工具、输出最终内容 |
-| `src/base/settings.ts`               | 配置读取、环境变量替换及业务校验           |
-| `src/ai/index.ts`                    | 按协议分发请求，提供助手消息事件流         |
-| `src/ai/api/anthropic-messages.ts`   | 处理 Anthropic 消息请求和 SSE 协议事件     |
-| `src/ai/api/openai-completions.ts`   | 转换历史、请求模型并产生助手事件           |
-| `src/ai/api/google-generative-ai.ts` | Google 内容、函数调用及思考签名转换        |
-| `src/ai/api/openai-responses.ts`     | Responses 输入、输出项及终态事件转换       |
-| `src/ai/utils/hash.ts`               | 缩短过长的 Responses 历史消息标识          |
-| `src/ai/types.ts`                    | 模型、上下文、消息、选项及事件类型         |
-| `src/ai/utils/event-stream.ts`       | 事件队列、异步迭代及最终结果 Promise       |
-| `src/ai/utils/json-parse.ts`         | 流式工具参数的容错解析                     |
-| `src/ai/utils/validation.ts`         | 工具名称匹配、参数转换及校验               |
-| `test/`                              | 配置、入口、补全接口、事件流及工具参数测试 |
-| `docs/`                              | 使用说明、设计学习资料及协议研究           |
+| 路径                                 | 当前职责                                         |
+| ------------------------------------ | ------------------------------------------------ |
+| `src/main.ts`                        | 加载配置，统一调用流式、完整回复、图片及工具功能 |
+| `src/base/settings.ts`               | 配置读取、环境变量替换及业务校验                 |
+| `src/ai/index.ts`                    | 按协议分发请求，提供事件流和最终消息             |
+| `src/ai/api/anthropic-messages.ts`   | 处理 Anthropic 消息请求和 SSE 协议事件           |
+| `src/ai/api/openai-completions.ts`   | 转换历史、请求模型并产生助手事件                 |
+| `src/ai/api/google-generative-ai.ts` | Google 内容、函数调用及思考签名转换              |
+| `src/ai/api/openai-responses.ts`     | Responses 输入、输出项及终态事件转换             |
+| `src/ai/api/transform-messages.ts`   | 按声明的输入能力处理用户与工具结果图片           |
+| `src/ai/utils/hash.ts`               | 缩短过长的 Responses 历史消息标识                |
+| `src/ai/types.ts`                    | 模型、上下文、消息、选项及事件类型               |
+| `src/ai/utils/event-stream.ts`       | 事件队列、异步迭代及最终结果 Promise             |
+| `src/ai/utils/json-parse.ts`         | 流式工具参数的容错解析                           |
+| `src/ai/utils/validation.ts`         | 工具名称匹配、参数转换及校验                     |
+| `test/`                              | 配置、入口、补全接口、事件流及工具参数测试       |
+| `docs/`                              | 使用说明、设计学习资料及协议研究                 |
 
 后续架构方向是由顶层装配独立能力模块，逐步加入 Agent 执行循环、终端界面及其他扩展能力。当前不提前建立未实现模块，也不作为 SDK 发布。
 

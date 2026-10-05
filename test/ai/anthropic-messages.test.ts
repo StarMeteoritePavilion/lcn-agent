@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Type } from "typebox";
 import { stream } from "../../src/ai/api/anthropic-messages.ts";
-import { completion } from "../../src/ai/index.ts";
+import { stream as streamModel } from "../../src/ai/index.ts";
 import type { AssistantMessageEvent, Context, Model } from "../../src/ai/types.ts";
 
 /** 用于模拟协议事件的测试数据，允许省略本模块不读取的字段。 */
@@ -13,6 +13,14 @@ const model: Model<"anthropic-messages"> = {
   provider: "测试服务商",
   id: "测试模型",
   baseUrl: "https://example.invalid",
+  name: "测试模型",
+  input: ["text", "image"],
+  contextWindow: 1000000,
+  headers: {
+    "X-Test-Override": "model-value",
+    "X-Test-Keep": "keep-value",
+    "X-Test-Remove": "remove-value",
+  },
   maxTokens: 999,
 };
 
@@ -224,6 +232,7 @@ test("Anthropic 请求和响应处理保持文本、工具与错误事件行为"
         apiKey: "test-api-key",
         maxTokens: 100,
         temperature: 0,
+        headers: { "x-test-override": "request-value", "x-test-remove": null },
         toolChoice: "auto",
         /**
          * 核对请求参数并返回本地模拟响应。
@@ -239,6 +248,9 @@ test("Anthropic 请求和响应处理保持文本、工具与错误事件行为"
           requests += 1;
           assert.equal(String(input), "https://example.invalid/v1/messages?beta=true");
           const headers = new Headers(init?.headers);
+          assert.equal(headers.get("x-test-override"), "request-value");
+          assert.equal(headers.get("x-test-keep"), "keep-value");
+          assert.equal(headers.has("x-test-remove"), false);
           assert.equal(headers.get("x-api-key"), "test-api-key");
           const body: unknown = JSON.parse(String(init?.body));
           assert.deepEqual(body, {
@@ -536,9 +548,9 @@ test("Anthropic 无效配置在请求前被拒绝", async (): Promise<void> => {
  * @returns Promise 完成表示合法请求均返回最终助手消息，并保留预期请求参数。
  * @throws 参数传递、结束结果或未知接口处理不符时抛出断言错误。
  */
-test("completion 分发 Anthropic 请求并提供最终结果，拒绝未知接口", async (): Promise<void> => {
+test("stream 分发 Anthropic 请求并提供最终结果，拒绝未知接口", async (): Promise<void> => {
   for (const maxTokens of [undefined, 0, 1]) {
-    const eventStream = await completion(
+    const eventStream = streamModel(
       model,
       { messages: [] },
       {
@@ -574,7 +586,16 @@ test("completion 分发 Anthropic 请求并提供最终结果，拒绝未知接�
   }
   const invalidModel = { ...model };
   Object.assign(invalidModel, { api: "未支持接口" });
-  await assert.rejects(completion(invalidModel, { messages: [] }), /不支持的模型接口类型/);
+  assert.throws(
+    /**
+     * 通过统一流式接口拒绝运行时未支持的协议标识。
+     * @throws 模型 api 未支持时抛出异常。
+     */
+    (): void => {
+      streamModel(invalidModel, { messages: [] });
+    },
+    /不支持的模型接口类型/,
+  );
 });
 
 /**
@@ -716,7 +737,7 @@ test("Anthropic 历史转换保留消息顺序并合并连续工具结果", asyn
     ],
   };
   const original = structuredClone(context);
-  const eventStream = await completion(model, context, {
+  const eventStream = streamModel(model, context, {
     apiKey: "test-api-key",
     /**
      * 核对转换后的历史消息并返回正常结束响应。

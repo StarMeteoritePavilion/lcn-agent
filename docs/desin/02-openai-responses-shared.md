@@ -20,25 +20,25 @@
 | 文件                                                        | 当前职责                                               |
 | ----------------------------------------------------------- | ------------------------------------------------------ |
 | [openai-responses.ts](../../src/ai/api/openai-responses.ts) | 请求构造、Responses 历史与工具转换、输出槽位和终态处理 |
-| [index.ts](../../src/ai/index.ts)                           | 按四种 `model.api` 分发并返回事件流的 Promise          |
+| [index.ts](../../src/ai/index.ts)                           | 按四种 `model.api` 同步分发事件流及等待最终消息        |
 | [types.ts](../../src/ai/types.ts)                           | 公共消息、文本签名、响应标识与助手事件                 |
 | [hash.ts](../../src/ai/utils/hash.ts)                       | 将过长的历史消息项标识转换为确定性短标识               |
 | [responses.test.ts](../../test/ai/responses.test.ts)        | 模拟请求、事件回放、历史转换及错误边界                 |
 
 ### 1.1 本地实现与原记录的区别
 
-| 关注点   | 原 pi 学习记录                                                  | 本地实现                                                                                          |
-| -------- | --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
-| 模块组织 | 多个 Responses 入口使用 shared 模块                             | 单一 `openai-responses.ts`，没有 shared 文件                                                      |
-| 转换函数 | shared 导出 `convertResponsesMessages`、`convertResponsesTools` | 同名函数保持模块私有，只由本模块构造请求时调用                                                    |
-| 事件处理 | shared 的 `processResponsesStream`                              | 本地私有 `consumeCompletionStream`，接收事件流、助手消息与公共事件流                              |
-| 调用入口 | 原记录包含多个连接和传输入口                                    | `completion` 返回 `Promise<AssistantMessageEventStream>`；协议 `stream` 同步返回事件流            |
-| 请求能力 | 原记录讨论认证、取消、用量及其他能力                            | 支持密钥、`maxTokens`、`temperature`、`fetch` 及协议模块的 `toolChoice`；没有取消、推理或用量事件 |
+| 关注点   | 原 pi 学习记录                                                  | 本地实现                                                                                                     |
+| -------- | --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| 模块组织 | 多个 Responses 入口使用 shared 模块                             | 单一 `openai-responses.ts`，没有 shared 文件                                                                 |
+| 转换函数 | shared 导出 `convertResponsesMessages`、`convertResponsesTools` | 同名函数保持模块私有，只由本模块构造请求时调用                                                               |
+| 事件处理 | shared 的 `processResponsesStream`                              | 本地私有 `processResponsesStream`，处理输出项、助手消息与公共事件流                                          |
+| 调用入口 | 原记录包含多个连接和传输入口                                    | `stream` 同步返回事件流；`complete` 返回最终助手消息的 Promise                                               |
+| 请求能力 | 原记录讨论认证、取消、用量及其他能力                            | 支持密钥、`headers`、`maxTokens`、`temperature`、`fetch` 及协议模块的 `toolChoice`；没有取消、推理或用量事件 |
 
 本地 `buildParams` 将上下文转为 `input`，设置 `stream: true`、`store: false`，
 工具使用 `strict: false`；请求禁用自动重试。请求上限校验为非负有限整数，
 正值发送为 `max_output_tokens` 并提升到至少 16，省略或为 0 时不设置，也不读取 `Model.maxTokens`。
-温度校验为 0 到 2 之间的有限数值。`OpenAIResponsesOptions` 和 `TextSignatureV1` 都是内部类型。
+温度校验为 0 到 2 之间的有限数值。调用方通过 `OpenAIResponsesOptions` 指定该协议的请求选项；`TextSignatureV1` 描述文本签名结构。
 
 本地 `outputSlots` 按协议 `output_index` 关联文本或工具内容块，其 `contentIndex` 指向助手内容数组。
 `response.function_call_arguments.done` 用最终原文替换累计参数；
@@ -46,7 +46,8 @@
 `response.output_item.done` 完成文本签名或工具参数，发送内容结束事件并删除槽位。
 
 `ToolCall.id` 保存为 `call_id|item.id`，工具结果回填时只取 `call_id`；
-历史 `function_call.id` 仅在模型标识与请求一致且输出项标识以 `fc_` 开头时保留。
+历史 `function_call.id` 要求输出项标识以 `fc_` 开头；供应商与协议均相同但模型标识不同时清除该标识。
+工具的 `namespace` 仅在供应商、协议及模型标识全部一致时回传。
 文本 `textSignature` 保存 `{ v: 1, id, phase? }` 的 JSON 字符串，历史转换也接受旧版纯字符串标识；
 缺失标识使用 `msg_pi_` 前缀的本地回退标识，超过 64 字符的标识通过 `shortHash` 缩短。
 该散列不提供密码学安全或唯一性保证。`responseId` 只记录响应标识，没有自动会话续接。
@@ -678,7 +679,7 @@ shared 处理器也会直接修改 `output` 并推送公共事件。
 ## 15. 本地验证方式与范围
 
 当前实现依据本项目源码核对；第 2 至 14 节的 pi 摘录保留原文来源说明，未重新核验固定基准。
-本地测试通过公开 `stream` 或 `completion` 和 `options.fetch` 模拟 SSE 响应，
+本地测试通过公开 `stream`、`complete` 和 `options.fetch` 模拟 SSE 响应，
 检查请求、公共事件及同一流的 `result()`，不为测试导出私有处理器。
 
 在仓库根目录运行 `npm test`，Responses 测试涵盖文本与工具事件、最终参数补齐、
