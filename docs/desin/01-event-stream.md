@@ -9,19 +9,22 @@
 
 ## 1. 阅读基准与源码入口
 
-本文沿用学习基准 `200387122ca450d6387f033949423114a270b96c`。
-编写时工作区 HEAD 为 `b2b5c42f6138b73ec4b2f49ec0ca468800f88586`，
-`event-stream.ts`、`types.ts`、`openai-completions.ts` 与该基准一致。
-`models.ts` 的说明按固定提交核查，本地链接打开的是工作区版本。
+本文保留 pi 学习基准 `200387122ca450d6387f033949423114a270b96c` 的设计讲解。
+原始学习记录中的工作区 HEAD 为 `b2b5c42f6138b73ec4b2f49ec0ca468800f88586`，不代表当前项目版本。
+下表链接指向本项目阶段 2 的实现；正文中的 `complete`、`streamSimple`、`lazyStream`、
+推理、工具、用量和取消能力属于 pi 基准，本项目目前仅实现文本事件流及固定三轮对话。
+本地接口为 `completion(model, context, options)`，返回事件流，最终消息通过同一对象的 `result()` 获取。
 
-| 文件 | 本文关注的内容 |
-| --- | --- |
-| [event-stream.ts](../../packages/ai/src/utils/event-stream.ts) | `FifoQueue`、`EventStream`、助手事件流及工厂函数 |
-| [types.ts](../../packages/ai/src/types.ts) | `AssistantMessageEvent` 的字段和事件约定 |
-| [openai-completions.ts](../../packages/ai/src/api/openai-completions.ts) | 真实生产者如何创建、推送和结束事件流 |
-| [models.ts](../../packages/ai/src/models.ts) | `complete` 如何复用 `stream().result()` |
-| [lazy.ts](../../packages/ai/src/api/lazy.ts) | 异步准备如何隐藏在同步返回的流之后 |
-| [event-stream.test.ts](../../packages/ai/test/event-stream.test.ts) | FIFO、等待者顺序、结束与结果的本地测试 |
+| 文件                                                             | 本文关注的内容                                   |
+| ---------------------------------------------------------------- | ------------------------------------------------ |
+| [event-stream.ts](../../src/ai/utils/event-stream.ts)            | `FifoQueue`、`EventStream`、助手事件流及工厂函数 |
+| [types.ts](../../src/ai/types.ts)                                | `AssistantMessageEvent` 的字段和事件约定         |
+| [openai-completions.ts](../../src/ai/api/openai-completions.ts)  | 真实生产者如何创建、推送和结束事件流             |
+| [index.ts](../../src/ai/index.ts)                                | 本地 `completion` 如何返回助手事件流             |
+| [event-stream.test.ts](../../test/ai/utils/event-stream.test.ts) | FIFO、等待者顺序、结束与结果的本地测试           |
+
+pi 基准中的 `packages/ai/src/models.ts` 和 `packages/ai/src/api/lazy.ts` 分别用于讲解
+`complete` 复用 `stream().result()` 及异步准备，本仓库没有这两个模块。
 
 下文的“先有简单实现，再遇到问题”是用于理解设计的教学推演，
 不是对 pi 实际开发历史的断言。标为“源码节选”的代码保留原标识符；
@@ -99,11 +102,17 @@ flowchart LR
 
 ## 4. 同一个对象的两种读法
 
-下面是使用真实类型的教学调用方函数。它接收一个已经创建的流，不负责配置或调用真实服务：
+下面是使用本地阶段 2 类型的教学调用方函数。它接收一个已经创建的流，不负责配置或调用真实服务：
 
 ```ts
-import type { AssistantMessageEventStream } from "../../packages/ai/src/utils/event-stream.ts";
+import type { AssistantMessageEventStream } from "../../src/ai/utils/event-stream.ts";
 
+/**
+ * 实时输出文本增量，并在生成结束后显示错误或结束状态。
+ * @param stream - 已创建的助手消息事件流。
+ * @returns Promise 完成表示本轮事件及最终消息已处理。
+ * @remarks 错误结果只输出错误说明，不抛出异常；已输出文本会保留。
+ */
 async function showResponse(stream: AssistantMessageEventStream): Promise<void> {
   for await (const event of stream) {
     if (event.type === "text_delta") {
@@ -112,13 +121,12 @@ async function showResponse(stream: AssistantMessageEventStream): Promise<void> 
   }
 
   const message = await stream.result();
-  if (message.stopReason === "error" || message.stopReason === "aborted") {
+  if (message.stopReason === "error") {
     console.error(message.errorMessage ?? message.stopReason);
     return;
   }
 
   console.log("\n本轮结束原因：", message.stopReason);
-  console.log("本轮 token 数：", message.usage.totalTokens);
 }
 ```
 
@@ -158,9 +166,9 @@ async function showResponse(stream: AssistantMessageEventStream): Promise<void> 
 
 两条队列的内容并不一样：
 
-| 字段 | 保存什么 | 何时使用 |
-| --- | --- | --- |
-| `queue` | 已经发生但尚未交付的 `T` 事件 | 生产者比消费者快 |
+| 字段      | 保存什么                            | 何时使用         |
+| --------- | ----------------------------------- | ---------------- |
+| `queue`   | 已经发生但尚未交付的 `T` 事件       | 生产者比消费者快 |
 | `waiting` | 等待下一条事件的 Promise 的完成函数 | 消费者比生产者快 |
 
 这解释了为什么只有一个事件数组还不够。
@@ -299,16 +307,17 @@ result(): Promise<R> {
 将所有等待中的读取完成为 `{ value: undefined, done: true }`。
 它不清空已缓冲事件，也不生成业务 `done` 事件。
 
-| 生产者动作 | 最终 Promise | 事件读取 |
-| --- | --- | --- |
-| `push(普通事件)` | 不变 | 交付或缓冲这一项 |
-| `push(终态事件)` | 从事件提取结果 | 终态也作为一项交付或缓冲 |
-| `end(result)`，参数非 `undefined` | 交付显式结果 | 唤醒等待者结束，保留缓冲事件供读取 |
-| 还没有结果时调用 `end()` | 仍未完成 | 迭代可以结束 |
-| 已推送终态后调用 `end()` | 保留原结果 | 唤醒剩余等待者 |
+| 生产者动作                        | 最终 Promise   | 事件读取                           |
+| --------------------------------- | -------------- | ---------------------------------- |
+| `push(普通事件)`                  | 不变           | 交付或缓冲这一项                   |
+| `push(终态事件)`                  | 从事件提取结果 | 终态也作为一项交付或缓冲           |
+| `end(result)`，参数非 `undefined` | 交付显式结果   | 唤醒等待者结束，保留缓冲事件供读取 |
+| 还没有结果时调用 `end()`          | 仍未完成       | 迭代可以结束                       |
+| 已推送终态后调用 `end()`          | 保留原结果     | 唤醒剩余等待者                     |
 
 因此，只调用 `end()` 不能保证 `await result()` 返回。
-原有测试中“无结果结束”验证的是等待者被唤醒，并没有断言最终 Promise 已完成。
+pi 基准测试中“无结果结束”验证的是等待者被唤醒；本地测试还明确断言最终 Promise 继续等待，
+直到后续调用 `end(result)` 补交结果。
 泛型即使允许 `R` 为 `undefined`，当前 `end(undefined)` 也不会主动完成最终 Promise。
 
 另一个细节是：`push(终态)` 只向一个等待者交付该事件，
@@ -361,7 +370,10 @@ incoming = [D]，outgoing = [C, B]
 源码节选：
 
 ```ts
-export class AssistantMessageEventStream extends EventStream<AssistantMessageEvent, AssistantMessage> {
+export class AssistantMessageEventStream extends EventStream<
+  AssistantMessageEvent,
+  AssistantMessage
+> {
   constructor() {
     super(
       (event) => event.type === "done" || event.type === "error",
@@ -479,8 +491,8 @@ t4：慢消费者才读取 t1 的事件，看到的 partial 中可能已经是�
 不要先追加 `partial` 中的完整文字，又追加同一批 `delta`，否则会重复显示。
 
 把整个事件放进数组也不会自动得到快照；即使读取时复制，得到的也只是读取时状态。
-跨进程重建需要专门处理快照与增量的重叠，后续阶段 18 学习的
-[assistant-message-frame.ts](../../packages/ai/src/utils/assistant-message-frame.ts) 就处理这个问题。
+跨进程重建需要专门处理快照与增量的重叠，pi 学习资料中的
+`packages/ai/src/utils/assistant-message-frame.ts` 就处理这个问题；本项目尚未实现该模块。
 
 ### 10.2 多个迭代器会分配事件，不会各自得到全量
 
@@ -514,19 +526,20 @@ push(B) → 日志得到 B
 `EventStream` 没有在迭代器退出时取消请求的逻辑。
 生产者调用 `end()` 也只是结束事件交付，不会向 SDK 发取消信号。
 
-请求取消由调用方传入的 `AbortSignal` 与适配器处理。
+pi 基准中的请求取消由调用方传入的 `AbortSignal` 与适配器处理。
 适配器随后把取消表示为 `reason: "aborted"` 的错误事件，并保留部分消息。
 所以想取消生成，应该通过请求的中止控制器完成，不能仅退出显示循环。
+本地阶段 2 的 `StreamOptions` 尚未提供取消信号，结束状态也不包含 `aborted`。
 
 ## 11. 不调用 API 的完整运行示例
 
 下面调用仓库中的真实 `EventStream`，没有重新实现这个类。
 `DemoEvent`、`produceGreeting` 是教学示例名称；事件数据由本地代码产生，不代表真实 API 验证。
 
-将代码保存为仓库内的 `docs/design/event-stream-demo.ts` 后，在仓库根目录运行：
+将代码保存为仓库内的 `docs/desin/event-stream-demo.ts` 后，在仓库根目录运行：
 
 ```sh
-node docs/design/event-stream-demo.ts
+node docs/desin/event-stream-demo.ts
 ```
 
 本例使用 Node.js 的 TypeScript 类型剥离能力，验证环境为 Node.js `v25.9.0`。
@@ -534,7 +547,7 @@ node docs/design/event-stream-demo.ts
 
 ```ts
 import assert from "node:assert/strict";
-import { EventStream } from "../../packages/ai/src/utils/event-stream.ts";
+import { EventStream } from "../../src/ai/utils/event-stream.ts";
 
 type DemoEvent = { type: "delta"; delta: string } | { type: "done"; text: string };
 
@@ -583,7 +596,10 @@ for await (const event of resultOnly) buffered.push(event);
 assert.deepEqual(buffered, events);
 
 // 三：两个等待者获得不同事件；结束会唤醒剩余等待者。
-const shared = new EventStream<number, number>((event) => event === 3, (event) => event);
+const shared = new EventStream<number, number>(
+  (event) => event === 3,
+  (event) => event,
+);
 const first = shared[Symbol.asyncIterator]();
 const second = shared[Symbol.asyncIterator]();
 const firstPending = first.next();
@@ -607,7 +623,10 @@ shared.end();
 assert.deepEqual(await otherPending, { value: undefined, done: true });
 
 // 四：无结果 end() 可以关闭迭代，但不会完成 result()。
-const closed = new EventStream<number, string>(() => false, (event) => String(event));
+const closed = new EventStream<number, string>(
+  () => false,
+  (event) => String(event),
+);
 let resultResolved = false;
 const closedResult = closed.result().then((value) => {
   resultResolved = true;
@@ -621,7 +640,10 @@ assert.equal(await closedResult, "后来显式提供的结果");
 
 // 五：队列保存对象引用，而不是对象的历史副本。
 const partial = { text: "" };
-const references = new EventStream<{ partial: { text: string } }, string>(() => false, () => "");
+const references = new EventStream<{ partial: { text: string } }, string>(
+  () => false,
+  () => "",
+);
 references.push({ partial });
 partial.text = "你好";
 references.end("结束");
@@ -660,12 +682,12 @@ console.log("通过：过程与结果、缓冲、等待者分配、结束语义�
 
 ## 13. 本文验证与学习位置
 
-本次执行了 `packages/ai/test/event-stream.test.ts`，5 项本地测试全部通过；
-提取第 11 节完整示例运行，5 组行为检查中的断言也全部通过。示例验证使用原始 `EventStream` 实现；
-临时执行时只把相对导入改为指向仓库文件的绝对路径，没有修改队列实现。
-文档中的 8 个本地链接已检查有效。没有调用真实服务，不代表四种 API 的端到端行为已经验证。
+原始 pi 学习记录包含 `packages/ai/test/event-stream.test.ts` 的 5 项测试及完整示例的验证结果，
+这些历史结果不作为当前项目的验证依据。
+本地事件流测试位于 `test/ai/utils/event-stream.test.ts`，包含 6 项测试；
+在仓库根目录运行 `npm test` 可连同补全接口、配置和入口测试一起验证，第 11 节示例也可独立运行。
+这些检查不调用真实服务，不代表其他 API 的端到端行为已经验证。
 
-这份设计对应 [阶段 02](../stage-02/README.md) 的核心内容。
-工具事件在阶段 03 展开，失败与取消在阶段 09 展开，事件帧在阶段 18 展开，
-延迟加载在阶段 19 展开。阅读本篇时先掌握两个队列、两种读取方式和明确的生产者职责，
-不需要同时实现这些后续功能。
+这份设计对应 [阶段功能记录](../stage-progress.md) 中阶段 2 的核心内容。
+pi 学习资料中的工具、取消、事件帧和延迟加载属于扩展主题，不代表本项目的阶段安排或已实现功能。
+阅读本篇时先掌握两个队列、两种读取方式和明确的生产者职责。

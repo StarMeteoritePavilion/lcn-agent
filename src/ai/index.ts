@@ -1,4 +1,4 @@
-import type { AssistantMessage, Context, Model, StreamOptions } from "./types.ts";
+import type { Context, Model, StreamOptions } from "./types.ts";
 
 import { stream } from "./api/openai-completions.ts";
 import type { AssistantMessageEventStream } from "./utils/event-stream.ts";

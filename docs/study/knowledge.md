@@ -244,7 +244,7 @@ type DifferentTypeStream = EventStream<string, number>; // 事件为 string，�
 
 #### 约束与默认值组合 `TApi extends Api = Api`
 
-[第 5 阶段类型定义](../../doc/stage-05/reference/src/types.ts) 中：
+历史示例 `doc/stage-05/reference/src/types.ts` 中：
 
 ```ts
 export type Api = "openai-responses" | "anthropic-messages" | "openai-completions";

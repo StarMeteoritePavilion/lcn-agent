@@ -338,7 +338,6 @@ function convertMessages(context: Context): ChatCompletionMessageParam[] {
         continue;
       }
       params.push(assistantMsg);
-      continue;
     }
   }
 
