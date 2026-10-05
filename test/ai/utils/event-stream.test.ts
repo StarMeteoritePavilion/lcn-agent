@@ -173,17 +173,46 @@ test("end 未提供结果时 result 保持等待", async (): Promise<void> => {
 });
 
 /**
+ * 验证提前退出消费不结束生产者，后续事件和最终结果仍可交付。
+ * @returns Promise 完成表示退出后继续发送、消费与结果获取均已验证。
+ * @throws 事件或最终结果不符时抛出断言错误。
+ */
+test("提前退出迭代后生产者仍可继续发送事件", async (): Promise<void> => {
+  const stream = createNumberStream();
+  stream.push(1);
+  for await (const event of stream) {
+    assert.equal(event, 1);
+    break;
+  }
+  stream.push(2);
+  stream.push(-1);
+  stream.end();
+  assert.equal(await stream.result(), -1);
+  const events: number[] = [];
+  for await (const event of stream) {
+    events.push(event);
+  }
+  assert.deepEqual(events, [2, -1]);
+});
+
+/**
  * 验证助手完成和错误事件均返回消息引用，并保留终结事件。
  * @returns 所有助手终结事件断言完成后结束。
+ * @throws 消息引用、事件或迭代结束状态不符时抛出断言错误。
  */
 test("助手 done 和 error 事件以消息引用完成 result", async (): Promise<void> => {
   const stoppedMessage = createMessage("stop");
   const limitedMessage = createMessage("length");
+  const toolMessage = createMessage("toolUse");
+  toolMessage.content = [
+    { type: "toolCall", id: "call_add", name: "add", arguments: { a: 17, b: 25 } },
+  ];
   const errorMessage = createMessage("error");
   errorMessage.errorMessage = "测试错误";
   const terminalEvents: Extract<AssistantMessageEvent, { type: "done" | "error" }>[] = [
     { type: "done", reason: "stop", message: stoppedMessage },
     { type: "done", reason: "length", message: limitedMessage },
+    { type: "done", reason: "toolUse", message: toolMessage },
     { type: "error", reason: "error", error: errorMessage },
   ];
 

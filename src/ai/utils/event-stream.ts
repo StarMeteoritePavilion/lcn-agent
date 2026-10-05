@@ -26,7 +26,7 @@ class FifoQueue<T> {
   /**
    * 取出并移除最早入队的元素。
    * @returns 队首元素；空队列返回 undefined，若入队值本身为 undefined 则返回值相同。
-   * @remarks 出队数组为空时才逆序转移入队数组，以保持先进先出顺序。
+   * @remarks 出队数组为空时才逆序转移入队数组；每个元素只转移一次，避免用 shift 出队时反复移动剩余元素。
    */
   dequeue(): T | undefined {
     if (this.outgoing.length === 0) {
@@ -85,7 +85,7 @@ export class EventStream<T, R = T> implements AsyncIterable<T> {
    * @param event - 待发送事件；流已结束时忽略。
    * @throws isComplete 或 extractResult 抛出异常时，将异常同步传递给调用方。
    * @remarks
-   * 终结事件在交付前完成 result() 并禁止后续 push，但该事件本身仍会交付。
+   * 终结事件在交付前提交最终结果并禁止后续 push，但该事件本身仍会交付。
    * 每次仅唤醒一个等待者；发送终结事件后仍需调用 end() 唤醒其他等待者。
    * extractResult 执行前已将流标记为结束；若其抛错，本次事件不会交付，最终结果也不会由该事件完成。
    */
@@ -130,9 +130,10 @@ export class EventStream<T, R = T> implements AsyncIterable<T> {
   /**
    * 创建异步迭代器，依次交付队列中的事件或等待后续事件。
    * @returns 异步迭代器；队列为空且流已结束时，下一次迭代返回结束状态。
+   * @throws 若事件本身为 Promise 或含 then 方法的对象，且等待它时被拒绝或抛错，本次迭代也会拒绝。
    * @remarks
    * 优先消费已缓存事件；流未结束且队列为空时，注册等待回调并暂停。
-   * 本迭代器不取消生产者请求；提前退出消费不会自动调用 end()。
+   * 本迭代器不取消生产者请求；提前退出消费不会自动调用 end()，生产者仍可继续缓存事件。
    */
   async *[Symbol.asyncIterator](): AsyncIterator<T> {
     while (true) {
@@ -161,7 +162,10 @@ export class EventStream<T, R = T> implements AsyncIterable<T> {
   /**
    * 获取由终结事件或显式 end 结果完成的最终结果 Promise。
    * @returns Promise 完成后得到最终结果；尚未提供结果时保持等待，每次调用返回同一个 Promise。
-   * @remarks 无需消费事件即可等待结果；该流未设置拒绝回调，业务错误由具体结果类型表达。
+   * @throws 最终结果为 Promise 或含 then 方法的对象且其拒绝时，返回的 Promise 随之拒绝。
+   * @remarks
+   * 无需消费事件即可等待结果；该流不主动拒绝 Promise，助手业务错误通过错误消息结果表达。
+   * 泛型 R 若实际为 Promise 或含 then 方法的对象，Promise 会采纳其状态，可能因此拒绝或继续等待。
    */
   result(): Promise<R> {
     return this.finalResultPromise;
@@ -175,7 +179,7 @@ export class AssistantMessageEventStream extends EventStream<
 > {
   /**
    * 创建助手消息事件流，配置完成事件和错误事件的结果提取规则。
-   * @remarks error 事件中的助手消息作为正常完成的结果返回，由调用方检查 stopReason 和 errorMessage。
+   * @remarks error 事件中的助手消息不会导致 result() 拒绝，由调用方检查 stopReason 和 errorMessage。
    */
   constructor() {
     super(

@@ -1,6 +1,6 @@
 # 阶段功能记录
 
-阶段 1、阶段 2 已完成。各节记录对应阶段交付时的行为；当前使用方式见 [README](../README.md)。
+阶段 1、阶段 2、阶段 3 已完成。各节记录对应阶段交付时的行为；当前使用方式见 [README](../README.md)。
 
 ## stage-01：空白项目与最小聊天闭环
 
@@ -25,3 +25,14 @@
 - 入口依次发送“我正在学习流式调用。”“请根据上一句话给我一个建议。”“还有吗？”，实时输出文本增量。每轮成功后将助手消息加入共享历史，`length` 结果继续下一轮；错误结果抛出异常并中断对话，保留已输出文本。
 - 新增补全接口及事件流测试，更新入口测试，覆盖请求参数、历史转换、事件顺序、共享引用、结束原因、错误结果、等待者唤醒和三轮对话。
 - 补充 [事件流设计说明](desin/01-event-stream.md)，区分本地实现与 pi 学习基准中的扩展能力。交互输入、工具调用、多协议分发和取消请求尚未实现。
+
+## stage-03：工具调用、参数校验与执行闭环
+
+- 将 `completion(model, context, options)` 改为返回 `Promise<AssistantMessage>`，直接等待最终消息；增量消费使用 `openai-completions.ts` 的 `stream` 和同一流的 `result()`。
+- 新增 `Tool`、`ToolCall` 和 `ToolResultMessage`，上下文支持工具声明，助手内容支持文本与工具调用；请求转换支持 `tools`、历史 `tool_calls` 和通过 `tool_call_id` 关联的工具结果。
+- 新增 `toolcall_start`、`toolcall_delta` 和 `toolcall_end` 事件，按接口的 `index`、其次按 `id` 关联分片并累积参数；事件的 `contentIndex` 是本地内容块索引。
+- 新增 `parseStreamingJson`，尝试完整解析、修复字符串转义和部分 JSON 解析；解析失败回退为空对象，解析结果不代表通过工具参数校验。
+- 新增 `validateToolCall`，精确查找工具名称，深拷贝参数后使用 TypeBox 转换和校验，保留原始参数；校验失败抛出包含字段路径的异常。
+- `tool_calls` 和 `function_call` 结束原因映射为 `toolUse`；当前只处理 `delta.tool_calls`，不解析旧版 `delta.function_call`。接口模块返回调用内容，不执行工具。
+- 入口发送“请调用 add 计算 17 加 25。”，按声明校验每个调用后执行加法，依次保存助手消息和全部工具结果，最多请求四次；不含工具调用时输出内容数组，第四轮仍有调用则报错。入口不再消费增量事件。
+- 更新补全和入口测试，补充工具分片、历史转换、Promise 返回、工具执行与轮次上限的检查，新增 JSON 参数解析与 TypeBox 校验测试。通用 Agent 执行循环、交互输入、多协议分发和取消请求尚未实现。

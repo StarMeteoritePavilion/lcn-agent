@@ -14,7 +14,7 @@ interface ProviderConfig {
   name: string;
   /** 接口基础地址，格式及协议由请求方处理。 */
   baseUrl: string;
-  /** 完成环境变量替换的 API 密钥。 */
+  /** 经校验的非空 API 密钥；若使用整值环境变量占位符，必须完成替换。 */
   apiKey: string;
   /** 可选择的模型列表。 */
   models: ModelConfig[];
@@ -33,7 +33,7 @@ interface SettingsConfig {
 /**
  * 校验配置值为 JSON 对象。
  * @param value - 待校验的配置值。
- * @returns 是否为非空、非数组的配置对象。
+ * @returns 值为非 null 且非数组的对象时返回 true；空对象也会通过，不检查对象原型。
  */
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -43,8 +43,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * 读取必填字符串，拒绝空值和未替换的环境变量占位符。
  * @param value - 原始配置值。
  * @param field - 用于错误提示的字段路径。
- * @returns 校验通过的原始字符串，不改变内容。
- * @throws 值无效时抛出仅包含字段路径的错误。
+ * @returns 校验通过的原始字符串，保留首尾空白。
+ * @throws 值不是字符串、去除首尾空白后为空，或原值仍是整值环境变量占位符时抛出包含字段路径的错误，不包含配置值。
+ * @remarks trim 仅用于检查空白，不用于修改名称；嵌入其他文本的占位符不会被此函数拒绝。
  */
 function requireString(value: unknown, field: string): string {
   if (typeof value !== "string" || !value.trim() || /^\$\{[^{}]+\}$/u.test(value)) {
@@ -57,7 +58,7 @@ function requireString(value: unknown, field: string): string {
  * 校验单个供应商及其模型列表，并构造业务配置。
  * @param value - 未校验的供应商配置。
  * @param field - 供应商在配置数组中的路径，用于定位错误。
- * @returns 字段已校验的供应商配置，保留模型顺序。
+ * @returns 仅包含声明字段的供应商配置，保留原始字符串与模型顺序。
  * @throws 字段类型无效、字符串为空或占位符未替换时抛出包含字段路径的错误。
  */
 function parseProvider(value: unknown, field: string): ProviderConfig {
@@ -87,8 +88,11 @@ function parseProvider(value: unknown, field: string): ProviderConfig {
  * 递归替换 JSON 值中的整值占位符，并保留其他类型及未找到变量的字符串。
  * @param value - 待处理的 JSON 值。
  * @param fileEnv - 从配置文件旁的 .env 解析出的变量。
- * @returns 完成一次替换的值；表和数组会在原对象上更新。
- * @remarks .env 优先于进程环境变量，空字符串视为未配置；不修改进程环境或继续展开替换结果。
+ * @returns 完成一次替换的值；对象和数组在原引用上更新，未找到非空变量值时保留占位符原文。
+ * @remarks
+ * 仅替换完整的 ${变量名} 字符串，变量名区分大小写，不替换嵌入其他文本的占位符。
+ * 非空 .env 值优先于进程环境变量；空字符串视为未配置，纯空白变量值仍会参与替换。
+ * 不修改进程环境，也不再次展开替换结果中的占位符；未解决的必填字段由后续业务校验拒绝。
  */
 function replaceEnv(value: unknown, fileEnv: NodeJS.Dict<string>): unknown {
   if (typeof value === "string") {
@@ -97,6 +101,7 @@ function replaceEnv(value: unknown, fileEnv: NodeJS.Dict<string>): unknown {
       return value;
     }
     const name = match[1];
+    // 只接受变量表自身的键，避免将原型链属性当成配置；逻辑或让空文件变量回退到进程变量。
     const fileValue = Object.hasOwn(fileEnv, name) ? fileEnv[name] : undefined;
     const processValue = Object.hasOwn(process.env, name) ? process.env[name] : undefined;
     return fileValue || processValue || value;
@@ -115,10 +120,10 @@ function replaceEnv(value: unknown, fileEnv: NodeJS.Dict<string>): unknown {
 
 /**
  * 同步读取 JSON 配置及其旁边的 .env，返回完成环境变量替换的配置表。
- * @param settingPath - 配置文件路径, 相对路径基于当前工作目录。
+ * @param settingPath - 非空配置文件路径，相对路径基于当前工作目录。
  * @returns 解析并完成替换的配置对象；空对象保持为空对象。
- * @throws 配置文件读取失败、JSON 格式错误、顶层不是对象，或 .env 发生文件不存在之外的读取错误时抛出异常。
- * @remarks 每次独立读取；缺失 .env 时使用进程变量，不修改环境或文件。业务校验由 loadSettings 完成。
+ * @throws 路径为空、配置文件读取失败、JSON 格式错误、顶层不是对象，或 .env 发生文件不存在之外的读取错误时抛出异常。
+ * @remarks 每次独立读取并解析；缺失 .env 时仅从进程环境读取变量，不修改环境或文件。业务校验由 loadSettings 完成。
  */
 function loadSettingsFromFile(settingPath: string): Record<string, unknown> {
   if (!settingPath) {
@@ -135,6 +140,7 @@ function loadSettingsFromFile(settingPath: string): Record<string, unknown> {
   try {
     fileEnv = parseEnv(readFileSync(envPath, "utf8"));
   } catch (error) {
+    // .env 是可选文件，只忽略文件不存在；权限错误、目录路径等情况仍需让调用方处理。
     if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) {
       throw error;
     }
@@ -145,10 +151,14 @@ function loadSettingsFromFile(settingPath: string): Record<string, unknown> {
 
 /**
  * 读取指定配置文件，校验全部供应商字段以及所选模型是否存在。
- * @param settingPath - 配置文件路径，相对路径基于当前工作目录。
- * @returns 保持原始字段名的已校验配置，仅包含业务使用的配置字段。
- * @throws 文件无法读取、配置字段无效、供应商名称重复或所选供应商及模型不存在时抛出异常。
- * @remarks 读取同目录 .env；不输出配置或密钥，不通过类型断言跳过校验。
+ * @param settingPath - 非空配置文件路径，相对路径基于当前工作目录。
+ * @returns 新建的已校验配置，仅包含业务声明字段，保留供应商和模型顺序及原始字符串。
+ * @throws 路径为空、配置或 .env 读取失败、JSON 格式错误、配置字段无效、供应商名称重复或所选供应商及模型不存在时抛出异常。
+ * @remarks
+ * 读取配置同目录 .env，每次调用重新加载，不缓存配置或修改进程环境。
+ * 对全部供应商做运行时校验，再按原字符串精确选择供应商和模型，不转换大小写或去除首尾空白。
+ * 供应商名称必须唯一；所选供应商必须包含所选模型，模型列表本身不检查重复标识。
+ * 本模块不输出配置或密钥；字段校验错误只描述字段路径和约束，文件读取及 JSON 解析异常按原样传递。
  */
 export function loadSettings(settingPath: string): SettingsConfig {
   const settingConfig = loadSettingsFromFile(settingPath);

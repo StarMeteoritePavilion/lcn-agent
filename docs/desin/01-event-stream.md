@@ -11,16 +11,17 @@
 
 本文保留 pi 学习基准 `200387122ca450d6387f033949423114a270b96c` 的设计讲解。
 原始学习记录中的工作区 HEAD 为 `b2b5c42f6138b73ec4b2f49ec0ca468800f88586`，不代表当前项目版本。
-下表链接指向本项目阶段 2 的实现；正文中的 `complete`、`streamSimple`、`lazyStream`、
-推理、工具、用量和取消能力属于 pi 基准，本项目目前仅实现文本事件流及固定三轮对话。
-本地接口为 `completion(model, context, options)`，返回事件流，最终消息通过同一对象的 `result()` 获取。
+下表链接指向本项目当前实现；正文中的 `complete`、`streamSimple`、`lazyStream`、
+推理、用量和取消能力属于 pi 基准。本项目已实现文本与工具调用事件，以及有四轮上限的加法工具闭环。
+本地 `completion(model, context, options)` 返回 `Promise<AssistantMessage>`，等待最终消息；
+消费增量事件应调用 `openai-completions.ts` 的 `stream`，最终消息通过同一事件流的 `result()` 获取。
 
 | 文件                                                             | 本文关注的内容                                   |
 | ---------------------------------------------------------------- | ------------------------------------------------ |
 | [event-stream.ts](../../src/ai/utils/event-stream.ts)            | `FifoQueue`、`EventStream`、助手事件流及工厂函数 |
 | [types.ts](../../src/ai/types.ts)                                | `AssistantMessageEvent` 的字段和事件约定         |
 | [openai-completions.ts](../../src/ai/api/openai-completions.ts)  | 真实生产者如何创建、推送和结束事件流             |
-| [index.ts](../../src/ai/index.ts)                                | 本地 `completion` 如何返回助手事件流             |
+| [index.ts](../../src/ai/index.ts)                                | 本地 `completion` 如何等待最终助手消息           |
 | [event-stream.test.ts](../../test/ai/utils/event-stream.test.ts) | FIFO、等待者顺序、结束与结果的本地测试           |
 
 pi 基准中的 `packages/ai/src/models.ts` 和 `packages/ai/src/api/lazy.ts` 分别用于讲解
@@ -102,7 +103,7 @@ flowchart LR
 
 ## 4. 同一个对象的两种读法
 
-下面是使用本地阶段 2 类型的教学调用方函数。它接收一个已经创建的流，不负责配置或调用真实服务：
+下面是使用本地事件流类型的教学调用方函数。它接收一个已经创建的流，不负责配置或调用真实服务：
 
 ```ts
 import type { AssistantMessageEventStream } from "../../src/ai/utils/event-stream.ts";
@@ -420,7 +421,8 @@ done(reason = "stop", message = 完整助手消息)
 ```
 
 这是教学事件序列，不是一次真实服务抓包。`contentIndex` 指向助手消息内容数组中的块，
-不是 SDK chunk 的序号。推理和工具有各自的开始、增量和结束事件。
+不是 SDK chunk 的序号。本地工具调用使用 `toolcall_start`、`toolcall_delta` 和 `toolcall_end`；
+`toolcall_delta.delta` 是参数原文片段，`toolcall_end` 不表示已通过参数校验。推理事件属于 pi 基准。
 
 请求建立前失败可以直接产生 `error`，无需伪造一个 `start`；
 开始之后失败则以 `error` 结束，不应伪装成正常 `done`。
@@ -529,7 +531,7 @@ push(B) → 日志得到 B
 pi 基准中的请求取消由调用方传入的 `AbortSignal` 与适配器处理。
 适配器随后把取消表示为 `reason: "aborted"` 的错误事件，并保留部分消息。
 所以想取消生成，应该通过请求的中止控制器完成，不能仅退出显示循环。
-本地阶段 2 的 `StreamOptions` 尚未提供取消信号，结束状态也不包含 `aborted`。
+本地 `StreamOptions` 尚未提供取消信号，结束状态也不包含 `aborted`。
 
 ## 11. 不调用 API 的完整运行示例
 
@@ -689,5 +691,6 @@ console.log("通过：过程与结果、缓冲、等待者分配、结束语义�
 这些检查不调用真实服务，不代表其他 API 的端到端行为已经验证。
 
 这份设计对应 [阶段功能记录](../stage-progress.md) 中阶段 2 的核心内容。
-pi 学习资料中的工具、取消、事件帧和延迟加载属于扩展主题，不代表本项目的阶段安排或已实现功能。
+本地工具调用及加法执行闭环记录在阶段 3；pi 学习资料中的取消、事件帧和延迟加载属于扩展主题，
+不代表本项目已实现这些能力。
 阅读本篇时先掌握两个队列、两种读取方式和明确的生产者职责。

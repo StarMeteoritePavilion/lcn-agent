@@ -1,3 +1,5 @@
+import type { TSchema } from "typebox";
+
 /** 模型标识、接口类型及服务提供方配置；TApi 用于限定支持的接口类型。 */
 export interface Model<TApi extends Api = Api> {
   /** 发送给接口的模型标识。 */
@@ -32,6 +34,28 @@ export interface TextContent {
   text: string;
 }
 
+/** 模型请求执行的工具调用；参数由响应解析得到，执行前仍需按工具声明校验。 */
+export interface ToolCall {
+  /** 工具调用内容块的类型标识。 */
+  type: "toolCall";
+  /** 接口返回的调用标识，用于关联 ToolResultMessage.toolCallId；流式开始时可能尚为空字符串。 */
+  id: string;
+  /** 模型选择的工具名称，用于与 Tool.name 精确匹配；流式开始时可能尚未收到。 */
+  name: string;
+  /** 已解析的工具参数；流式处理中可能不完整或回退为空对象，类型声明不代表已通过运行时校验。 */
+  arguments: Record<string, unknown>;
+}
+
+/** 向模型声明的工具名称、用途和 TypeBox 参数结构；不包含工具执行函数。 */
+export interface Tool<TParameters extends TSchema = TSchema> {
+  /** 工具名称，调用校验按原字符串精确匹配；当前校验器选择首个同名声明。 */
+  name: string;
+  /** 发送给模型的工具用途说明。 */
+  description: string;
+  /** 发送给模型并用于本地校验的参数结构；TParameters 保留具体结构类型。 */
+  parameters: TParameters;
+}
+
 /** 用户输入消息及其时间信息。 */
 export interface UserMessage {
   /** 用户消息的角色标识。 */
@@ -42,18 +66,39 @@ export interface UserMessage {
   timestamp: number;
 }
 
+/** 调用方执行工具后写入对话历史的结果消息，用调用标识关联助手的工具调用。 */
+export interface ToolResultMessage {
+  /** 工具结果消息的角色标识；转换到 OpenAI 请求时使用 tool。 */
+  role: "toolResult";
+  /** 对应 ToolCall.id，转换为请求消息中的 tool_call_id。 */
+  toolCallId: string;
+  /** 已执行的工具名称；当前历史转换不将此字段发送给接口。 */
+  toolName: string;
+  /** 工具输出文本块；发送时以换行连接，空结果使用 (no tool output) 占位。 */
+  content: TextContent[];
+  /** 工具执行是否失败；当前历史转换不自动根据此字段修改文本或请求状态。 */
+  isError: boolean;
+  /** 工具结果的时间戳；当前示例使用毫秒值，请求转换不读取或发送此字段。 */
+  timestamp: number;
+}
+
 /** 当前支持的模型接口类型。 */
 export type Api = "openai-completions";
 
-/** 消息状态：pending 为处理中，stop 为正常结束，length 为达到令牌数上限，error 为处理失败。 */
-export type StopReason = "pending" | "stop" | "length" | "error";
+/**
+ * 助手消息的处理和结束状态。
+ * @remarks
+ * pending 为处理中；stop 为正常结束；length 为达到令牌数上限，内容可能被截断。
+ * toolUse 表示接口结束原因为工具调用，调用方仍需检查内容并执行工具；error 为请求或响应处理失败。
+ */
+export type StopReason = "pending" | "stop" | "length" | "toolUse" | "error";
 
-/** 助手生成的文本、来源信息及处理状态；流式生成期间会持续更新同一消息对象。 */
+/** 助手生成的文本、工具调用、来源信息及处理状态；流式处理持续更新同一消息对象。 */
 export interface AssistantMessage {
   /** 助手消息的角色标识。 */
   role: "assistant";
-  /** 按生成顺序排列的文本块；尚无文本或未生成文本时为空数组。 */
-  content: TextContent[];
+  /** 按内容块首次创建顺序排列的文本与工具调用；不同分片可继续更新已有块，尚无内容时为空数组。 */
+  content: (TextContent | ToolCall)[];
   /** 生成消息使用的接口类型。 */
   api: Api;
   /** 生成消息的服务提供方标识。 */
@@ -70,22 +115,25 @@ export interface AssistantMessage {
   timestamp: number;
 }
 
-/** 对话历史中的用户消息或助手消息。 */
-export type Message = UserMessage | AssistantMessage;
+/** 对话历史中的用户消息、助手消息或工具执行结果。 */
+export type Message = UserMessage | AssistantMessage | ToolResultMessage;
 
-/** 发起模型请求时使用的系统提示词和对话历史。 */
+/** 发起模型请求时使用的系统提示词、对话历史和工具声明。 */
 export interface Context {
   /** 系统提示词；当前请求转换在省略或为空字符串时不添加 system 消息。 */
   systemPrompt?: string;
   /** 按发送顺序排列的历史消息；允许为空数组。 */
   messages: Message[];
+  /** 可供模型选择的工具声明；省略或为空数组时不设置请求的 tools 字段，也不会自动执行工具。 */
+  tools?: Tool[];
 }
 
 /**
- * 助手消息生成过程中的开始、文本增量及结束事件。
+ * 助手消息生成过程中的开始、文本及工具调用增量、内容结束与请求结束事件。
  * @remarks
  * partial、message 和 error 均引用消息对象，不是副本；partial 指向的对象会随后续处理更新。
- * contentIndex 为文本块在 partial.content 中从 0 开始的索引。
+ * contentIndex 为文本块或工具调用块在 partial.content 中从 0 开始的索引，不是接口的工具调用 index。
+ * 内容块结束事件表示响应流已读取完毕，不保证工具参数有效或整个请求成功；模型请求模块不执行工具。
  * done 和 error 是终结事件，均用于完成事件流的 result()；错误结果通过消息返回。
  */
 export type AssistantMessageEvent =
@@ -114,7 +162,7 @@ export type AssistantMessageEvent =
       partial: AssistantMessage;
     }
   | {
-      /** 响应流已读取完毕，对应文本块结束；后续仍可能因结束原因校验失败而发送 error。 */
+      /** 响应流已读取完毕，对应文本块结束；后续仍可能因工具块处理或结束原因校验失败而发送 error。 */
       type: "text_end";
       /** 已结束文本块的索引，从 0 开始。 */
       contentIndex: number;
@@ -124,11 +172,39 @@ export type AssistantMessageEvent =
       partial: AssistantMessage;
     }
   | {
-      /** 请求处理成功结束。 */
+      /** 已创建工具调用块，其名称、标识和参数可能尚不完整。 */
+      type: "toolcall_start";
+      /** 新工具调用块在消息内容中的索引，从 0 开始。 */
+      contentIndex: number;
+      /** 持续更新的助手消息。 */
+      partial: AssistantMessage;
+    }
+  | {
+      /** 已处理一个工具调用分片，并按需更新标识、名称或参数。 */
+      type: "toolcall_delta";
+      /** 被更新的工具调用块索引，从 0 开始。 */
+      contentIndex: number;
+      /** 本次收到的参数原文片段；仅提供标识或名称时为空字符串，不是已解析参数对象。 */
+      delta: string;
+      /** 包含当前工具参数解析结果、仍会继续更新的助手消息。 */
+      partial: AssistantMessage;
+    }
+  | {
+      /** 响应流读取完毕，对应工具调用块结束；此时尚未执行工具或校验参数。 */
+      type: "toolcall_end";
+      /** 已结束工具调用块在消息内容中的索引，从 0 开始。 */
+      contentIndex: number;
+      /** 去除内部拼接字段后的工具调用对象；参数解析采用容错规则，不保证符合工具声明。 */
+      toolCall: ToolCall;
+      /** 当前助手消息，结束状态仍可能因后续校验失败而更新。 */
+      partial: AssistantMessage;
+    }
+  | {
+      /** 接口响应处理成功结束；包含工具调用时仍需由调用方执行工具。 */
       type: "done";
-      /** stop 为正常结束，length 为达到令牌数上限。 */
-      reason: "stop" | "length";
-      /** 用于完成事件流最终结果的助手消息。 */
+      /** stop 为正常结束，length 为达到令牌数上限，toolUse 为工具调用结束。 */
+      reason: "stop" | "length" | "toolUse";
+      /** 包含累计文本和工具调用的最终助手消息，作为 result() 的结果。 */
       message: AssistantMessage;
     }
   | {
@@ -136,6 +212,6 @@ export type AssistantMessageEvent =
       type: "error";
       /** 失败的结束状态。 */
       reason: "error";
-      /** 携带错误说明及已累积文本的助手消息，作为最终结果返回。 */
+      /** 携带错误说明及已累积文本、工具调用的助手消息，作为最终结果返回。 */
       error: AssistantMessage;
     };
