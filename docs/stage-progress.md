@@ -1,6 +1,6 @@
 # 阶段功能记录
 
-阶段 1、阶段 2、阶段 3 已完成。各节记录对应阶段交付时的行为；当前使用方式见 [README](../README.md)。
+阶段 1、阶段 2、阶段 3、阶段 4 已完成。各节记录对应阶段交付时的行为；当前使用方式见 [README](../README.md)。
 
 ## stage-01：空白项目与最小聊天闭环
 
@@ -36,3 +36,15 @@
 - `tool_calls` 和 `function_call` 结束原因映射为 `toolUse`；当前只处理 `delta.tool_calls`，不解析旧版 `delta.function_call`。接口模块返回调用内容，不执行工具。
 - 入口发送“请调用 add 计算 17 加 25。”，按声明校验每个调用后执行加法，依次保存助手消息和全部工具结果，最多请求四次；不含工具调用时输出内容数组，第四轮仍有调用则报错。入口不再消费增量事件。
 - 更新补全和入口测试，补充工具分片、历史转换、Promise 返回、工具执行与轮次上限的检查，新增 JSON 参数解析与 TypeBox 校验测试。通用 Agent 执行循环、交互输入、多协议分发和取消请求尚未实现。
+
+## stage-04：Anthropic 接入与双协议配置
+
+- 新增 `anthropic-messages` 实现，使用 Anthropic SDK 发起 Messages 流式请求，将文本、工具调用及结束状态转换为既有助手事件；请求禁用自动重试。
+- `completion(model, context, options)` 按 `model.api` 分发至 `openai-completions` 或 `anthropic-messages`，返回 `Promise<AssistantMessageEventStream>`；调用方取得事件流后可读取增量，或通过 `result()` 等待最终助手消息。不支持的接口类型会使 Promise 拒绝。
+- 供应商配置新增必填 `api`，仅接受上述两种协议的精确值；模型条目新增可选 `maxTokens`，省略时补为 16384，显式值必须是正整数。入口按精确标识选取模型条目，并将该值传入运行时 `Model.maxTokens`。
+- Anthropic 将非空系统提示词发送为 `system`，助手工具调用转换为 `tool_use`，连续工具结果合并到一条 `user` 消息中的 `tool_result`，保留 `tool_use_id` 和 `is_error`；工具声明使用 `input_schema` 并启用 `eager_input_streaming`。
+- Anthropic 通过本地 SSE 解析器处理命名事件、UTF-8 网络分片、LF／CR／CRLF、多行 `data` 及尾部剩余事件，复用导出的 `parseJsonWithRepair` 修复 JSON 字符串转义；流错误、解析失败或消息开始后缺少 `message_stop` 均转为错误结果，保留累计内容。
+- Anthropic 按协议 `index` 关联内容块，在 `content_block_stop` 时发送内容结束事件；`end_turn`、`pause_turn` 和 `stop_sequence` 映射为 `stop`，`max_tokens` 映射为 `length`，`tool_use` 映射为 `toolUse`，拒绝、敏感内容及未支持的结束原因返回错误消息。不自动续写暂停或截断的回合。
+- Anthropic 的 `max_tokens` 使用 `options.maxTokens`，省略时使用模型上限，显式 0 保留；OpenAI 仍仅发送显式正整数请求上限，省略或为 0 时不发送 `max_completion_tokens`，不读取模型上限。统一规则保留在 [待办](../待办.md)，尚未完成。
+- 入口将配置组装、加法工具执行和有界对话拆为内部函数，沿用最多四轮、按实际工具内容逐个执行并回填结果的行为；第四轮工具结果仍会加入历史，随后报告轮次上限。取得不含工具调用的消息后输出内容数组，不消费增量事件。
+- 新增 Anthropic 请求、历史转换、SSE 解码及错误路径测试，更新配置、协议分发、入口、参数解析与校验的回归测试。通用 Agent 执行循环、交互输入、推理与用量事件、取消请求尚未实现。

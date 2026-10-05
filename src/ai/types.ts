@@ -1,5 +1,8 @@
 import type { TSchema } from "typebox";
 
+/** 当前支持的模型接口类型。 */
+export type Api = "openai-completions" | "anthropic-messages";
+
 /** 模型标识、接口类型及服务提供方配置；TApi 用于限定支持的接口类型。 */
 export interface Model<TApi extends Api = Api> {
   /** 发送给接口的模型标识。 */
@@ -10,19 +13,19 @@ export interface Model<TApi extends Api = Api> {
   provider: string;
   /** 传入接口客户端的基础地址。 */
   baseUrl: string;
-  /** 模型的最大令牌数配置；当前 OpenAI 请求构建不读取此字段。 */
+  /** 运行时必填的模型默认生成令牌上限；Anthropic 未设置 options.maxTokens 时使用，OpenAI 请求不读取此字段。 */
   maxTokens: number;
 }
 
 /** 流式请求的认证、生成参数及网络请求选项。 */
 export interface StreamOptions {
-  /** API 密钥；类型允许省略，但当前 OpenAI 请求实现要求非空密钥。 */
+  /** API 密钥；类型允许省略，但两种协议的请求实现均要求提供密钥，Anthropic 另行拒绝纯空白字符串。 */
   apiKey?: string;
-  /** 本次生成的令牌数上限，必须为非负有限整数；当前作为 max_completion_tokens 发送，省略或为 0 时不设置。 */
+  /** 本次生成的令牌数上限，必须为非负有限整数；Anthropic 发送为 max_tokens，省略时使用模型值且保留 0；OpenAI 发送为 max_completion_tokens，省略或为 0 时不设置。 */
   maxTokens?: number;
   /** 生成温度，必须为 0 到 2 之间的有限数值；省略时不设置请求参数，显式传入 0 时会保留。 */
   temperature?: number;
-  /** 自定义请求实现；省略时由 OpenAI 客户端使用全局 fetch。 */
+  /** 自定义请求实现；省略时由对应协议的 SDK 使用默认 fetch。 */
   fetch?: typeof globalThis.fetch;
 }
 
@@ -68,22 +71,19 @@ export interface UserMessage {
 
 /** 调用方执行工具后写入对话历史的结果消息，用调用标识关联助手的工具调用。 */
 export interface ToolResultMessage {
-  /** 工具结果消息的角色标识；转换到 OpenAI 请求时使用 tool。 */
+  /** 工具结果消息的角色标识；OpenAI 转为 tool 消息，Anthropic 转为 user 消息中的 tool_result。 */
   role: "toolResult";
-  /** 对应 ToolCall.id，转换为请求消息中的 tool_call_id。 */
+  /** 对应 ToolCall.id；OpenAI 转为 tool_call_id，Anthropic 转为 tool_use_id。 */
   toolCallId: string;
   /** 已执行的工具名称；当前历史转换不将此字段发送给接口。 */
   toolName: string;
-  /** 工具输出文本块；发送时以换行连接，空结果使用 (no tool output) 占位。 */
+  /** 工具输出文本块；发送时以换行连接，OpenAI 的空结果使用 (no tool output) 占位，Anthropic 保留空字符串。 */
   content: TextContent[];
-  /** 工具执行是否失败；当前历史转换不自动根据此字段修改文本或请求状态。 */
+  /** 工具执行是否失败；Anthropic 原样发送为 is_error，OpenAI 不发送此字段，两者均不据此修改文本。 */
   isError: boolean;
   /** 工具结果的时间戳；当前示例使用毫秒值，请求转换不读取或发送此字段。 */
   timestamp: number;
 }
-
-/** 当前支持的模型接口类型。 */
-export type Api = "openai-completions";
 
 /**
  * 助手消息的处理和结束状态。
@@ -120,7 +120,7 @@ export type Message = UserMessage | AssistantMessage | ToolResultMessage;
 
 /** 发起模型请求时使用的系统提示词、对话历史和工具声明。 */
 export interface Context {
-  /** 系统提示词；当前请求转换在省略或为空字符串时不添加 system 消息。 */
+  /** 系统提示词；OpenAI 添加 system 消息，Anthropic 设置独立 system 参数，省略或为空字符串时均不发送。 */
   systemPrompt?: string;
   /** 按发送顺序排列的历史消息；允许为空数组。 */
   messages: Message[];
@@ -133,7 +133,8 @@ export interface Context {
  * @remarks
  * partial、message 和 error 均引用消息对象，不是副本；partial 指向的对象会随后续处理更新。
  * contentIndex 为文本块或工具调用块在 partial.content 中从 0 开始的索引，不是接口的工具调用 index。
- * 内容块结束事件表示响应流已读取完毕，不保证工具参数有效或整个请求成功；模型请求模块不执行工具。
+ * 内容块结束事件只表示对应块结束，不保证工具参数有效或整个请求成功；模型请求模块不执行工具。
+ * OpenAI 在响应流读取完毕后发送内容结束事件，Anthropic 在收到 content_block_stop 时发送。
  * done 和 error 是终结事件，均用于完成事件流的 result()；错误结果通过消息返回。
  */
 export type AssistantMessageEvent =
@@ -162,7 +163,7 @@ export type AssistantMessageEvent =
       partial: AssistantMessage;
     }
   | {
-      /** 响应流已读取完毕，对应文本块结束；后续仍可能因工具块处理或结束原因校验失败而发送 error。 */
+      /** 对应文本块结束；后续仍可能因响应读取、工具块处理或结束原因校验失败而发送 error。 */
       type: "text_end";
       /** 已结束文本块的索引，从 0 开始。 */
       contentIndex: number;
@@ -190,7 +191,7 @@ export type AssistantMessageEvent =
       partial: AssistantMessage;
     }
   | {
-      /** 响应流读取完毕，对应工具调用块结束；此时尚未执行工具或校验参数。 */
+      /** 对应工具调用块结束；此时尚未执行工具或校验参数，整个请求仍可能失败。 */
       type: "toolcall_end";
       /** 已结束工具调用块在消息内容中的索引，从 0 开始。 */
       contentIndex: number;

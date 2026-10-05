@@ -4,16 +4,19 @@
   "modelProviders": [
     {
       "name": "lcn29",
+      "baseUrl": "${BASE_URL}",
+      "apiKey": "${API_KEY}",
+      "api": "openai-completions",
       "models": [
         {
-          "id": "gemini-3.8-flash-high"
+          "id": "gemini-3.8-flash-high",
+          "maxTokens": 16384
         },
         {
-          "id": "gpt-6.1-sol"
+          "id": "gpt-6.1-sol",
+          "maxTokens": 16384
         }
-      ],
-      "baseUrl": "${BASE_URL}",
-      "apiKey": "${API_KEY}"
+      ]
     }
   ]
 }

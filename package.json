@@ -14,6 +14,7 @@
     "test": "cd .build/test && node --test"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.131.0",
     "openai": "^7.27.0",
     "partial-json": "^0.1.7",
     "typebox": "^1.3.34"

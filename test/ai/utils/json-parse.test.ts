@@ -1,6 +1,50 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { parseStreamingJson } from "../../../src/ai/utils/json-parse.ts";
+import { parseJsonWithRepair, parseStreamingJson } from "../../../src/ai/utils/json-parse.ts";
+
+/**
+ * 验证完整解析保留合法 JSON 值，修复仅作用于字符串内部的非法转义和控制字符。
+ * @throws 解析值或修复后的字符串内容不符时抛出断言错误。
+ */
+test("完整 JSON 解析保留原值并修复字符串转义", (): void => {
+  for (const value of [null, false, 0, "文本", [1, 2], { a: 17, b: 25 }]) {
+    const json = JSON.stringify(value);
+    assert.deepEqual(parseJsonWithRepair<unknown>(json), value);
+  }
+  const escaped = String.raw`{"text":"\u4f60\n\"\\"}`;
+  assert.deepEqual(parseJsonWithRepair(escaped), { text: '你\n"\\' });
+  const invalidEscape = String.raw`{"text":"值\q"}`;
+  assert.deepEqual(parseJsonWithRepair(invalidEscape), { text: "值\\q" });
+  const controls = "\b\f\n\r\t\u0000\u001f";
+  assert.deepEqual(parseJsonWithRepair(`{"text":"${controls}"}`), { text: controls });
+});
+
+/**
+ * 验证完整解析不补齐结构或 Unicode 转义，解析失败会传递异常而非返回部分值。
+ * @throws 未按要求抛出 SyntaxError 时抛出断言错误。
+ */
+test("完整 JSON 解析拒绝空值、不完整结构及错误 Unicode 转义", (): void => {
+  for (const json of [
+    "",
+    "  ",
+    "无效JSON",
+    '{"a":17',
+    String.raw`{"text":"\u12"}`,
+    String.raw`{"text":"\uZZZZ"}`,
+    String.raw`{"text":"值\q"`,
+  ]) {
+    assert.throws(
+      /**
+       * 解析无法通过字符串修复补全的 JSON。
+       * @throws 原文或修复后的文本仍无效时抛出 SyntaxError。
+       */
+      (): void => {
+        parseJsonWithRepair(json);
+      },
+      SyntaxError,
+    );
+  }
+});
 
 /**
  * 验证空参数或无法解析的内容返回空对象。

@@ -38,8 +38,8 @@ process.on("exit", () => {
   if (round === 0) {
     return;
   }
-  const expectedRounds = mode === "limit" ? 4 :
-    ["network_error", "validation_error", "unknown_tool"].includes(mode) ? 1 : 2;
+  const expectedRounds = ["limit", "fourth_final"].includes(mode) ? 4 :
+    ["network_error", "validation_error", "unknown_tool", "no_tools"].includes(mode) ? 1 : 2;
   assert.equal(round, expectedRounds);
 });
 /**
@@ -72,13 +72,14 @@ globalThis.fetch = async (input, init) => {
   }]);
   assert.deepEqual(body.messages, expected);
   round++;
-  assert.ok(round <= (mode === "limit" ? 4 : 2));
+  assert.ok(round <= (["limit", "fourth_final"].includes(mode) ? 4 : 2));
   if (mode === "network_error") {
     throw new Error("模拟网络失败");
   }
   let delta;
   let reason;
-  if (round === 1 || mode === "limit") {
+  if ((round === 1 && mode !== "no_tools") || mode === "limit" ||
+    (mode === "fourth_final" && round < 4)) {
     const name = mode === "unknown_tool" ? "subtract" : "add";
     const args = mode === "validation_error" ? { a: 17 } :
       mode === "converted" ? { a: "17", b: "25" } : { a: 17, b: 25 };
@@ -87,13 +88,30 @@ globalThis.fetch = async (input, init) => {
       type: "function",
       function: { name, arguments: JSON.stringify(args) },
     };
-    delta = { tool_calls: [{ index: 0, ...toolCall }] };
-    reason = mode === "tool_length" ? "length" : "tool_calls";
-    expected.push({ role: "assistant", content: null, tool_calls: [toolCall] });
-    expected.push({ role: "tool", content: "42", tool_call_id: toolCall.id });
+    if (mode === "multiple_tools") {
+      const secondCall = {
+        id: "call_second",
+        type: "function",
+        function: { name: "add", arguments: JSON.stringify({ a: 1, b: 2 }) },
+      };
+      delta = {
+        content: "执行两个加法",
+        tool_calls: [{ index: 0, ...toolCall }, { index: 1, ...secondCall }],
+      };
+      reason = "stop";
+      expected.push({ role: "assistant", content: "执行两个加法", tool_calls: [toolCall, secondCall] });
+      expected.push({ role: "tool", content: "42", tool_call_id: toolCall.id });
+      expected.push({ role: "tool", content: "3", tool_call_id: secondCall.id });
+    } else {
+      delta = { tool_calls: [{ index: 0, ...toolCall }] };
+      reason = mode === "tool_length" ? "length" : "tool_calls";
+      expected.push({ role: "assistant", content: null, tool_calls: [toolCall] });
+      expected.push({ role: "tool", content: "42", tool_call_id: toolCall.id });
+    }
   } else {
     delta = { content: "17 加 25 等于 42。" };
-    reason = mode === "length" ? "length" : mode === "content_filter" ? "content_filter" : "stop";
+    reason = mode === "length" ? "length" : mode === "content_filter" ? "content_filter" :
+      mode === "no_tools" ? "tool_calls" : "stop";
   }
   const chunk = { choices: [{ delta, finish_reason: reason }] };
   const data = "data: " + JSON.stringify(chunk) + "\\n\\ndata: [DONE]\\n\\n";
@@ -118,15 +136,20 @@ globalThis.fetch = async (input, init) => {
     modelProviders: [
       {
         name: "其他服务商",
+        api: "anthropic-messages",
         baseUrl: "https://other.example.invalid/v1",
         apiKey: "other-api-key",
-        models: [{ id: "gpt-6.1-sol" }],
+        models: [{ id: "gpt-6.1-sol", maxTokens: 500000 }],
       },
       {
         name: "lcn29",
+        api: "openai-completions",
         baseUrl: "https://example.invalid/v1",
         apiKey: "${API_KEY}",
-        models: [{ id: "gemini-3.8-flash-high" }, { id: "gpt-6.1-sol" }],
+        models: [
+          { id: "gemini-3.8-flash-high", maxTokens: 500000 },
+          { id: "gpt-6.1-sol", maxTokens: 500000 },
+        ],
       },
     ],
   });
@@ -134,7 +157,7 @@ globalThis.fetch = async (input, init) => {
   writeFileSync(join(cwd, ".env"), 'API_KEY="test-api-key"');
   /**
    * 在独立进程中运行入口，所有请求均由模拟实现处理。
-   * @param mode - 模拟正常结束、令牌上限、参数转换、请求错误、工具校验错误或连续四轮工具调用。
+   * @param mode - 模拟结束状态、单轮多工具、第四轮答复、参数转换及请求或工具错误。
    * @returns 入口进程的退出状态和输出。
    */
   function run(
@@ -143,6 +166,9 @@ globalThis.fetch = async (input, init) => {
       | "length"
       | "tool_length"
       | "converted"
+      | "multiple_tools"
+      | "fourth_final"
+      | "no_tools"
       | "network_error"
       | "content_filter"
       | "validation_error"
@@ -166,7 +192,13 @@ globalThis.fetch = async (input, init) => {
   assert.equal(limited.status, 0, limited.stderr);
   assert.equal(limited.stdout, success.stdout);
   assert.equal(limited.stderr, "");
-  for (const mode of ["tool_length", "converted"] as const) {
+  for (const mode of [
+    "tool_length",
+    "converted",
+    "multiple_tools",
+    "fourth_final",
+    "no_tools",
+  ] as const) {
     const result = run(mode);
     assert.equal(result.error, undefined);
     assert.equal(result.status, 0, result.stderr);
@@ -219,7 +251,14 @@ globalThis.fetch = async (input, init) => {
     );
   }
   rmSync(configPath);
-  assert.equal(run().status, 1);
+  const missingConfig = run();
+  assert.equal(missingConfig.error, undefined);
+  assert.equal(missingConfig.status, 1);
+  assert.equal(missingConfig.stdout, "");
+  assert.equal(
+    missingConfig.stderr,
+    "模型配置加载或校验失败，请检查 setting.json、同目录 .env 及模型选择配置。\n",
+  );
 });
 
 /**
@@ -254,9 +293,10 @@ globalThis.fetch = async () => {
     modelProviders: [
       {
         name: "服务商",
+        api: "openai-completions",
         baseUrl: "https://example.invalid/v1",
         apiKey: "test-secret-key",
-        models: [{ id: "已声明模型" }],
+        models: [{ id: "已声明模型", maxTokens: 500000 }],
       },
     ],
   };
@@ -273,4 +313,88 @@ globalThis.fetch = async () => {
     result.stderr,
     "模型配置加载或校验失败，请检查 setting.json、同目录 .env 及模型选择配置。\n",
   );
+});
+
+/**
+ * 验证入口按所选供应商的 api 分发到 Anthropic 协议并传递显式或缺省生成预算。
+ * @param t - 提供临时目录清理的测试上下文。
+ * @throws 入口未使用配置协议、认证不符或最终文本不符时抛出断言错误。
+ * @remarks 创建临时配置和模拟请求模块，在独立进程运行入口，测试结束后清理临时目录。
+ */
+test("入口按供应商配置选择 Anthropic 协议", (t: TestContext): void => {
+  const prefix = join(tmpdir(), "lcn-main-anthropic-");
+  const cwd = mkdtempSync(prefix);
+  /**
+   * 清理测试目录及模拟配置。
+   * @throws 删除临时目录失败时抛出异常。
+   */
+  t.after((): void => rmSync(cwd, { recursive: true, force: true }));
+  const mockPath = join(cwd, "mock.mjs");
+  writeFileSync(
+    mockPath,
+    `
+import assert from "node:assert/strict";
+/**
+ * 核对 Anthropic 请求并返回命名 SSE 文本事件。
+ * @param input - 请求地址。
+ * @param init - 请求头及序列化参数。
+ * @returns 正常结束的模拟响应。
+ * @throws 协议地址、认证或模型选择不符时抛出断言错误。
+ */
+globalThis.fetch = async (input, init) => {
+  assert.equal(String(input), "https://example.invalid/v1/messages?beta=true");
+  const headers = new Headers(init.headers);
+  assert.equal(headers.get("x-api-key"), "test-api-key");
+  const body = JSON.parse(init.body);
+  assert.equal(body.model, "gpt-6.1-sol");
+  assert.equal(body.stream, true);
+  assert.equal(body.max_tokens, Number(process.env.EXPECTED_MAX_TOKENS));
+  assert.equal(body.tools[0].name, "add");
+  const events = [
+    { type: "message_start", message: { content: [], stop_reason: null } },
+    { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+    { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "协议选择正确" } },
+    { type: "content_block_stop", index: 0 },
+    { type: "message_delta", delta: { stop_reason: "end_turn" } },
+    { type: "message_stop" },
+  ];
+  let data = "";
+  for (const event of events) {
+    data += "event: " + event.type + "\\ndata: " + JSON.stringify(event) + "\\n\\n";
+  }
+  return new Response(data, { headers: { "content-type": "text/event-stream" } });
+};
+`,
+  );
+  const config = {
+    provider: "服务商",
+    model: "gpt-6.1-sol",
+    modelProviders: [
+      {
+        name: "服务商",
+        api: "anthropic-messages",
+        baseUrl: "https://example.invalid",
+        apiKey: "test-api-key",
+        models: [
+          { id: "gemini-3.8-flash-high", maxTokens: 999 },
+          { id: "gpt-6.1-sol", maxTokens: 1234 },
+        ],
+      },
+    ],
+  };
+  const configPath = join(cwd, "setting.json");
+  for (const maxTokens of [1234, undefined]) {
+    Object.assign(config.modelProviders[0].models[1], { maxTokens });
+    writeFileSync(configPath, JSON.stringify(config));
+    const result = spawnSync(process.execPath, ["--import", mockPath, fileURLToPath(mainUrl)], {
+      cwd,
+      encoding: "utf8",
+      timeout: 5000,
+      env: { ...process.env, EXPECTED_MAX_TOKENS: String(maxTokens ?? 16384) },
+    });
+    assert.equal(result.error, undefined);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stderr, "");
+    assert.equal(result.stdout, "[ { type: 'text', text: '协议选择正确' } ]\n");
+  }
 });

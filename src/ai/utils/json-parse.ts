@@ -38,6 +38,24 @@ export function parseStreamingJson<T = Record<string, unknown>>(
 }
 
 /**
+ * 解析完整 JSON，并在首次失败且转义修复改变原文时重试一次。
+ * @param json - 待解析的 JSON 原文。
+ * @returns 原文或修复后文本的解析值；不校验值是否符合泛型 T。
+ * @throws 修复未改变原文时抛出首次解析异常；修复后仍无效时抛出重试的解析异常。
+ */
+export function parseJsonWithRepair<T>(json: string): T {
+  try {
+    return JSON.parse(json) as T;
+  } catch (error) {
+    const repairedJson = repairJson(json);
+    if (repairedJson !== json) {
+      return JSON.parse(repairedJson) as T;
+    }
+    throw error;
+  }
+}
+
+/**
  * 转义 JSON 字符串内部的控制字符和无效反斜杠，尽量保留原有内容。
  * @param json - 完整或未收齐的 JSON 原文。
  * @returns 修复后的字符串；不补齐括号、引号或缺失的属性值。
@@ -95,24 +113,6 @@ function repairJson(json: string): string {
   }
 
   return repaired;
-}
-
-/**
- * 解析完整 JSON，并在首次失败且转义修复改变原文时重试一次。
- * @param json - 待解析的 JSON 原文。
- * @returns 原文或修复后文本的解析值；不校验值是否符合泛型 T。
- * @throws 修复未改变原文时抛出首次解析异常；修复后仍无效时抛出重试的解析异常。
- */
-function parseJsonWithRepair<T>(json: string): T {
-  try {
-    return JSON.parse(json) as T;
-  } catch (error) {
-    const repairedJson = repairJson(json);
-    if (repairedJson !== json) {
-      return JSON.parse(repairedJson) as T;
-    }
-    throw error;
-  }
 }
 
 /**

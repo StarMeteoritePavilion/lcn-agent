@@ -42,10 +42,90 @@ test("无效生成参数通过错误事件结束且不发送请求", async (): P
       const result = await stream.result();
       assert.equal(requests, 0);
       assert.equal(result.stopReason, "error");
-      assert.ok(result.errorMessage?.includes(field));
+      assert.equal(
+        result.errorMessage,
+        field === "maxTokens"
+          ? "maxTokens 必须是非负有限整数。"
+          : "temperature 必须是 0 到 2 之间的有限数值。",
+      );
       assert.deepEqual(events, [{ type: "error", reason: "error", error: result }]);
     }
   }
+});
+
+/**
+ * 验证工具先出现时的内容索引、先标识后索引的关联和令牌截断后的参数保留。
+ * @returns Promise 完成表示后续分片和结束原因覆盖、内容结束事件及内部字段清理均已验证。
+ * @throws 工具合并、累计内容、结束原因或事件顺序不符时抛出断言错误。
+ */
+test("工具按标识创建后补索引，继续读取结束分片并保留令牌截断内容", async (): Promise<void> => {
+  const stream = streamCompletion(
+    model,
+    { messages: [] },
+    {
+      apiKey: "test-api-key",
+      /**
+       * 返回先标识后索引的工具分片、后续文本及两次结束原因。
+       * @returns Promise 完成后返回包含截断参数的模拟响应。
+       */
+      fetch: async (): Promise<Response> =>
+        response([
+          {
+            choices: [
+              {
+                delta: {
+                  tool_calls: [{ id: "call-first", function: { name: "add", arguments: '{"a":' } }],
+                },
+                finish_reason: "stop",
+              },
+            ],
+          },
+          {
+            choices: [
+              {
+                delta: {
+                  content: "截断文本",
+                  tool_calls: [{ index: 7, id: "call-first", function: { arguments: "17," } }],
+                },
+                finish_reason: null,
+              },
+            ],
+          },
+          {
+            choices: [
+              {
+                delta: { tool_calls: [{ index: 7, function: { arguments: '"b":25' } }] },
+                finish_reason: "length",
+              },
+            ],
+          },
+        ]),
+    },
+  );
+  const events = await collect(stream);
+  const result = await stream.result();
+  const toolCall = {
+    type: "toolCall",
+    id: "call-first",
+    name: "add",
+    arguments: { a: 17, b: 25 },
+  };
+  assert.deepEqual(result.content, [toolCall, { type: "text", text: "截断文本" }]);
+  assert.equal(result.stopReason, "length");
+  assert.equal(result.rawStopReason, "length");
+  assert.equal(result.errorMessage, undefined);
+  assert.deepEqual(events, [
+    { type: "start", partial: result },
+    { type: "toolcall_start", contentIndex: 0, partial: result },
+    { type: "toolcall_delta", contentIndex: 0, delta: '{"a":', partial: result },
+    { type: "text_start", contentIndex: 1, partial: result },
+    { type: "text_delta", contentIndex: 1, delta: "截断文本", partial: result },
+    { type: "toolcall_delta", contentIndex: 0, delta: "17,", partial: result },
+    { type: "toolcall_delta", contentIndex: 0, delta: '"b":25', partial: result },
+    { type: "toolcall_end", contentIndex: 0, toolCall, partial: result },
+    { type: "text_end", contentIndex: 1, content: "截断文本", partial: result },
+    { type: "done", reason: "length", message: result },
+  ]);
 });
 
 /**
@@ -94,7 +174,7 @@ test("合法生成参数边界保持原值传递", async (): Promise<void> => {
   }
 });
 
-const model: Model = {
+const model: Model<"openai-completions"> = {
   id: "测试模型",
   api: "openai-completions",
   provider: "测试服务商",
@@ -204,12 +284,12 @@ test("响应读取失败保留工具参数并清理内部拼接字段", async ()
 });
 
 /**
- * 验证补全包装接口无需消费事件即可获得完整消息。
+ * 验证补全包装接口返回事件流，并可通过 result() 等待完整消息。
  * @returns Promise 完成表示公开接口的返回类型和最终消息均已验证。
  * @throws 返回值或消息内容不符时抛出断言错误。
  */
 
-test("completion 返回 Promise 并直接完成最终助手消息", async (): Promise<void> => {
+test("completion 返回事件流并通过 result 获取最终助手消息", async (): Promise<void> => {
   const pending = completion(
     model,
     { messages: [] },
@@ -227,7 +307,8 @@ test("completion 返回 Promise 并直接完成最终助手消息", async (): Pr
     },
   );
   assert.ok(pending instanceof Promise);
-  const result = await pending;
+  const eventStream = await pending;
+  const result = await eventStream.result();
   assert.deepEqual(result.content, [{ type: "text", text: "第一段第二段" }]);
   assert.equal(result.stopReason, "stop");
   assert.equal(result.rawStopReason, "stop");
@@ -524,7 +605,7 @@ test("省略生成选项及传入零上限时不使用模型默认上限，空�
   for (const maxTokens of [undefined, 0]) {
     const stream = streamCompletion(
       model,
-      { systemPrompt: "", messages: [] },
+      { systemPrompt: "", messages: [], tools: [] },
       {
         apiKey: "test-api-key",
         maxTokens,
@@ -691,7 +772,8 @@ test("缺失或空密钥通过错误事件完成结果且不发送请求", async
   }
   const omitted = completion(model, { messages: [] });
   assert.ok(omitted instanceof Promise);
-  const omittedResult = await omitted;
+  const omittedStream = await omitted;
+  const omittedResult = await omittedStream.result();
   assert.equal(omittedResult.stopReason, "error");
   assert.equal(omittedResult.errorMessage, "No API key for provider: 测试服务商");
 });

@@ -8,7 +8,7 @@
 | ------------------------------------------------------- | --------------------------------------------------------------------- |
 | [JavaScript 基础语法](#javascript-基础语法)             | 剩余参数、展开语法、三元运算符、条件添加属性、箭头函数、`void` 运算符 |
 | [TypeScript 接口与泛型](#typescript-接口与泛型)         | 接口、类型组合、泛型默认值、泛型约束                                  |
-| [TypeScript 工具类型](#typescript-工具类型)             | `Extract`、条件类型、`Record`、函数类型                               |
+| [TypeScript 工具类型](#typescript-工具类型)             | `Extract`、条件类型、`Record`、函数类型、`ReturnType`、`Awaited`      |
 | [TypeScript 类型检查与推断](#typescript-类型检查与推断) | 非空断言、`as`、`satisfies`、上下文类型、类型谓词                     |
 | [异步迭代与生成器](#异步迭代与生成器)                   | 生成器、迭代协议、Symbol 入口、事件流与结束通知                       |
 | [Node.js 模块与进程](#nodejs-模块与进程)                | 入口文件判断、函数返回、进程退出与退出码                              |
@@ -377,6 +377,52 @@ type ScenarioMap = {
 `unknown` 不表示结果为空。通过 `await` 取得结果后，需要先检查或缩小类型，才能读取具体属性或调用方法；`any` 则会放宽这些检查。
 
 `Record<string, ...>` 不保证场景名存在。历史入口通过 `Object.hasOwn(scenarios, scenario)` 进行运行时检查，再调用对应函数。
+
+### `ReturnType` 与类型位置的 `typeof`
+
+**`ReturnType<T>` 从函数类型 `T` 中提取返回值类型，用于复用已有类型，避免重复声明。** 名称大小写为 `ReturnType`，它是 TypeScript 内置工具类型。
+
+```ts
+type GetName = () => string;
+type Name = ReturnType<GetName>; // string
+
+type GetCount = () => number;
+type Count = ReturnType<GetCount>; // number
+```
+
+对于已有函数，先通过类型位置的 `typeof` 取得函数类型，再提取返回类型。[main.ts](../../src/main.ts) 中：
+
+```ts
+let runtime: ReturnType<typeof loadRuntime>;
+```
+
+| 部分                 | 含义                               |
+| -------------------- | ---------------------------------- |
+| `let runtime: ...`   | 声明变量并标注类型，尚未给变量赋值 |
+| `typeof loadRuntime` | 取得 `loadRuntime` 的函数类型      |
+| `ReturnType<...>`    | 提取该函数类型的返回值类型         |
+
+[main.ts](../../src/main.ts) 中，`loadRuntime` 的参数为 `settingPath: string`，显式返回类型为 `{ model: Model; options: StreamOptions }`，因此上面的类型标注等价于 `let runtime: { model: Model; options: StreamOptions }`。当函数的返回类型改变时，通过 `ReturnType` 引用的类型也会随之变化。
+
+类型声明不会调用函数，也不会读取配置文件。实际执行发生在后续赋值时：
+
+```ts
+runtime = loadRuntime("setting.json");
+```
+
+**类型位置与表达式位置的 `typeof` 用途不同**：`typeof loadRuntime` 写在类型标注里时取得函数类型；写在运行时表达式里时得到字符串 `"function"`。
+
+#### 异步返回值与 `Awaited`
+
+`ReturnType` 保留函数实际声明的返回类型，不会自动展开 Promise：
+
+```ts
+type LoadName = () => Promise<string>;
+type PendingName = ReturnType<LoadName>; // Promise<string>
+type ResolvedName = Awaited<ReturnType<LoadName>>; // string
+```
+
+`Awaited<T>` 按照 `await` 的解析规则提取完成后的结果类型，包括递归展开嵌套 Promise；它本身不会执行异步等待。当前 `loadRuntime` 是同步函数，使用 `ReturnType<typeof loadRuntime>` 即可，无需额外添加 `Awaited`。`completion` 返回 `Promise<AssistantMessageEventStream>`，因此 `Awaited<ReturnType<typeof completion>>` 提取的是事件流类型，最终消息仍需通过该流的 `result()` 获取。
 
 ## TypeScript 类型检查与推断
 

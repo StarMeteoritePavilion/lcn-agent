@@ -111,3 +111,80 @@ test("嵌套工具参数转换不修改原值并报告嵌套缺失路径", (): v
     /Validation failed for tool "nested":\n  - input\.value:/u,
   );
 });
+
+/**
+ * 验证校验器不填充默认值或删除额外属性，字段约束以工具 Schema 为准。
+ * @throws 参数内容、Schema 约束或原始调用内容不符时抛出断言错误。
+ */
+test("工具参数校验保留额外字段且不自动填充默认值", (): void => {
+  const defaultTool: Tool = {
+    name: "defaults",
+    description: "验证默认值与额外字段规则",
+    parameters: Type.Object({ value: Type.Number({ default: 42 }) }),
+  };
+  const call: ToolCall = {
+    type: "toolCall",
+    id: "call_defaults",
+    name: "defaults",
+    arguments: { value: "17", extra: "保留" },
+  };
+  assert.deepEqual(validateToolCall([defaultTool], call), { value: 17, extra: "保留" });
+  const strictTool: Tool = {
+    ...defaultTool,
+    parameters: Type.Object({ value: Type.Number() }, { additionalProperties: false }),
+  };
+  assert.throws(
+    /**
+     * 校验严格 Schema 不允许的额外属性。
+     * @throws 额外属性不满足 Schema 时抛出校验异常。
+     */
+    (): void => {
+      validateToolCall([strictTool], call);
+    },
+    /Validation failed for tool "defaults":/u,
+  );
+  assert.deepEqual(call.arguments, { value: "17", extra: "保留" });
+  const missing: ToolCall = { ...call, arguments: {} };
+  assert.throws(
+    /**
+     * 校验存在默认值但未提供必填字段的参数。
+     * @throws 不填充默认值导致缺失 value 时抛出校验异常。
+     */
+    (): void => {
+      validateToolCall([defaultTool], missing);
+    },
+    /Validation failed for tool "defaults":\n  - value:/u,
+  );
+  assert.deepEqual(missing.arguments, {});
+});
+
+/**
+ * 验证同名工具采用首个声明，并定位顶层参数类型错误。
+ * @throws 首个 Schema 未生效或顶层错误路径不符时抛出断言错误。
+ */
+test("同名工具只使用首个声明并报告顶层参数错误", (): void => {
+  const second: Tool = {
+    ...tool,
+    parameters: Type.Object({ a: Type.String(), b: Type.String() }),
+  };
+  const call: ToolCall = {
+    type: "toolCall",
+    id: "call_add",
+    name: "add",
+    arguments: { a: "17", b: "25" },
+  };
+  assert.deepEqual(validateToolCall([tool, second], call), { a: 17, b: 25 });
+  assert.deepEqual(validateToolCall([second, tool], call), { a: "17", b: "25" });
+  // 参数来自外部 JSON，类型声明不能保证运行时一定是对象。
+  const invalidArguments: Record<string, unknown> = JSON.parse("null");
+  assert.throws(
+    /**
+     * 校验运行时并非对象的工具参数。
+     * @throws 参数顶层类型不符合工具 Schema 时抛出校验异常。
+     */
+    (): void => {
+      validateToolCall([tool], { ...call, arguments: invalidArguments });
+    },
+    /Validation failed for tool "add":\n  - root:/u,
+  );
+});

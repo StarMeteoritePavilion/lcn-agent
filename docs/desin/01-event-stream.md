@@ -13,15 +13,17 @@
 原始学习记录中的工作区 HEAD 为 `b2b5c42f6138b73ec4b2f49ec0ca468800f88586`，不代表当前项目版本。
 下表链接指向本项目当前实现；正文中的 `complete`、`streamSimple`、`lazyStream`、
 推理、用量和取消能力属于 pi 基准。本项目已实现文本与工具调用事件，以及有四轮上限的加法工具闭环。
-本地 `completion(model, context, options)` 返回 `Promise<AssistantMessage>`，等待最终消息；
-消费增量事件应调用 `openai-completions.ts` 的 `stream`，最终消息通过同一事件流的 `result()` 获取。
+本地 `completion(model, context, options)` 按 `model.api` 分发至 OpenAI 或 Anthropic，
+返回 `Promise<AssistantMessageEventStream>`；取得事件流后消费增量，最终消息通过同一流的 `result()` 获取。
+两个协议模块的 `stream` 则同步返回事件流；入口当前只等待最终消息，不消费增量。
 
 | 文件                                                             | 本文关注的内容                                   |
 | ---------------------------------------------------------------- | ------------------------------------------------ |
 | [event-stream.ts](../../src/ai/utils/event-stream.ts)            | `FifoQueue`、`EventStream`、助手事件流及工厂函数 |
 | [types.ts](../../src/ai/types.ts)                                | `AssistantMessageEvent` 的字段和事件约定         |
 | [openai-completions.ts](../../src/ai/api/openai-completions.ts)  | 真实生产者如何创建、推送和结束事件流             |
-| [index.ts](../../src/ai/index.ts)                                | 本地 `completion` 如何等待最终助手消息           |
+| [anthropic-messages.ts](../../src/ai/api/anthropic-messages.ts)  | SSE 协议事件如何转换为助手事件                   |
+| [index.ts](../../src/ai/index.ts)                                | 本地 `completion` 如何分发请求并返回事件流       |
 | [event-stream.test.ts](../../test/ai/utils/event-stream.test.ts) | FIFO、等待者顺序、结束与结果的本地测试           |
 
 pi 基准中的 `packages/ai/src/models.ts` 和 `packages/ai/src/api/lazy.ts` 分别用于讲解
@@ -422,7 +424,9 @@ done(reason = "stop", message = 完整助手消息)
 
 这是教学事件序列，不是一次真实服务抓包。`contentIndex` 指向助手消息内容数组中的块，
 不是 SDK chunk 的序号。本地工具调用使用 `toolcall_start`、`toolcall_delta` 和 `toolcall_end`；
-`toolcall_delta.delta` 是参数原文片段，`toolcall_end` 不表示已通过参数校验。推理事件属于 pi 基准。
+`toolcall_delta.delta` 是参数原文片段，`toolcall_end` 不表示已通过参数校验。
+OpenAI 在响应流读取完毕后发送内容结束事件；Anthropic 在对应 `content_block_stop` 时发送，
+这些事件都不表示整次请求已成功，仍需等待 `done` 或 `error`。推理事件属于 pi 基准。
 
 请求建立前失败可以直接产生 `error`，无需伪造一个 `start`；
 开始之后失败则以 `error` 结束，不应伪装成正常 `done`。
@@ -691,6 +695,7 @@ console.log("通过：过程与结果、缓冲、等待者分配、结束语义�
 这些检查不调用真实服务，不代表其他 API 的端到端行为已经验证。
 
 这份设计对应 [阶段功能记录](../stage-progress.md) 中阶段 2 的核心内容。
-本地工具调用及加法执行闭环记录在阶段 3；pi 学习资料中的取消、事件帧和延迟加载属于扩展主题，
+本地工具调用及加法执行闭环记录在阶段 3，Anthropic 接入与协议分发记录在阶段 4；
+pi 学习资料中的取消、事件帧和延迟加载属于扩展主题，
 不代表本项目已实现这些能力。
 阅读本篇时先掌握两个队列、两种读取方式和明确的生产者职责。
