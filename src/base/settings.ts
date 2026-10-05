@@ -185,7 +185,7 @@ export function loadSettings(settingPath: string): SettingsConfig {
    * @param entry - 所选供应商的模型条目。
    * @returns 模型标识是否精确匹配。
    */
-  const found = selected.models.some((entry) => entry.id === id);
+  const found = selected.models.some((entry: ModelConfig): boolean => entry.id === id);
   if (!found) {
     throw new Error("model 必须与所选供应商 models 中的 id 精确匹配。");
   }

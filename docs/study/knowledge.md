@@ -4,14 +4,14 @@
 
 ## 导航与追加约定
 
-| 分类                                                    | 已收录主题                                      |
-| ------------------------------------------------------- | ----------------------------------------------- |
-| [JavaScript 基础语法](#javascript-基础语法)             | 剩余参数、展开语法、三元运算符、条件添加属性    |
-| [TypeScript 接口与泛型](#typescript-接口与泛型)         | 接口、类型组合、泛型默认值、泛型约束            |
-| [TypeScript 工具类型](#typescript-工具类型)             | `Extract`、条件类型、`Record`、函数类型         |
-| [TypeScript 类型检查与推断](#typescript-类型检查与推断) | 非空断言、`as`、`satisfies`、上下文类型         |
-| [异步迭代与生成器](#异步迭代与生成器)                   | 生成器、迭代协议、Symbol 入口、事件流与结束通知 |
-| [Node.js 模块与进程](#nodejs-模块与进程)                | 入口文件判断、函数返回、进程退出与退出码        |
+| 分类                                                    | 已收录主题                                                            |
+| ------------------------------------------------------- | --------------------------------------------------------------------- |
+| [JavaScript 基础语法](#javascript-基础语法)             | 剩余参数、展开语法、三元运算符、条件添加属性、箭头函数、`void` 运算符 |
+| [TypeScript 接口与泛型](#typescript-接口与泛型)         | 接口、类型组合、泛型默认值、泛型约束                                  |
+| [TypeScript 工具类型](#typescript-工具类型)             | `Extract`、条件类型、`Record`、函数类型                               |
+| [TypeScript 类型检查与推断](#typescript-类型检查与推断) | 非空断言、`as`、`satisfies`、上下文类型、类型谓词                     |
+| [异步迭代与生成器](#异步迭代与生成器)                   | 生成器、迭代协议、Symbol 入口、事件流与结束通知                       |
+| [Node.js 模块与进程](#nodejs-模块与进程)                | 入口文件判断、函数返回、进程退出与退出码                              |
 
 后续维护方式：
 
@@ -107,6 +107,70 @@ const present = { fetch: undefined };
 ```
 
 这里的 `{}` 是运行时空对象；类型位置的 `{}` 含义见[联合类型与交叉类型](#联合类型与交叉类型)。
+
+### 箭头函数的参数括号与隐式返回
+
+**只有一个普通参数、且没有类型标注时，箭头函数可以省略参数括号。** 以下两种回调写法等价：
+
+```ts
+block => block.type === "text"
+(block) => block.type === "text"
+```
+
+这是独立的语法片段；放入 `filter(...)` 时，参数类型可以从数组元素类型推断。省略括号不会改变运行结果或类型推断。
+
+| 写法                                                     | 参数括号要求             |
+| -------------------------------------------------------- | ------------------------ |
+| `block => block.type === "text"`                         | 单个普通参数，可以省略   |
+| `(block: TextContent) => block.type === "text"`          | 有参数类型标注，必须保留 |
+| `(block): block is TextContent => block.type === "text"` | 有返回类型谓词，必须保留 |
+| `(block, index) => index > 0`                            | 多个参数，必须保留       |
+| `() => true`                                             | 没有参数，必须保留       |
+
+`=>` 后直接写表达式，会隐式返回其结果；写成 `{ ... }` 函数体时，需要显式 `return`：
+
+```ts
+(block) => {
+  return block.type === "text";
+};
+```
+
+这里只返回比较得到的布尔值，`filter` 据此保留元素。若写了大括号却漏掉 `return`，回调返回 `undefined`，`filter` 不会保留该元素。类型谓词的作用见[类型谓词与筛选中的类型收窄](#类型谓词与筛选中的类型收窄)。
+
+### `void` 运算符与忽略异步返回值
+
+**`void 表达式` 会执行表达式，并将整个表达式的结果变成 `undefined`。** 它是 JavaScript 的一元运算符，不会阻止函数执行，也不会等待或取消异步任务。
+
+[openai-completions.ts](../../src/ai/api/openai-completions.ts) 的 `stream()` 函数中有以下节选：
+
+```ts
+const stream = new AssistantMessageEventStream();
+
+void runStream(model, context, stream, options);
+
+return stream;
+```
+
+`runStream` 是返回 `Promise<void>` 的异步函数。调用后会先执行到第一个暂停点，再异步继续处理响应；这里忽略它返回的 Promise，让外层函数无需等请求完成就返回事件流对象。后续数据通过 `stream.push(...)` 交付，调用方可以逐步读取。
+
+| 写法                   | 行为                                              |
+| ---------------------- | ------------------------------------------------- |
+| `runStream(...)`       | 调用函数，不等待，返回值未被使用                  |
+| `void runStream(...)`  | 调用函数，不等待，明确表达有意忽略返回值          |
+| `await runStream(...)` | 等待 Promise 完成后再继续；拒绝时在等待处抛出异常 |
+
+因此，这里的 `void` 并非必须，直接调用也不会自动等待。它主要表达意图；某些检查未处理 Promise 的代码规则允许这种写法，是否允许取决于规则配置。`void` 不创建新线程，函数的异步行为来自自身实现。
+
+**忽略 Promise 不等于处理错误。** `void` 不捕获同步异常，也不为 Promise 注册拒绝处理；未处理的拒绝仍可能被运行环境报告。当前 `runStream` 自身用 `try/catch` 将请求与响应处理异常转换为 `error` 事件，并结束事件流。这是函数内部的处理，不是 `void` 的效果，也不保证 `catch` 自身再次出错时 Promise 不会拒绝。
+
+注意区分两个位置的 `void`：
+
+| 写法                  | 含义                                                     |
+| --------------------- | -------------------------------------------------------- |
+| `void runStream(...)` | 运行时运算符，执行调用并忽略表达式结果                   |
+| `Promise<void>`       | TypeScript 类型，表示 Promise 完成后不提供有意义的结果值 |
+
+即使返回类型是 `Promise<void>`，函数仍然返回 Promise，仍然可以被 `await` 等待完成。
 
 ## TypeScript 接口与泛型
 
@@ -405,6 +469,54 @@ satisfies ScenarioMap
 | 对象末尾写 `satisfies ScenarioMap`          | 目标类型提供上下文 | 保留具体场景名及各方法推断出的返回类型 |
 
 推断依据是类型约束，不是参数名称或方法体中读取的字段。`satisfies` 参与上下文推断，因此“保留具体类型”不代表目标类型对推断完全没有影响。
+
+### 类型谓词与筛选中的类型收窄
+
+**参数类型标注说明“接收什么类型”，类型谓词说明“判断结果如何帮助编译器缩小类型范围”。**
+
+| 回调写法                                                 | 含义                                                             |
+| -------------------------------------------------------- | ---------------------------------------------------------------- |
+| `(block: TextContent) => block.type === "text"`          | 参数必须已符合 `TextContent`，函数体返回布尔值                   |
+| `(block): block is TextContent => block.type === "text"` | 参数由上下文推断；返回 `true` 时，向编译器声明它是 `TextContent` |
+| `block => block.type === "text"`                         | 参数与返回类型由编译器推断                                       |
+
+`block is TextContent` 位于参数括号之后，是**返回类型位置的类型谓词**；它不会自动生成运行时检查。实际执行的只有箭头右侧的条件：
+
+```ts
+(block): block is TextContent => block.type === "text";
+```
+
+移除 TypeScript 类型信息后，对应的 JavaScript 为：
+
+```js
+(block) => block.type === "text";
+```
+
+#### 当前 `convertMessages` 中的效果
+
+[openai-completions.ts](../../src/ai/api/openai-completions.ts) 的 `convertMessages` 使用：
+
+```ts
+const assistantText = message.content
+  .filter((block): block is TextContent => block.type === "text")
+  .filter((block): block is TextContent => block.text.trim().length > 0)
+  .map((block) => block.text.trim())
+  .join("");
+```
+
+[types.ts](../../src/ai/types.ts) 中，`AssistantMessage.content` 已声明为 `TextContent[]`，因此回调参数本来就是 `TextContent`。在这个前提下，改用参数类型标注，或者完全省略类型标注，最终类型和运行结果都相同。
+
+第一个 `filter` 检查内容标识，第二个过滤空白文本，`map` 去掉首尾空白，`join("")` 无分隔地拼接文本。第二个条件只检查文本内容，不识别新的类型，无需写类型谓词；它也不会把 `string` 变成“非空字符串类型”。
+
+如果数组元素是包含其他内容类型的联合类型，类型谓词可以帮助 `filter` 将结果收窄为 `TextContent[]`。反之，把回调参数直接限定为 `TextContent`，就无法接收联合类型中的其他成员，在严格函数类型检查下会产生类型不兼容。
+
+省略显式谓词也不代表一定失去收窄：TypeScript 5.5 起可以对符合条件的函数体推断类型谓词，例如通过可辨识联合成员的 `type` 字段进行判断。能否推断取决于输入类型和判断逻辑，不能把所有返回布尔值的回调都视为类型谓词。
+
+#### 为什么不能写 `typeof block === TextContent`
+
+`TextContent` 是接口，编译后被移除，运行时没有可供比较的接口值。JavaScript 的 `typeof block` 返回 `"object"`、`"string"` 等字符串，不会返回接口名称，因此这种比较无法验证接口。
+
+`block.type === "text"` 检查的是对象的 `type` 属性，只检查这一个字段，不会自动检查 `text` 是否存在或是否为字符串。对于已经正确建模的联合类型，可以借助标识字段收窄；对于未经校验的外部数据，需要另行检查完整结构。显式类型谓词也不会让编译器证明判断逻辑正确，声明与实际检查必须一致。
 
 ## 异步迭代与生成器
 
