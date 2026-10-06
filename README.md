@@ -1,71 +1,93 @@
 # lcn-agent
 
-采用独立能力包与顶层统一装配架构的 Agent 项目。
+使用 TypeScript 开发的 Agent 项目，已完成阶段 6 的 Google Generative AI 接入。现有入口从本地配置选择模型，按供应商配置选择 OpenAI Chat Completions、Anthropic Messages、OpenAI Responses 或 Google Generative AI 协议，依次演示流式回复、完整回复、图片识别和加法工具调用，输出各项结果。
 
-> 正式源码统一存放在 `src`。当前已实现配置加载与顶层启动入口，Agent 执行循环和终端界面尚未实现。协议研究与学习笔记存放在 `docs`。
+## 当前能力
 
-## 架构方向
+- 从 `setting.json` 加载供应商和模型配置，支持 `${key}` 环境变量替换。
+- 按供应商名称与模型标识精确选择模型，供应商通过 `api` 显式选择接口协议，模型通过 `maxTokens` 配置默认生成预算。
+- 使用 OpenAI、Anthropic 或 Google SDK 发起流式请求，Anthropic 响应由本地 SSE 解析器读取，将文本及工具调用的开始、增量、结束和请求终态转换为助手事件。
+- `stream(model, context, options)` 按 `model.api` 分发请求，返回可异步迭代的助手事件流；`complete(model, context, options)` 返回最终助手消息的 Promise。
+- 工具参数以 `JsonObject` 表达，容错解析累积的 JSON 参数，执行前按工具名称精确查找并使用 TypeBox 转换、校验参数副本；JSON 解析及类型声明不能替代执行前校验。
+- Google 保留文本及工具的思考签名，历史回传须来自相同供应商和模型并符合签名格式；不输出思考文本。
+- 入口执行 `add` 工具，将助手消息和带 `toolCallId` 的结果加入历史，最多请求四轮。
+- 提供配置、启动入口、四种协议的补全接口、事件流、参数解析和校验的自动化测试，无需真实 API 密钥。
 
-- `base`：基础能力，配置加载封装在 `src/base/config-load.ts`，由顶层入口调用。
-- `ai`：模型请求、供应商协议及流式响应解析。
-- `agent`：执行循环、运行消息、工具校验与调度、授权约束及取消。
-- `tui`：终端输入、渲染及终端生命周期。
-- 其他能力包提供 MCP、Skills、存储等独立能力。
-- 下层包互不引用，包括类型依赖；顶层 `lcn-agent` 负责扩展宿主、统一装配及必要适配。
-- 具体功能通过顶层扩展接入，不绕过内核执行约束。
-- 不要求对外发布 SDK，不提前建立空包或占位接口。
+入口使用固定提示词和当前工作目录中的 `demo.png`，通过 `runModelExamples` 统一调用四个方法；流式回复实时输出文本增量，工具对话最多四轮。运行前准备该 PNG 图片；入口在任何请求之前读取图片并检查 PNG 文件签名。交互聊天、通用 Agent 执行循环、终端界面、MCP 和 Skills 尚未实现。
 
-## 开发基础
+## 快速启动
 
-项目运行要求为 Node.js 22 及以上；日常开发和 CI 统一使用 [.node-version](.node-version) 中的 Node.js 22.23.3，以及 `package.json` 的 `packageManager` 声明的 npm 10.9.9。先将本地环境切换到这组版本，再安装依赖。
+需要 Node.js 22 及以上版本。建议使用 [.node-version](.node-version) 指定的 Node.js 22.23.3，以及 [package.json](package.json) 指定的 npm 10.9.9。
 
-使用 npm 管理根目录项目依赖，通过 [.npmrc](.npmrc) 统一使用官方 npm registry。当前运行依赖只有 TOML 解析器 `smol-toml`；模型 SDK 在对应模块接入时再添加。研究文档按各自标注的 SDK 版本引用公开源码，不依赖本地安装这些 SDK。
+1. 获取源码并安装依赖：
+
+   ```sh
+   git clone https://github.com/StarMeteoritePavilion/lcn-agent.git
+   cd lcn-agent
+   npm ci --ignore-scripts
+   ```
+
+2. 首次使用时创建本地配置。已有文件时仅合并需要的内容，不要覆盖：
+
+   ```sh
+   cp setting.example.json setting.json
+   cp .env.example .env
+   ```
+
+3. 编辑 `.env`，填写服务提供方给出的 `BASE_URL` 和 `API_KEY`。示例域名 `example.invalid` 无法用于真实请求。编辑 `setting.json`，将顶层 `model` 和对应供应商的 `models[].id` 设置为该服务实际支持的模型标识。为每个供应商设置 `api`，使用 `openai-completions`、`anthropic-messages`、`openai-responses` 或 `google-generative-ai`，基础地址须与所选协议对应。模型条目必须提供 `name`；`input` 可省略，默认 `["text"]`，图片识别要求显式包含 `image`；`contextWindow` 可省略，默认 128000 tokens；`maxTokens` 可省略，省略时补为 16384；显式提供时必须是正整数。示例中的模型名称不保证被你的服务支持。
+
+4. 在项目根目录构建并运行：
+
+   ```sh
+   npm run build
+   node dist/main.js
+   ```
+
+成功时终端实时输出流式文本，再分别输出完整回复、流式回复、图片识别和工具调用的助手内容数组。配置加载失败时输出中文提示；请求失败、工具不存在、参数校验失败或第四轮仍包含工具调用时抛出异常，由 Node.js 输出错误并以非零状态退出。运行入口会调用你配置的模型服务；自动化测试使用模拟响应。
+
+## 配置
+
+[setting.example.json](setting.example.json) 提供一个供应商和两个模型的示例。顶层 `provider` 对应 `modelProviders` 数组中的 `name`，顶层 `model` 对应该供应商 `models` 中的 `id`，该供应商的 `api` 决定请求协议，模型条目的 `maxTokens` 提供默认生成预算，省略时使用 16384。Anthropic 在未提供请求上限时使用该预算；Chat Completions 和 Responses 仅发送显式提供的正整数 `options.maxTokens`；Responses 会将正值提升到至少 16。Google 仅发送显式请求上限，0 也会保留，不读取模型预算。
+
+配置路径基于当前工作目录，入口读取 `setting.json`，环境文件从其同目录读取。环境变量优先级为同目录 `.env`、进程环境变量、原占位符；必填字段中的未解析占位符会导致校验失败。
+
+字段说明、替换规则和排错步骤见 [配置指南](docs/configuration.md)。四种协议生成上限规则的后续评估见 [待办](待办.md)。`setting.json` 和 `.env` 已加入 Git 忽略规则，仓库只维护示例。
+
+## 开发与贡献
 
 ```sh
-npm ci --ignore-scripts
-npm run format
 npm run verify
 ```
 
-`npm run format` 使用现有 Prettier 配置统一排版；`npm run format:check` 只检查、不修改文件。两者自动遵循 `.gitignore`，跳过依赖、构建产物和本地配置。`npm run verify` 依次执行格式检查、测试和构建；测试准备阶段已检查全部源码与测试的类型，是提交前的统一验证入口。
+该命令依次检查格式、编译测试源码、运行测试并构建应用。[CI](.github/workflows/ci.yml) 在推送和拉取请求时运行相同检查。
 
-也可以分别执行：
+提交问题、开发流程及代码规范见 [贡献指南](CONTRIBUTING.md)。
 
-```sh
-npm run check
-npm run build
-npm test
-```
+各阶段已实现的功能见 [阶段功能记录](docs/stage-progress.md)。
 
-[GitHub Actions 工作流](.github/workflows/ci.yml) 在推送和拉取请求时触发，在 Ubuntu 上读取 `.node-version` 配置 Node.js，再执行 `npm ci --ignore-scripts` 和 `npm run verify`。工作流使用只读仓库权限，官方 Actions 固定到已核实版本对应的提交。
+## 目录与规划
 
-`npm run check` 和 `npm run build` 分别执行类型检查和源码编译。构建前自动清理 `dist`，避免保留已删除源码的产物。`tsconfig.json` 仅包含 `src/**/*.ts`，使用 ES2022 标准库与 Node.js 类型，并要求显式标记类型导入。编译后按源码目录结构输出 JavaScript 和源码映射到项目根目录的 `dist`，例如 `src/main.ts` 对应 `dist/main.js`。当前作为应用开发，不生成 SDK 类型声明文件。
+| 路径                                 | 当前职责                                         |
+| ------------------------------------ | ------------------------------------------------ |
+| `src/main.ts`                        | 加载配置，统一调用流式、完整回复、图片及工具功能 |
+| `src/base/settings.ts`               | 配置读取、环境变量替换及业务校验                 |
+| `src/ai/index.ts`                    | 按协议分发请求，提供事件流和最终消息             |
+| `src/ai/api/anthropic-messages.ts`   | 处理 Anthropic 消息请求和 SSE 协议事件           |
+| `src/ai/api/openai-completions.ts`   | 转换历史、请求模型并产生助手事件                 |
+| `src/ai/api/google-generative-ai.ts` | Google 内容、函数调用及思考签名转换              |
+| `src/ai/api/openai-responses.ts`     | Responses 输入、输出项及终态事件转换             |
+| `src/ai/api/transform-messages.ts`   | 按声明的输入能力处理用户与工具结果图片           |
+| `src/ai/utils/hash.ts`               | 缩短过长的 Responses 历史消息标识                |
+| `src/ai/types.ts`                    | 模型、上下文、消息、选项及事件类型               |
+| `src/ai/utils/event-stream.ts`       | 事件队列、异步迭代及最终结果 Promise             |
+| `src/ai/utils/json-parse.ts`         | 流式工具参数的容错解析                           |
+| `src/ai/utils/validation.ts`         | 工具名称匹配、参数转换及校验                     |
+| `test/`                              | 配置、入口、补全接口、事件流及工具参数测试       |
+| `docs/`                              | 使用说明、设计学习资料及协议研究                 |
 
-测试放在根目录 `test`，目录结构与 `src` 对应，文件使用 `.test.ts` 后缀，通过 Node.js 内置的 `node:test` 覆盖配置加载与启动入口。
+后续架构方向是由顶层装配独立能力模块，逐步加入 Agent 执行循环、终端界面及其他扩展能力。当前不提前建立未实现模块，也不作为 SDK 发布。
 
-`npm test` 自动先执行 `pretest`：清理 `.build/test`，再使用 `tsconfig.test.json` 将全部源码与测试编译到该目录。随后 `test` 进入该目录运行 `node --test`，递归发现测试。新增测试子目录无需修改命令，也不会执行已删除测试的残留产物。测试使用临时配置文件，不需要真实 API 密钥，不发送外部请求。
-
-参考资料包括 [模型协议比较](docs/research/api/ai-protocol-comparison.md) 和 [TypeScript 学习笔记](docs/study/knowledge.md)。研究文档与学习示例用于理解设计和协议，不代表当前已实现的功能。
-
-文档与说明使用中文。项目维护的 TypeScript 函数必须提供中文 TSDoc，具体要求见 [开发规范](AGENTS.md)。
-
-## 本地配置
-
-首次使用时，将 [config.example.toml](config.example.toml) 复制为 `config.toml`，将 [.env.example](.env.example) 复制为 `.env`。已有这两个文件时保留原内容，仅合并需要的配置。实际密钥写入 `.env`；两个本地配置文件均由 Git 忽略，仓库只维护示例文件。
-
-示例只演示现有加载器支持的 `API_KEY`、`BASE_URL`、`MODEL` 占位符替换，不定义未来模型模块的业务字段。`BASE_URL` 使用不可用作真实服务的示例地址；入口仅验证配置能够加载，不会发起模型请求。
-
-`src/base/config-load.ts` 导出同步函数 `loadConfig(configPath?: string)`，由 `src/main.ts` 直接导入调用。默认读取当前工作目录的 `config.toml`，也可传入绝对路径或相对于当前工作目录的路径。`.env` 始终从配置文件所在目录读取。配置加载测试位于 `test/base/config-load.test.ts`，入口测试位于 `test/main.test.ts`。
-
-后续 `model`、`mcp` 等模块使用独立配置文件，由顶层入口分别向 `loadConfig(configPath)` 传入各文件路径，再将加载结果传给对应模块。每次调用独立读取指定 TOML 文件及其同目录 `.env`，不自动合并文件、不共享配置缓存。加载器不限定文件名、配置块名称或业务字段；各模块负责定义并校验自身配置。当前入口仍只加载 `config.toml`，后续模块的文件路径与业务字段在接入时确定。
-
-TOML 字符串值写成 `"${API_KEY}"`、`"${BASE_URL}"` 或 `"${MODEL}"` 时，使用花括号内的原始变量名精确查找，区分大小写，不转换名称。读取顺序为：同目录 `.env` → 进程环境变量 → 原配置值。空字符串视为未配置；仅包含空格的值仍然有效。
-
-仅整个字符串为 `${变量名}` 时才替换，字符串中的内嵌占位符保持原样。匹配后直接按变量名读取值，无需额外的变量展开依赖。替换会遍历嵌套表和数组，不修改字段名、数字、布尔值或日期时间；替换结果不再展开。环境变量的值保持字符串类型，反斜杠和美元符号按原值保留。
-
-`.env` 使用 Node.js 内置 `parseEnv` 解析，不向 `process.env` 写入变量。`.env` 不存在时仍可加载配置；配置文件不存在、TOML 格式错误和其他文件读取错误会抛出异常。空 TOML 文件返回空配置表。
-
-执行 `npm run build` 后，在项目根目录运行 `node dist/main.js` 会加载配置，成功时仅输出“配置加载成功。”，不输出配置内容或替换后的环境变量值；失败时输出中文提示并以非零状态退出。导入入口或配置模块不会自动读取配置，也不会发起模型请求。现有 `.env` 和 `config.toml` 内容保持原样。
+[事件流设计说明](docs/desin/01-event-stream.md) 解释事件交付和最终结果的关系，其中 pi 学习基准的扩展能力不代表本项目已实现。[Responses 文件组织说明](docs/desin/02-openai-responses-shared.md) 区分本地单文件实现与 pi 基准的共享模块。[模型协议比较](docs/research/api/ai-protocol-comparison.md) 和 [TypeScript 学习笔记](docs/study/knowledge.md) 是研究资料，不代表已实现功能。
 
 ## 许可证
 

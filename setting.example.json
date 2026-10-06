@@ -1,0 +1,28 @@
+{
+  "provider": "lcn29",
+  "model": "gemini-3.8-flash-high",
+  "modelProviders": [
+    {
+      "name": "lcn29",
+      "baseUrl": "${BASE_URL}",
+      "apiKey": "${API_KEY}",
+      "api": "openai-completions",
+      "models": [
+        {
+          "id": "gemini-3.8-flash-high",
+          "maxTokens": 16384,
+          "name": "gemini-3.8-flash-high",
+          "input": ["text", "image"],
+          "contextWindow": 1000000
+        },
+        {
+          "id": "gpt-6.1-sol",
+          "maxTokens": 16384,
+          "name": "gpt-6.1-sol",
+          "input": ["text", "image"],
+          "contextWindow": 1000000
+        }
+      ]
+    }
+  ]
+}
